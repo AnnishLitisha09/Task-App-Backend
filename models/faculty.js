@@ -39,12 +39,16 @@ module.exports = (sequelize, DataTypes) => {
       allowNull: false,
       unique: true
     },
+    type: {
+      type: DataTypes.STRING(50),
+      allowNull: true
+    },
     score: {
-      type: DataTypes.DECIMAL(10,2),
+      type: DataTypes.DECIMAL(10, 2),
       defaultValue: 0
     },
     penalty: {
-      type: DataTypes.DECIMAL(10,2),
+      type: DataTypes.DECIMAL(10, 2),
       defaultValue: 0
     },
     created_at: {

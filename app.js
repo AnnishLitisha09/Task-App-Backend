@@ -17,7 +17,12 @@ app.use(bodyParser.json());
 app.use(morgan('dev'));
 // ========== Routes ==========
 const authRoutes = require('./Routes/authRoutes');
+const userRoutes = require('./Routes/user.routes');
+const resourceRoutes = require('./Routes/resource.routes');
+
 app.use('/api/auth', authRoutes);
+app.use('/api/users', userRoutes);
+app.use('/api/resources', resourceRoutes);
 // ========== Get Local IP ==========
 function getLocalIP() {
   const interfaces = os.networkInterfaces();
