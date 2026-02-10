@@ -15,7 +15,9 @@ const HOST = '0.0.0.0';
 app.use(cors({ origin: "*" }));
 app.use(bodyParser.json());
 app.use(morgan('dev'));
-
+// ========== Routes ==========
+const authRoutes = require('./Routes/authRoutes');
+app.use('/api/auth', authRoutes);
 // ========== Get Local IP ==========
 function getLocalIP() {
   const interfaces = os.networkInterfaces();
@@ -30,7 +32,7 @@ function getLocalIP() {
 }
 
 // ========== Start Server ==========
-db.sequelize.sync({ alter: true }) // will update your tables schema without dropping data
+db.sequelize.authenticate()
   .then(() => {
     const localIP = getLocalIP();
     app.listen(PORT, HOST, () => {
@@ -42,3 +44,4 @@ db.sequelize.sync({ alter: true }) // will update your tables schema without dro
   .catch((err) => {
     console.error('❌ Failed to connect to database:', err.message);
   });
+
