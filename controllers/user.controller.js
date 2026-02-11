@@ -13,14 +13,17 @@ const createBaseUser = async (role, transaction) => {
     }, { transaction });
 };
 
-// Helper to create AuthAccount
-const createAuthAccount = async (user_id, email, transaction) => {
-    // Generate a default password (e.g., "password123") or random
-    const hashedPassword = await bcrypt.hash("password123", 10);
+// Helper: Create auth account with auto-generated password
+async function createAuthAccount(user_id, email, name, transaction) {
+    // Generate default password: name@123 (e.g., "john@123")
+    const defaultPassword = `${name.toLowerCase().replace(/\s+/g, '')}@123`;
+    const hash = await bcrypt.hash(defaultPassword, 10);
+
     return await AuthAccount.create({
         user_id,
         email,
-        hashed_password: hashedPassword
+        hashed_password: hash,
+        created_at: new Date()
     }, { transaction });
 };
 
@@ -52,7 +55,7 @@ exports.createStudent = async (req, res) => {
             updated_at: new Date()
         }, { transaction: t });
 
-        await createAuthAccount(user.user_id, email, t);
+        await createAuthAccount(user.user_id, email, name, t);
 
         await t.commit();
         res.status(201).json({ message: 'Student created successfully', user_id: user.user_id });
@@ -67,7 +70,9 @@ exports.createFaculty = async (req, res) => {
     try {
         const { reg_no, name, email, department_id, type } = req.body;
 
-        const existing = await Faculty.findOne({ where: { [Op.or]: [{ reg_no }, { email }] } });
+        const existing = await Faculty.findOne({
+            where: { [Op.or]: [{ reg_no }, { email }] }
+        });
         if (existing) return res.status(400).json({ message: 'Faculty already exists' });
 
         const user = await createBaseUser('faculty', t);
@@ -78,20 +83,25 @@ exports.createFaculty = async (req, res) => {
             name,
             email,
             department_id,
-            type: type || null, // Add type
+            type: type || null,
             created_at: new Date(),
             updated_at: new Date()
         }, { transaction: t });
 
-        await createAuthAccount(user.user_id, email, t);
+        // ✅ FIXED
+        await createAuthAccount(user.user_id, email, name, t);
 
         await t.commit();
-        res.status(201).json({ message: 'Faculty created successfully', user_id: user.user_id });
+        res.status(201).json({
+            message: 'Faculty created successfully',
+            user_id: user.user_id
+        });
     } catch (error) {
         await t.rollback();
         res.status(500).json({ message: error.message });
     }
 };
+
 
 exports.createStaff = async (req, res) => {
     const t = await User.sequelize.transaction();
@@ -112,7 +122,7 @@ exports.createStaff = async (req, res) => {
             updated_at: new Date()
         }, { transaction: t });
 
-        await createAuthAccount(user.user_id, email, t);
+        await createAuthAccount(user.user_id, email, name, t);
 
         await t.commit();
         res.status(201).json({ message: 'Staff created successfully', user_id: user.user_id });
@@ -125,7 +135,7 @@ exports.createStaff = async (req, res) => {
 exports.createRoleUser = async (req, res) => {
     const t = await User.sequelize.transaction();
     try {
-        const { name, email, roleName, department_id } = req.body; // e.g. roleName = 'HOD'
+        const { name, email, roleName, department_id, venue_id } = req.body; // e.g. roleName = 'HOD', venue_id sent for LAB_INCHARGE
 
         const existing = await RoleUser.findOne({ where: { email } });
         if (existing) return res.status(400).json({ message: 'Role User already exists' });
@@ -140,12 +150,16 @@ exports.createRoleUser = async (req, res) => {
             updated_at: new Date()
         }, { transaction: t });
 
-        await createAuthAccount(user.user_id, email, t);
+        await createAuthAccount(user.user_id, email, name, t);
 
         // Assign Role logic if passed immediately
         if (roleName) {
             // Find Role ID from Roles table
             const role = await Role.findOne({ where: { user_role: roleName } });
+            if (!role) {
+                throw new Error(`Role '${roleName}' not found`);
+            }
+
             if (role) {
                 if (!department_id) throw new Error('Department ID required for role assignment');
 
@@ -153,6 +167,7 @@ exports.createRoleUser = async (req, res) => {
                     user_id: user.user_id,
                     role_id: role.role_id,
                     department_id: department_id,
+                    venue_id: venue_id || null, // Allow venue role assignment
                     created_at: new Date(),
                     updated_at: new Date()
                 }, { transaction: t });
@@ -275,11 +290,25 @@ exports.bulkCreateUsers = async (req, res) => {
 };
 
 exports.deleteUser = async (req, res) => {
+    const t = await User.sequelize.transaction();
     try {
         const { id } = req.params;
-        await User.destroy({ where: { user_id: id } });
-        res.json({ message: 'User deleted successfully' });
+
+        // Force delete related records to avoid FK constraints
+        await RoleAssignment.destroy({ where: { user_id: id }, transaction: t, force: true });
+        await AuthAccount.destroy({ where: { user_id: id }, transaction: t, force: true });
+        await Student.destroy({ where: { user_id: id }, transaction: t, force: true });
+        await Faculty.destroy({ where: { user_id: id }, transaction: t, force: true });
+        await Staff.destroy({ where: { user_id: id }, transaction: t, force: true });
+        await RoleUser.destroy({ where: { user_id: id }, transaction: t, force: true });
+
+        // Force delete User
+        await User.destroy({ where: { user_id: id }, transaction: t, force: true });
+
+        await t.commit();
+        res.json({ message: 'User and related data permanently deleted successfully' });
     } catch (error) {
+        await t.rollback();
         res.status(500).json({ message: error.message });
     }
 };

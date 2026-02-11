@@ -41,6 +41,12 @@ module.exports = (sequelize, DataTypes) => {
     remaining_count: {
       type: DataTypes.INTEGER,
       allowNull: false
+    },
+
+    points: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      defaultValue: 0
     }
 
   }, {

@@ -19,10 +19,20 @@ app.use(morgan('dev'));
 const authRoutes = require('./Routes/authRoutes');
 const userRoutes = require('./Routes/user.routes');
 const resourceRoutes = require('./Routes/resource.routes');
+const taskRoutes = require('./Routes/task.routes');
+const couponRoutes = require('./Routes/coupon.routes');
+const leaveRoutes = require('./Routes/leave.routes');
+const path = require('path');
 
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/resources', resourceRoutes);
+app.use('/api/tasks', taskRoutes);
+app.use('/api/coupons', couponRoutes);
+app.use('/api/leaves', leaveRoutes);
+
+// Serve static files from uploads folder
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 // ========== Get Local IP ==========
 function getLocalIP() {
   const interfaces = os.networkInterfaces();
@@ -39,6 +49,20 @@ function getLocalIP() {
 // ========== Start Server ==========
 db.sequelize.authenticate()
   .then(() => {
+    // Initialize cron jobs for task acknowledgment
+    require('./jobs/morning-awareness');
+    const { runTaskEscalation } = require('./jobs/task-escalation');
+    const cron = require('node-cron');
+
+    // Daily task escalation check at midnight
+    cron.schedule('0 0 * * *', async () => {
+      console.log('[CRON] Starting daily task escalation check...');
+      await runTaskEscalation();
+    }, {
+      scheduled: true,
+      timezone: "Asia/Kolkata"
+    });
+
     const localIP = getLocalIP();
     app.listen(PORT, HOST, () => {
       console.log(`🚀 Server running at:`);

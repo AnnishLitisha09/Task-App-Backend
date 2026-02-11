@@ -79,17 +79,19 @@ exports.login = async (req, res) => {
 exports.googleLogin = async (req, res) => {
   try {
     const { token } = req.body;
+    if (!token) return res.status(400).json({ message: "Token is required" });
 
     // Verify Google ID token
     const ticket = await client.verifyIdToken({
       idToken: token,
       audience: process.env.GOOGLE_CLIENT_ID
     });
+
     const { email } = ticket.getPayload();
 
-    // Find account created by admin
+    // Find account created by admin (removed deleted_at)
     const account = await AuthAccount.findOne({
-      where: { email, deleted_at: null },
+      where: { email },
       include: { model: User, attributes: ["user_id", "role", "status"] }
     });
 
@@ -104,7 +106,6 @@ exports.googleLogin = async (req, res) => {
       { expiresIn: "1d" }
     );
 
-    // Return consistent response
     res.json({
       token: jwtToken,
       user_id: account.User.user_id,

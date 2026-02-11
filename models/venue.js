@@ -22,6 +22,15 @@ module.exports = (sequelize, DataTypes) => {
       allowNull: false,
       unique: true
     },
+    venue_type: {
+      type: DataTypes.ENUM('class', 'auditorium', 'seminar hall', 'conference room', 'others'),
+      allowNull: true,
+      defaultValue: 'others'
+    },
+    location: {
+      type: DataTypes.STRING(100),
+      allowNull: true
+    },
     description: {                  // <-- new column
       type: DataTypes.TEXT,
       allowNull: true
