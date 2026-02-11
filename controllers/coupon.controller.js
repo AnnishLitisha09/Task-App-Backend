@@ -68,8 +68,23 @@ exports.deleteCoupon = async (req, res) => {
 
 exports.getAllCoupons = async (req, res) => {
     try {
-        const coupons = await Coupon.findAll();
-        res.json(coupons);
+        const coupons = await Coupon.findAll({
+            order: [['id', 'DESC']]
+        });
+
+        const activeCount = await Coupon.count({ where: { status: 'active' } });
+        const inactiveCount = await Coupon.count({ where: { status: 'inactive' } });
+        const totalIssuedCount = await Redeem.count();
+
+        res.json({
+            success: true,
+            stats: {
+                active_coupons: activeCount,
+                inactive_coupons: inactiveCount,
+                total_issued: totalIssuedCount
+            },
+            coupons: coupons
+        });
     } catch (error) {
         res.status(500).json({ message: error.message });
     }

@@ -1,0 +1,5 @@
+role_id: Nullable=NO, Type=bigint unsigned
+user_role: Nullable=NO, Type=varchar(50)
+scope_id: Nullable=NO, Type=bigint unsigned
+created_at: Nullable=NO, Type=datetime
+updated_at: Nullable=NO, Type=datetime

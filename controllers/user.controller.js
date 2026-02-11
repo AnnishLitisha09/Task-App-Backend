@@ -1,4 +1,4 @@
-const { User, Student, Faculty, Staff, RoleUser, Department, RoleAssignment, Role, AuthAccount } = require('../models');
+const { User, Student, Faculty, Staff, RoleUser, Department, RoleAssignment, Role, AuthAccount, Venue } = require('../models');
 const xlsx = require('xlsx');
 const bcrypt = require('bcryptjs');
 const { Op } = require('sequelize');
@@ -135,14 +135,17 @@ exports.createStaff = async (req, res) => {
 exports.createRoleUser = async (req, res) => {
     const t = await User.sequelize.transaction();
     try {
-        const { name, email, roleName, department_id, venue_id } = req.body; // e.g. roleName = 'HOD', venue_id sent for LAB_INCHARGE
+        const { name, email, roleName, department_id, venue_id } = req.body;
 
         const existing = await RoleUser.findOne({ where: { email } });
-        if (existing) return res.status(400).json({ message: 'Role User already exists' });
+        if (existing) {
+            await t.rollback();
+            return res.status(400).json({ message: 'Role User already exists' });
+        }
 
         const user = await createBaseUser('role-user', t);
 
-        const roleUser = await RoleUser.create({
+        await RoleUser.create({
             user_id: user.user_id,
             name,
             email,
@@ -152,30 +155,43 @@ exports.createRoleUser = async (req, res) => {
 
         await createAuthAccount(user.user_id, email, name, t);
 
-        // Assign Role logic if passed immediately
+        // Unified Creation + Assignment
         if (roleName) {
-            // Find Role ID from Roles table
             const role = await Role.findOne({ where: { user_role: roleName } });
             if (!role) {
-                throw new Error(`Role '${roleName}' not found`);
+                throw new Error(`Role '${roleName}' not found in system`);
             }
 
-            if (role) {
-                if (!department_id) throw new Error('Department ID required for role assignment');
+            // HOD Logic
+            if (roleName === 'HOD') {
+                if (!department_id) throw new Error('Department ID is required for HOD assignment');
 
-                await RoleAssignment.create({
-                    user_id: user.user_id,
-                    role_id: role.role_id,
-                    department_id: department_id,
-                    venue_id: venue_id || null, // Allow venue role assignment
-                    created_at: new Date(),
-                    updated_at: new Date()
-                }, { transaction: t });
+                // Enforce single HOD: Remove existing HOD for this department
+                await RoleAssignment.destroy({
+                    where: {
+                        role_id: role.role_id,
+                        department_id: department_id
+                    },
+                    transaction: t
+                });
             }
+
+            await RoleAssignment.create({
+                user_id: user.user_id,
+                role_id: role.role_id,
+                department_id: department_id || null,
+                venue_id: venue_id || null,
+                created_at: new Date(),
+                updated_at: new Date()
+            }, { transaction: t });
         }
 
         await t.commit();
-        res.status(201).json({ message: 'Role User created successfully', user_id: user.user_id });
+        res.status(201).json({
+            message: 'Role User created and assigned successfully',
+            user_id: user.user_id,
+            role: roleName || 'No specific role assigned'
+        });
     } catch (error) {
         await t.rollback();
         res.status(500).json({ message: error.message });
@@ -314,26 +330,46 @@ exports.deleteUser = async (req, res) => {
 };
 
 exports.assignRole = async (req, res) => {
+    const t = await RoleAssignment.sequelize.transaction();
     try {
         const { user_id, role_name, department_id, venue_id } = req.body;
 
-        // Lookup Role ID
+        // Lookup Role
         const role = await Role.findOne({ where: { user_role: role_name } });
-        if (!role) return res.status(404).json({ message: 'Role not found' });
+        if (!role) {
+            await t.rollback();
+            return res.status(404).json({ message: 'Role not found' });
+        }
 
-        if (!department_id) return res.status(400).json({ message: 'Department ID is required for role assignment' });
+        if (role_name === 'HOD') {
+            if (!department_id) {
+                await t.rollback();
+                return res.status(400).json({ message: 'Department ID is required for HOD role assignment' });
+            }
+
+            // Remove any existing HOD for this department
+            await RoleAssignment.destroy({
+                where: {
+                    role_id: role.role_id,
+                    department_id: department_id
+                },
+                transaction: t
+            });
+        }
 
         await RoleAssignment.create({
             user_id,
             role_id: role.role_id,
-            department_id: department_id,
+            department_id: department_id || null,
             venue_id: venue_id || null,
             created_at: new Date(),
             updated_at: new Date()
-        });
+        }, { transaction: t });
 
+        await t.commit();
         res.json({ message: 'Role assigned successfully' });
     } catch (error) {
+        await t.rollback();
         res.status(500).json({ message: error.message });
     }
 };
@@ -363,6 +399,60 @@ exports.getFacultyByDepartment = async (req, res) => {
     }
 };
 
+// Helper: Get full profile details by user ID and role
+const getFullProfile = async (id, role) => {
+    let userDetails = null;
+
+    switch (role) {
+        case 'student':
+            userDetails = await Student.findOne({
+                where: { user_id: id },
+                include: [
+                    { model: Department },
+                    { model: Faculty, attributes: ['name', 'email'] }
+                ]
+            });
+            break;
+        case 'faculty':
+            userDetails = await Faculty.findOne({
+                where: { user_id: id },
+                include: [Department]
+            });
+            break;
+        case 'staff':
+            userDetails = await Staff.findOne({ where: { user_id: id } });
+            break;
+        case 'role-user':
+            userDetails = await RoleUser.findOne({
+                where: { user_id: id },
+                // Include Role Assignments, Roles, Departments, and Venues
+                include: [{
+                    model: User,
+                    include: [{
+                        model: RoleAssignment,
+                        include: [Role, Department, { model: Venue, as: 'Venue' }]
+                    }]
+                }]
+            });
+            // Flatten for better response if needed, but for now include:
+            const ra = await RoleAssignment.findAll({
+                where: { user_id: id },
+                include: [Role, Department, { model: Venue, as: 'Venue' }]
+            });
+            if (userDetails) {
+                userDetails = userDetails.toJSON();
+                userDetails.RoleAssignments = ra;
+            }
+            break;
+        case 'admin':
+            userDetails = { name: "Admin", email: "admin@example.com" };
+            break;
+        default:
+            break;
+    }
+    return userDetails;
+};
+
 exports.getUserDetails = async (req, res) => {
     try {
         const { id } = req.params;
@@ -372,27 +462,7 @@ exports.getUserDetails = async (req, res) => {
             return res.status(404).json({ message: 'User not found' });
         }
 
-        let userDetails = null;
-
-        switch (user.role) {
-            case 'student':
-                userDetails = await Student.findOne({ where: { user_id: id }, include: [Department] });
-                break;
-            case 'faculty':
-                userDetails = await Faculty.findOne({ where: { user_id: id }, include: [Department] });
-                break;
-            case 'staff':
-                userDetails = await Staff.findOne({ where: { user_id: id } });
-                break;
-            case 'role-user':
-                userDetails = await RoleUser.findOne({ where: { user_id: id } });
-                break;
-            case 'admin':
-                userDetails = { name: "Admin", email: "admin@example.com" };
-                break;
-            default:
-                break;
-        }
+        const userDetails = await getFullProfile(id, user.role);
 
         if (!userDetails && user.role !== 'admin') {
             return res.status(404).json({ message: 'Profile not found for this user' });
@@ -419,27 +489,7 @@ exports.getProfile = async (req, res) => {
             return res.status(404).json({ message: 'User not found' });
         }
 
-        let userDetails = null;
-
-        switch (user.role) {
-            case 'student':
-                userDetails = await Student.findOne({ where: { user_id: id }, include: [Department] });
-                break;
-            case 'faculty':
-                userDetails = await Faculty.findOne({ where: { user_id: id }, include: [Department] });
-                break;
-            case 'staff':
-                userDetails = await Staff.findOne({ where: { user_id: id } });
-                break;
-            case 'role-user':
-                userDetails = await RoleUser.findOne({ where: { user_id: id } });
-                break;
-            case 'admin':
-                userDetails = { name: "Admin", email: "admin@example.com" };
-                break;
-            default:
-                break;
-        }
+        const userDetails = await getFullProfile(id, user.role);
 
         if (!userDetails && user.role !== 'admin') {
             return res.status(404).json({ message: 'Profile not found for this user' });
@@ -456,3 +506,174 @@ exports.getProfile = async (req, res) => {
         res.status(500).json({ message: error.message });
     }
 };
+
+exports.getManagementStaff = async (req, res) => {
+    try {
+        const facultyStaff = await Faculty.findAll({
+            include: [{ model: Department, attributes: ['name'] }]
+        });
+
+        const inchargeAssignments = await RoleAssignment.findAll({
+            include: [
+                { model: Role, attributes: ['user_role'] },
+                { model: Venue, as: 'Venue', attributes: ['name'] },
+                { model: Department, attributes: ['name'] },
+                {
+                    model: User,
+                    required: true,
+                    include: [{ model: RoleUser, required: true }]
+                }
+            ]
+        });
+
+        const formattedFaculty = facultyStaff.map(f => ({
+            user_id: f.user_id,
+            name: f.name,
+            email: f.email,
+            type: 'Faculty',
+            department: f.Department?.name || 'N/A',
+            venue: 'N/A',
+            role: f.type || 'Faculty'
+        }));
+
+        const inchargeMap = new Map();
+        inchargeAssignments.forEach(ra => {
+            if (ra.Role?.user_role === 'HOD' && !ra.venue_id) return;
+
+            const userId = ra.user_id;
+            const profile = ra.User?.RoleUser;
+            if (!profile) return;
+
+            if (!inchargeMap.has(userId)) {
+                inchargeMap.set(userId, {
+                    user_id: userId,
+                    name: profile.name,
+                    email: profile.email,
+                    type: 'Incharge',
+                    department: ra.Department?.name || 'N/A',
+                    venue: ra.Venue?.name || 'N/A',
+                    role: ra.Role?.user_role || 'Incharge'
+                });
+            } else {
+                const existing = inchargeMap.get(userId);
+                if (ra.Venue?.name && !existing.venue.includes(ra.Venue.name)) {
+                    existing.venue = existing.venue === 'N/A' ? ra.Venue.name : `${existing.venue}, ${ra.Venue.name}`;
+                }
+                if (ra.Role?.user_role && !existing.role.includes(ra.Role.user_role)) {
+                    existing.role = `${existing.role}, ${ra.Role.user_role}`;
+                }
+            }
+        });
+
+        res.json({
+            faculty: formattedFaculty,
+            incharges: Array.from(inchargeMap.values()),
+            total_management_staff: formattedFaculty.length + inchargeMap.size
+        });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+exports.getAllHODs = async (req, res) => {
+    try {
+        const hodAssignments = await RoleAssignment.findAll({
+            where: { '$Role.user_role$': 'HOD' },
+            include: [
+                { model: Role, attributes: ['user_role'] },
+                { model: Department, attributes: ['name'] },
+                {
+                    model: User,
+                    required: true,
+                    include: [{ model: RoleUser, required: true }]
+                }
+            ]
+        });
+
+        const hodMap = new Map();
+
+        hodAssignments.forEach(ra => {
+            const userId = ra.user_id;
+            const profile = ra.User?.RoleUser;
+            if (!profile) return;
+
+            if (!hodMap.has(userId)) {
+                hodMap.set(userId, {
+                    user_id: userId,
+                    name: profile.name,
+                    email: profile.email,
+                    department: ra.Department?.name || 'N/A',
+                    role: ra.Role?.user_role
+                });
+            } else {
+                // If they have multiple assignments, append the department names
+                const existing = hodMap.get(userId);
+                if (ra.Department?.name && !existing.department.includes(ra.Department.name)) {
+                    existing.department = `${existing.department}, ${ra.Department.name}`;
+                }
+            }
+        });
+
+        res.json(Array.from(hodMap.values()));
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+exports.getAllIncharges = async (req, res) => {
+    try {
+        const inchargeAssignments = await RoleAssignment.findAll({
+            where: {
+                [Op.or]: [
+                    { venue_id: { [Op.not]: null } },
+                    { '$Role.user_role$': { [Op.not]: 'HOD' } }
+                ]
+            },
+            include: [
+                { model: Role, attributes: ['user_role'] },
+                { model: Venue, as: 'Venue', attributes: ['name'] },
+                { model: Department, attributes: ['name'] },
+                {
+                    model: User,
+                    required: true,
+                    include: [{ model: RoleUser, required: true }]
+                }
+            ]
+        });
+
+        const inchargeMap = new Map();
+
+        inchargeAssignments.forEach(ra => {
+            if (ra.Role?.user_role === 'HOD' && !ra.venue_id) return;
+
+            const userId = ra.user_id;
+            const profile = ra.User?.RoleUser;
+            if (!profile) return;
+
+            if (!inchargeMap.has(userId)) {
+                inchargeMap.set(userId, {
+                    user_id: userId,
+                    name: profile.name,
+                    email: profile.email,
+                    department: ra.Department?.name || 'N/A',
+                    venue: ra.Venue?.name || 'N/A',
+                    role: ra.Role?.user_role || 'Incharge'
+                });
+            } else {
+                const existing = inchargeMap.get(userId);
+                if (ra.Venue?.name && !existing.venue.includes(ra.Venue.name)) {
+                    existing.venue = existing.venue === 'N/A' ? ra.Venue.name : `${existing.venue}, ${ra.Venue.name}`;
+                }
+                if (ra.Role?.user_role && !existing.role.includes(ra.Role.user_role)) {
+                    existing.role = `${existing.role}, ${ra.Role.user_role}`;
+                }
+            }
+        });
+
+        res.json(Array.from(inchargeMap.values()));
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+module.exports = exports;

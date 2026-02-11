@@ -16,7 +16,7 @@ app.use(cors({ origin: "*" }));
 app.use(bodyParser.json());
 app.use(morgan('dev'));
 // ========== Routes ==========
-const authRoutes = require('./Routes/authRoutes');
+const authRoutes = require('./Routes/auth.routes');
 const userRoutes = require('./Routes/user.routes');
 const resourceRoutes = require('./Routes/resource.routes');
 const taskRoutes = require('./Routes/task.routes');
@@ -33,6 +33,7 @@ app.use('/api/leaves', leaveRoutes);
 
 // Serve static files from uploads folder
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+app.use('/api/uploads', express.static(path.join(__dirname, 'uploads')));
 // ========== Get Local IP ==========
 function getLocalIP() {
   const interfaces = os.networkInterfaces();
@@ -52,12 +53,22 @@ db.sequelize.authenticate()
     // Initialize cron jobs for task acknowledgment
     require('./jobs/morning-awareness');
     const { runTaskEscalation } = require('./jobs/task-escalation');
+    const { handleRecurrence } = require('./jobs/task-recurrence');
     const cron = require('node-cron');
 
     // Daily task escalation check at midnight
     cron.schedule('0 0 * * *', async () => {
       console.log('[CRON] Starting daily task escalation check...');
       await runTaskEscalation();
+    }, {
+      scheduled: true,
+      timezone: "Asia/Kolkata"
+    });
+
+    // Daily task recurrence check at 00:05
+    cron.schedule('5 0 * * *', async () => {
+      console.log('[CRON] Starting daily task recurrence check...');
+      await handleRecurrence();
     }, {
       scheduled: true,
       timezone: "Asia/Kolkata"

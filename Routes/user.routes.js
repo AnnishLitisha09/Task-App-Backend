@@ -17,12 +17,16 @@ router.use(verifyToken);
 
 // Get User Profile
 router.get('/profile', userController.getProfile); // Profile from token
+router.get('/me', userController.getProfile);      // Alias for profile from token
 router.get('/:id/details', userController.getUserDetails); // Admin viewing specific user
 
 
 // Fetch Lists (Accessible to authenticated users)
 router.get('/students/:deptId', userController.getStudentsByDepartment);
 router.get('/faculty/:deptId', userController.getFacultyByDepartment);
+router.get('/management-staff', userController.getManagementStaff);
+router.get('/hods', userController.getAllHODs);
+router.get('/incharges', userController.getAllIncharges);
 
 // ==========================================
 // Admin Only Routes
@@ -45,6 +49,9 @@ router.post('/bulk/faculty', upload.single('file'), userController.bulkCreateUse
 // User Management Actions
 router.delete('/:id', userController.deleteUser);
 router.get('/dashboard/all', userDashboard.getAllUsersWithDetails); // Admin dashboard
+router.get('/dashboard/stats', userDashboard.getSystemStats);      // System counts
+router.get('/dashboard/students/leaderboard', userDashboard.getStudentLeaderboard);
+router.get('/dashboard/faculty/leaderboard', userDashboard.getFacultyLeaderboard);
 router.post('/assign-role', userController.assignRole);
 
 module.exports = router;

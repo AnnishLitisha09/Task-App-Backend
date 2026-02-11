@@ -5,6 +5,7 @@ module.exports = (sequelize, DataTypes) => {
   class TaskType extends Model {
     static associate(models) {
       TaskType.belongsTo(models.Task, { foreignKey: 'task_id' });
+      TaskType.belongsTo(models.Venue, { foreignKey: 'venue_id' });
     }
   }
 
@@ -38,8 +39,24 @@ module.exports = (sequelize, DataTypes) => {
       type: DataTypes.DATE,
       allowNull: true
     },
+    start_time: {
+      type: DataTypes.TIME,
+      allowNull: true
+    },
+    end_time: {
+      type: DataTypes.TIME,
+      allowNull: true
+    },
+    time_quota_hours: {
+      type: DataTypes.DECIMAL(10, 2),
+      allowNull: true
+    },
+    venue_id: {
+      type: DataTypes.BIGINT.UNSIGNED,
+      allowNull: true
+    },
     recurrence: {
-      type: DataTypes.ENUM('none','daily','weekly','monthly'),
+      type: DataTypes.ENUM('none', 'daily', 'weekly', 'monthly'),
       defaultValue: 'none'
     },
     created_at: {

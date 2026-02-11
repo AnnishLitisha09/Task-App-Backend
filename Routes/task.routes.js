@@ -7,18 +7,20 @@ const taskAssignment = require('../controllers/task.assignment');
 const taskClosure = require('../controllers/task.closure');
 const taskAcceptance = require('../controllers/task.acceptance');
 const taskAcknowledgment = require('../controllers/task.acknowledgment');
+const calendarController = require('../controllers/calendar.controller');
 
 // Multer configuration for Excel upload
 const upload = multer({ dest: 'uploads/' });
 
+// Calendar
+router.get('/calendar', verifyToken, calendarController.getUserCalendar);
+
 // Task Creation
-router.post('/', verifyToken, taskController.createTask);
+router.post('/unified-create', verifyToken, upload.single('file'), taskController.createUnifiedTask);
+router.put('/:id', verifyToken, taskController.updateTask);
+router.delete('/:id', verifyToken, taskController.deleteTask);
 
 // Task Assignment
-router.post('/:id/assign/user', verifyToken, taskAssignment.assignTaskToUser);
-router.post('/:id/assign/all-hods', verifyToken, taskAssignment.assignToAllHODs);
-router.post('/:id/assign/all-faculty', verifyToken, taskAssignment.assignToAllFaculty);
-router.post('/:id/assign/all-students', verifyToken, taskAssignment.assignToAllStudents);
 router.post('/:id/assign/bulk', verifyToken, upload.single('file'), taskAssignment.bulkAssignByExcel);
 
 // Task Acceptance/Rejection
@@ -29,9 +31,6 @@ router.post('/:id/reject', verifyToken, taskAcceptance.rejectTask);
 router.get('/today/unacknowledged', verifyToken, taskAcknowledgment.getTodaysUnacknowledgedTasks);
 router.post('/acknowledge', verifyToken, taskAcknowledgment.acknowledgeTodaysTasks);
 router.get('/acknowledgments', verifyToken, taskAcknowledgment.getAcknowledgmentHistory);
-
-// Task Closure
-router.post('/:id/close', verifyToken, taskClosure.closeTask);
 
 // Fetch APIs
 router.get('/', verifyToken, taskController.getAllTasks);

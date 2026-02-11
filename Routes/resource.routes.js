@@ -36,6 +36,13 @@ const upload = multer({
 router.use(verifyToken);
 
 router.get('/departments', resourceController.getAllDepartments);
+router.get('/departments/:id/analytics', resourceController.getDepartmentAnalytics);
+router.post('/departments', isAdmin, resourceController.addDepartment);
+router.put('/departments/:id', isAdmin, resourceController.updateDepartment);
+router.delete('/departments/:id', isAdmin, resourceController.deleteDepartment);
+
+// HODs
+router.get('/hods/unassigned', resourceController.getUnassignedHODs);
 
 // Venues
 router.get('/venues', resourceController.getAllVenues);
@@ -43,6 +50,7 @@ router.post('/venues', isAdmin, upload.single('image'), resourceController.addVe
 router.put('/venues/:id', isAdmin, upload.single('image'), resourceController.updateVenue);
 router.delete('/venues/:id', isAdmin, resourceController.deleteVenue);
 router.get('/venue/:venueId/incharge', resourceController.getVenueIncharge);
+router.put('/venues/:id/incharge', isAdmin, resourceController.assignVenueIncharge);
 
 // Resources
 router.get('/', resourceController.getAllResources);

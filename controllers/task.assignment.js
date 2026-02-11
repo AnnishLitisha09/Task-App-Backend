@@ -311,4 +311,7 @@ exports.bulkAssignByExcel = async (req, res) => {
     }
 };
 
-module.exports = exports;
+module.exports = {
+    ...exports,
+    canAssignTo
+};

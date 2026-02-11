@@ -27,7 +27,7 @@ module.exports = (sequelize, DataTypes) => {
     },
     department_id: {
       type: DataTypes.BIGINT.UNSIGNED,
-      allowNull: false
+      allowNull: true
     },
     venue_id: {
       type: DataTypes.BIGINT.UNSIGNED,

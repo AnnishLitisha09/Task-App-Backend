@@ -1,0 +1,7 @@
+id: Nullable=NO, Type=bigint unsigned
+user_id: Nullable=NO, Type=bigint unsigned
+role_id: Nullable=NO, Type=bigint unsigned
+department_id: Nullable=YES, Type=bigint unsigned
+venue_id: Nullable=YES, Type=bigint unsigned
+created_at: Nullable=NO, Type=datetime
+updated_at: Nullable=NO, Type=datetime
