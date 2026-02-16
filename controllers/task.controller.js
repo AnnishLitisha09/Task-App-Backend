@@ -1,4 +1,4 @@
-const { Task, TaskAssign, TaskType, TaskPackageClosure, User, Student, Faculty, Staff, RoleUser, RoleAssignment, Role, Department } = require('../models');
+const { Task, TaskAssign, TaskType, TaskPackageClosure, User, Student, Faculty, Staff, RoleUser, RoleAssignment, Role, Department, TaskEscalation, AuthAccount } = require('../models');
 const XLSX = require('xlsx');
 const { canAssignTo } = require('./task.assignment');
 
@@ -266,13 +266,15 @@ exports.submitTaskProof = async (req, res) => {
             penalty = diffHours * parseFloat(task.penalty_per_hour || 0);
         }
 
-        const earnedScore = Math.max(0, parseFloat(task.score || 0) - penalty);
+        const earnedScore = parseFloat(task.score || 0) - penalty;
 
         // Update Assignment
         await assignment.update({
             status: 'completed',
             proof,
-            submitted_time: now
+            submitted_time: now,
+            earned_score: earnedScore,
+            penalty_applied: penalty
         });
 
         // Update User Profile (Student, Faculty, or RoleUser)
@@ -285,12 +287,19 @@ exports.submitTaskProof = async (req, res) => {
             profile = await Faculty.findOne({ where: { user_id: userId } });
         } else if (user.role === 'role-user') {
             profile = await RoleUser.findOne({ where: { user_id: userId } });
+        } else if (user.role === 'staff') {
+            profile = await Staff.findOne({ where: { user_id: userId } });
         }
 
         if (profile) {
+            const currentScore = parseFloat(profile.score || 0); // Net Score
+            const currentPenalty = parseFloat(profile.penalty || 0);
+            const currentTotalScore = parseFloat(profile.total_score || 0); // Gross Score
+
             await profile.update({
-                score: parseFloat(profile.score || 0) + earnedScore,
-                penalty: parseFloat(profile.penalty || 0) + penalty
+                score: currentScore + earnedScore, // Net + (Base - Penalty)
+                penalty: currentPenalty + penalty,
+                total_score: currentTotalScore + parseFloat(task.score) // Gross + Base
             });
         }
 
@@ -320,6 +329,71 @@ exports.getEscalatedTasksForCreator = async (req, res) => {
     }
 };
 
+// Get formal rejection escalations for a creator (using new model)
+exports.getRejectionEscalationsForCreator = async (req, res) => {
+    try {
+        const userId = req.userId;
+        const escalations = await TaskEscalation.findAll({
+            where: { creator_id: userId },
+            include: [
+                { model: Task, attributes: ['task_id', 'title'] },
+                {
+                    model: User,
+                    as: 'RejectedUser',
+                    attributes: ['user_id', 'role'],
+                    include: [
+                        { model: Student, attributes: ['name', 'email'] },
+                        { model: Faculty, attributes: ['name', 'email'] },
+                        { model: Staff, attributes: ['name', 'email'] },
+                        { model: RoleUser, attributes: ['name', 'email'] },
+                        { model: AuthAccount, attributes: ['email'] }
+                    ]
+                }
+            ],
+            order: [['created_at', 'DESC']]
+        });
+
+        const formatted = escalations.map(e => {
+            const u = e.RejectedUser;
+            const details = u.Student || u.Faculty || u.Staff || u.RoleUser;
+
+            let name = details?.name;
+            const email = details?.email || u.AuthAccount?.email;
+
+            if (!name) {
+                if (u.role?.toLowerCase() === 'admin') {
+                    name = 'Administrator';
+                } else {
+                    name = 'Unknown User';
+                }
+            }
+
+            return {
+                escalation_id: e.id,
+                task_id: e.task_id,
+                task_title: e.Task?.title,
+                reason: e.reason,
+                status: e.status,
+                created_at: e.created_at,
+                rejected_by: {
+                    user_id: u.user_id,
+                    role: u.role,
+                    name: name,
+                    email: email || 'Unknown'
+                }
+            };
+        });
+
+        res.json({
+            count: formatted.length,
+            escalations: formatted
+        });
+
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
 // Get escalation report for a specific task
 exports.getTaskEscalationReport = async (req, res) => {
     try {
@@ -333,24 +407,32 @@ exports.getTaskEscalationReport = async (req, res) => {
                     { model: Student, attributes: ['name', 'email'] },
                     { model: Faculty, attributes: ['name', 'email'] },
                     { model: RoleUser, attributes: ['name', 'email'] },
-                    { model: Staff, attributes: ['name', 'email'] }
+                    { model: Staff, attributes: ['name', 'email'] },
+                    { model: AuthAccount, attributes: ['email'] }
                 ]
             }]
         });
 
         const users = pendingUsers.map(assignment => {
             const u = assignment.User;
-            let details = null;
-            if (u.Student) details = u.Student;
-            else if (u.Faculty) details = u.Faculty;
-            else if (u.RoleUser) details = u.RoleUser;
-            else if (u.Staff) details = u.Staff;
+            const details = u.Student || u.Faculty || u.RoleUser || u.Staff;
+
+            let name = details?.name;
+            const email = details?.email || u.AuthAccount?.email;
+
+            if (!name) {
+                if (u.role?.toLowerCase() === 'admin') {
+                    name = 'Administrator';
+                } else {
+                    name = 'Unknown User';
+                }
+            }
 
             return {
                 user_id: u.user_id,
                 role: u.role,
-                name: details ? details.name : 'Unknown',
-                email: details ? details.email : 'Unknown'
+                name: name,
+                email: email || 'Unknown'
             };
         });
 
@@ -394,24 +476,32 @@ exports.manualEscalateTask = async (req, res) => {
                     { model: Student, attributes: ['name', 'email'] },
                     { model: Faculty, attributes: ['name', 'email'] },
                     { model: RoleUser, attributes: ['name', 'email'] },
-                    { model: Staff, attributes: ['name', 'email'] }
+                    { model: Staff, attributes: ['name', 'email'] },
+                    { model: AuthAccount, attributes: ['email'] }
                 ]
             }]
         });
 
         const users = pendingAssignments.map(assignment => {
             const u = assignment.User;
-            let details = null;
-            if (u.Student) details = u.Student;
-            else if (u.Faculty) details = u.Faculty;
-            else if (u.RoleUser) details = u.RoleUser;
-            else if (u.Staff) details = u.Staff;
+            const details = u.Student || u.Faculty || u.RoleUser || u.Staff;
+
+            let name = details?.name;
+            const email = details?.email || u.AuthAccount?.email;
+
+            if (!name) {
+                if (u.role?.toLowerCase() === 'admin') {
+                    name = 'Administrator';
+                } else {
+                    name = 'Unknown User';
+                }
+            }
 
             return {
                 user_id: u.user_id,
                 role: u.role,
-                name: details ? details.name : 'Unknown',
-                email: details ? details.email : 'Unknown'
+                name: name,
+                email: email || 'Unknown'
             };
         });
 
@@ -721,6 +811,778 @@ exports.deleteTask = async (req, res) => {
         res.json({ message: 'Task deleted successfully' });
 
     } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+// Get User Task Stats (Total Score, Penalty, 7-Day Breakdown)
+exports.getUserTaskStats = async (req, res) => {
+    try {
+        const userId = req.userId;
+        const userRole = req.userRole; // Assuming this is available from middleware
+
+        const now = new Date();
+        const firstDay = new Date(now);
+        firstDay.setDate(now.getDate() - 6);
+        firstDay.setHours(0, 0, 0, 0);
+
+        // Fetch User Profile for Cumulative Score
+        let profile = null;
+        if (userRole === 'student') {
+            profile = await Student.findOne({ where: { user_id: userId } });
+        } else if (userRole === 'faculty') {
+            profile = await Faculty.findOne({ where: { user_id: userId } });
+        } else if (userRole === 'staff') {
+            profile = await Staff.findOne({ where: { user_id: userId } });
+        } else if (userRole === 'role-user') {
+            profile = await RoleUser.findOne({ where: { user_id: userId } });
+        }
+
+        const profileTotalScore = profile ? parseFloat(profile.total_score || 0) : 0; // Gross Score
+        const profileNetScore = profile ? parseFloat(profile.score || 0) : 0; // Net Score (Earned)
+        const profileTotalPenalty = profile ? parseFloat(profile.penalty || 0) : 0; // Total Penalty
+
+        // Fetch all assignments for the user
+        const assignments = await TaskAssign.findAll({
+            where: { user_id: userId },
+            include: [{
+                model: Task,
+                where: { is_deleted: false },
+                include: [{ model: TaskType }]
+            }],
+            order: [['submitted_time', 'DESC']]
+        });
+
+        let totalBaseScore = 0;
+        let totalPenalty = 0;
+        let totalEarnedScore = 0;
+        const dailyStats = {};
+
+        // Initialize last 7 days with 0
+        for (let i = 0; i < 7; i++) {
+            const d = new Date(firstDay);
+            d.setDate(firstDay.getDate() + i);
+            const dateStr = d.toISOString().split('T')[0];
+            dailyStats[dateStr] = 0;
+        }
+
+        const taskDetails = assignments.map(a => {
+            if (!a.Task) return null;
+
+            const baseScore = parseFloat(a.Task.score || 0);
+            const earnedScore = parseFloat(a.earned_score || 0);
+            const penalty = parseFloat(a.penalty_applied || 0);
+
+            if (a.status === 'completed') {
+                totalBaseScore += baseScore;
+                totalPenalty += penalty;
+                totalEarnedScore += earnedScore;
+
+                if (a.submitted_time) {
+                    const d = new Date(a.submitted_time);
+                    if (!isNaN(d.getTime())) {
+                        const submittedDate = d.toISOString().split('T')[0];
+                        if (dailyStats.hasOwnProperty(submittedDate)) {
+                            dailyStats[submittedDate] += earnedScore;
+                        }
+                    }
+                }
+            }
+
+            return {
+                task_id: a.task_id,
+                title: a.Task.title,
+                status: a.status,
+                base_score: baseScore,
+                earned_score: earnedScore,
+                penalty_applied: penalty,
+                submitted_time: a.submitted_time,
+                submission_type: penalty > 0 ? 'Late Submission' : (a.status === 'completed' ? 'Perfect Submission' : 'N/A')
+            };
+        }).filter(t => t !== null);
+
+        const last7Days = Object.keys(dailyStats).map(date => ({
+            date,
+            score: dailyStats[date]
+        }));
+
+        res.json({
+            total_score: profileTotalScore, // Gross Score (Base scores of all completed tasks)
+            total_penalty: profileTotalPenalty,
+            earned_score: profileNetScore, // Net Score (Gross - Penalty)
+            last_7_days: last7Days,
+            task_details: taskDetails
+        });
+
+    } catch (error) {
+        console.error("Critical error in getUserTaskStats:", error);
+        res.status(500).json({ message: error.message });
+    }
+};
+
+
+// 1. Get Pending Proof Tasks (Accepted + Document Required + No Proof)
+exports.getPendingProofTasks = async (req, res) => {
+    try {
+        const userId = req.userId;
+        const { Op } = require('sequelize');
+
+        const tasks = await TaskAssign.findAll({
+            where: {
+                user_id: userId,
+                status: 'accepted',
+                [Op.or]: [
+                    { proof: null },
+                    { proof: '' }
+                ]
+            },
+            include: [{
+                model: Task,
+                where: {
+                    is_deleted: false,
+                    is_document: true
+                },
+                include: [{ model: TaskType }]
+            }]
+        });
+
+        const formatted = tasks.map(a => ({
+            assignment_id: a.id,
+            task_id: a.Task.task_id,
+            title: a.Task.title,
+            description: a.Task.description,
+            is_document: a.Task.is_document,
+            status: a.status,
+            proof_status: 'Not Submitted',
+            deadline: a.Task.TaskTypes && a.Task.TaskTypes[0]
+                ? {
+                    end_date: a.Task.TaskTypes[0].end_date,
+                    end_time: a.Task.TaskTypes[0].end_time
+                } : null
+        }));
+
+        res.json({
+            count: formatted.length,
+            tasks: formatted
+        });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+// 2. Get Tasks Assigned Today
+exports.getTasksAssignedToday = async (req, res) => {
+    try {
+        const userId = req.userId;
+        const { Op } = require('sequelize');
+
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const tomorrow = new Date(today);
+        tomorrow.setDate(tomorrow.getDate() + 1);
+
+        const tasks = await TaskAssign.findAll({
+            where: {
+                user_id: userId,
+                created_at: {
+                    [Op.gte]: today,
+                    [Op.lt]: tomorrow
+                }
+            },
+            include: [{
+                model: Task,
+                where: { is_deleted: false },
+                include: [{ model: TaskType }]
+            }]
+        });
+
+        const formatted = tasks.map(a => ({
+            assignment_id: a.id,
+            task_id: a.Task.task_id,
+            title: a.Task.title,
+            status: a.status,
+            assigned_at: a.created_at,
+            is_approved: a.Task.is_approved
+        }));
+
+        res.json({
+            date: today.toISOString().split('T')[0],
+            count: formatted.length,
+            tasks: formatted
+        });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+// 3. Get Approved Upcoming Tasks
+exports.getApprovedUpcomingTasks = async (req, res) => {
+    try {
+        const userId = req.userId;
+        const now = new Date();
+
+        // Fetch accepted assignments
+        const assignments = await TaskAssign.findAll({
+            where: {
+                user_id: userId,
+                status: 'accepted'
+            },
+            include: [{
+                model: Task,
+                where: { is_deleted: false },
+                include: [{ model: TaskType }]
+            }]
+        });
+
+        // Filter for Future Start
+        const upcoming = assignments.filter(a => {
+            const taskType = a.Task.TaskTypes && a.Task.TaskTypes[0];
+            if (!taskType) return false;
+
+            let startDateTime = null;
+            if (taskType.task_name === 'Fixed Time Task' || taskType.task_name === 'Meeting') {
+                if (taskType.start_date && taskType.start_time) {
+                    const dateStr = new Date(taskType.start_date).toISOString().split('T')[0];
+                    startDateTime = new Date(`${dateStr}T${taskType.start_time}`);
+                } else if (taskType.start_date) {
+                    startDateTime = new Date(taskType.start_date);
+                }
+            } else if (taskType.start_date) {
+                startDateTime = new Date(taskType.start_date);
+            }
+
+            return startDateTime && startDateTime > now;
+        });
+
+        const formatted = upcoming.map(a => ({
+            assignment_id: a.id,
+            task_id: a.Task.task_id,
+            title: a.Task.title,
+            start_date: a.Task.TaskTypes[0]?.start_date,
+            start_time: a.Task.TaskTypes[0]?.start_time,
+            status: a.status
+        }));
+
+        res.json({
+            count: formatted.length,
+            tasks: formatted
+        });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+
+// 4. Get Pending Upcoming Tasks (Unapproved & Future Start)
+exports.getPendingUpcomingTasks = async (req, res) => {
+    try {
+        const userId = req.userId;
+        const now = new Date();
+
+        // 1. Fetch pending assignments
+        const assignments = await TaskAssign.findAll({
+            where: {
+                user_id: userId,
+                status: 'pending'
+            },
+            include: [{
+                model: Task,
+                where: { is_deleted: false },
+                include: [{ model: TaskType }]
+            }]
+        });
+
+        // 2. Filter for Future Start Date/Time
+        const upcoming = assignments.filter(a => {
+            const taskType = a.Task.TaskTypes && a.Task.TaskTypes[0];
+            if (!taskType) return false;
+
+            let startDateTime = null;
+            if (taskType.task_name === 'Fixed Time Task' || taskType.task_name === 'Meeting') {
+                if (taskType.start_date && taskType.start_time) {
+                    const dateStr = new Date(taskType.start_date).toISOString().split('T')[0];
+                    startDateTime = new Date(`${dateStr}T${taskType.start_time}`);
+                } else if (taskType.start_date) {
+                    startDateTime = new Date(taskType.start_date);
+                }
+            } else if (taskType.start_date) {
+                startDateTime = new Date(taskType.start_date);
+            }
+
+            return startDateTime && startDateTime > now;
+        });
+
+        const formatted = upcoming.map(a => ({
+            assignment_id: a.id,
+            task_id: a.Task.task_id,
+            title: a.Task.title,
+            start_date: a.Task.TaskTypes[0]?.start_date,
+            start_time: a.Task.TaskTypes[0]?.start_time,
+            status: a.status
+        }));
+
+        res.json({
+            count: formatted.length,
+            tasks: formatted
+        });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+
+// 5. Get Monthly Schedule (Comprehensive: Specific Date or Range)
+exports.getMonthlySchedule = async (req, res) => {
+    try {
+        const userId = req.userId;
+        const { date } = req.query;
+        const { Op } = require('sequelize');
+        const { Venue, Resource, User, AuthAccount, Student, Faculty, Staff, RoleUser, TaskType } = require('../models');
+
+        // Helper: Get YYYY-MM-DD in local time
+        const getLocalDateString = (d) => {
+            if (!d) return null;
+            const dateObj = new Date(d);
+            const year = dateObj.getFullYear();
+            const month = String(dateObj.getMonth() + 1).padStart(2, '0');
+            const day = String(dateObj.getDate()).padStart(2, '0');
+            return `${year}-${month}-${day}`;
+        };
+
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+
+        let startDate, endDate;
+        if (date) {
+            startDate = new Date(date);
+            startDate.setHours(0, 0, 0, 0);
+            endDate = new Date(date);
+            endDate.setHours(23, 59, 59, 999);
+            if (isNaN(startDate.getTime())) return res.status(400).json({ message: 'Invalid date format. Use YYYY-MM-DD' });
+        } else {
+            startDate = new Date(today);
+            startDate.setDate(today.getDate() - 15);
+            endDate = new Date(today);
+            endDate.setDate(today.getDate() + 7);
+            endDate.setHours(23, 59, 59, 999);
+        }
+
+        const startDateStr = getLocalDateString(startDate);
+        const endDateStr = getLocalDateString(endDate);
+
+        const assignments = await TaskAssign.findAll({
+            where: { user_id: userId },
+            include: [{
+                model: Task,
+                where: { is_deleted: false },
+                include: [
+                    {
+                        model: TaskType,
+                        required: true,
+                        where: {
+                            [Op.and]: [
+                                { start_date: { [Op.lte]: `${endDateStr} 23:59:59` } },
+                                {
+                                    [Op.or]: [
+                                        { end_date: { [Op.gte]: `${startDateStr} 00:00:00` } },
+                                        { end_date: null }
+                                    ]
+                                }
+                            ]
+                        }
+                    },
+                    { model: Venue, attributes: ['name', 'location'], required: false },
+                    { model: Resource, attributes: ['name'], required: false },
+                    {
+                        model: User,
+                        as: 'Creator',
+                        attributes: ['user_id', 'role'],
+                        include: [
+                            { model: AuthAccount, attributes: ['email'], required: false },
+                            { model: Student, attributes: ['name'], required: false },
+                            { model: Faculty, attributes: ['name'], required: false },
+                            { model: Staff, attributes: ['name'], required: false },
+                            { model: RoleUser, attributes: ['name'], required: false }
+                        ]
+                    }
+                ]
+            }]
+        });
+
+        const schedule = {};
+
+        const isOccurrence = (targetDateStr, tStart, tEnd, recurrence) => {
+            const startStr = getLocalDateString(tStart);
+            const endStr = tEnd ? getLocalDateString(tEnd) : null;
+
+            if (targetDateStr < startStr) return false;
+            if (endStr && targetDateStr > endStr) return false;
+
+            if (recurrence === 'none') return targetDateStr === startStr;
+            if (recurrence === 'daily') return true;
+
+            const targetDate = new Date(`${targetDateStr}T00:00:00`);
+            const startDate = new Date(`${startStr}T00:00:00`);
+
+            if (recurrence === 'weekly') return targetDate.getDay() === startDate.getDay();
+            if (recurrence === 'monthly') return targetDate.getDate() === startDate.getDate();
+            return false;
+        };
+
+        assignments.forEach(a => {
+            const task = a.Task;
+            const creator = task.Creator;
+            const creatorDetails = creator?.Student || creator?.Faculty || creator?.Staff || creator?.RoleUser;
+
+            let creatorName = creatorDetails?.name;
+            if (!creatorName && creator?.role?.toLowerCase() === 'admin') creatorName = 'Administrator';
+
+            task.TaskTypes.forEach(taskType => {
+                let current = new Date(startDate);
+                // Important: reset current to local midnight for iteration
+                current.setHours(0, 0, 0, 0);
+
+                while (current <= endDate) {
+                    const currentStr = getLocalDateString(current);
+                    if (isOccurrence(currentStr, taskType.start_date, taskType.end_date, taskType.recurrence)) {
+                        if (!schedule[currentStr]) schedule[currentStr] = [];
+
+                        schedule[currentStr].push({
+                            assignment_id: a.id,
+                            task_id: task.task_id,
+                            title: task.title,
+                            description: task.description,
+                            category: task.category,
+                            priority: task.priority,
+                            status: a.status,
+                            score: parseFloat(task.score || 0),
+                            penalty: parseFloat(task.penalty_per_hour || 0),
+                            flags: {
+                                is_package: task.is_package,
+                                is_mandatory: task.is_mandatory,
+                                is_document: task.is_document,
+                                is_approved: task.is_approved
+                            },
+                            timing: {
+                                start_time: taskType.start_time,
+                                end_time: taskType.end_time,
+                                recurrence: taskType.recurrence
+                            },
+                            location: task.Venue ? { name: task.Venue.name, location: task.Venue.location } : null,
+                            resource: task.Resource ? { name: task.Resource.name } : null,
+                            creator: {
+                                name: creatorName || 'Unknown',
+                                email: creatorDetails?.email || creator?.AuthAccount?.email || 'N/A'
+                            }
+                        });
+                    }
+                    current.setDate(current.getDate() + 1);
+                }
+            });
+        });
+
+        Object.keys(schedule).forEach(dKey => {
+            schedule[dKey].sort((b, c) => (b.timing.start_time || '').localeCompare(c.timing.start_time || ''));
+        });
+
+        if (date) {
+            res.json({
+                date,
+                count: (schedule[date] || []).length,
+                tasks: schedule[date] || []
+            });
+        } else {
+            res.json({
+                mode: 'Range',
+                range: { start: startDateStr, end: endDateStr },
+                schedule
+            });
+        }
+    } catch (error) {
+        console.error('Error in getMonthlySchedule:', error);
+        res.status(500).json({ message: error.message });
+    }
+};
+
+
+// 6. Get Task Detail by ID (Comprehensive - All Details)
+exports.getTaskDetail = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const userId = req.userId;
+        const userRole = req.userRole;
+
+        const { Resource, Venue } = require('../models');
+
+        const task = await Task.findByPk(id, {
+            include: [
+                {
+                    model: TaskType,
+                    attributes: ['id', 'task_name', 'start_date', 'end_date', 'start_time', 'end_time', 'time_quota_hours', 'venue_id', 'recurrence']
+                },
+                {
+                    model: Venue,
+                    attributes: ['venue_id', 'name', 'venue_type', 'location', 'description', 'image_url'],
+                    required: false
+                },
+                {
+                    model: Resource,
+                    attributes: ['resource_id', 'name', 'description'],
+                    required: false
+                },
+                {
+                    model: User,
+                    as: 'Creator',
+                    attributes: ['user_id', 'role'],
+                    required: false,
+                    include: [
+                        { model: Student, attributes: ['name', 'email'], required: false },
+                        { model: Faculty, attributes: ['name', 'email'], required: false },
+                        { model: Staff, attributes: ['name', 'email'], required: false },
+                        { model: RoleUser, attributes: ['name', 'email'], required: false },
+                        { model: AuthAccount, attributes: ['email'], required: false }
+                    ]
+                },
+                {
+                    model: User,
+                    as: 'Approver',
+                    attributes: ['user_id', 'role'],
+                    required: false,
+                    include: [
+                        { model: Student, attributes: ['name', 'email'], required: false },
+                        { model: Faculty, attributes: ['name', 'email'], required: false },
+                        { model: Staff, attributes: ['name', 'email'], required: false },
+                        { model: RoleUser, attributes: ['name', 'email'], required: false },
+                        { model: AuthAccount, attributes: ['email'], required: false }
+                    ]
+                },
+                {
+                    model: Faculty,
+                    attributes: ['user_id', 'name', 'email', 'department_id'],
+                    required: false
+                },
+                {
+                    model: TaskAssign,
+                    required: false,
+                    include: [
+                        {
+                            model: User,
+                            attributes: ['user_id', 'role'],
+                            required: false,
+                            include: [
+                                { model: Student, attributes: ['name', 'email', 'department_id', 'year'], required: false },
+                                { model: Faculty, attributes: ['name', 'email', 'department_id'], required: false },
+                                { model: Staff, attributes: ['name', 'email'], required: false },
+                                { model: RoleUser, attributes: ['name', 'email'], required: false },
+                                { model: AuthAccount, attributes: ['email'], required: false }
+                            ]
+                        }
+                    ]
+                }
+            ]
+        });
+
+        if (!task) {
+            return res.status(404).json({ message: 'Task not found' });
+        }
+
+        // Check if user has permission to view this task
+        const canView =
+            userRole === 'admin' ||
+            task.creator_id === userId ||
+            task.TaskAssigns?.some(a => a.user_id === userId);
+
+        if (!canView) {
+            return res.status(403).json({ message: 'You do not have permission to view this task' });
+        }
+
+        // Format creator info
+        let creatorInfo = null;
+        if (task.Creator) {
+            const creatorDetails = task.Creator.Student || task.Creator.Faculty ||
+                task.Creator.Staff || task.Creator.RoleUser;
+
+            let name = creatorDetails?.name;
+            const email = creatorDetails?.email || task.Creator.AuthAccount?.email;
+
+            if (!name) {
+                if (task.Creator.role?.toLowerCase() === 'admin') {
+                    name = 'Administrator';
+                } else {
+                    name = 'Unknown User';
+                }
+            }
+
+            creatorInfo = {
+                user_id: task.Creator.user_id,
+                role: task.Creator.role,
+                name: name,
+                email: email || 'Unknown'
+            };
+        }
+
+        // Format approver info
+        let approverInfo = null;
+        if (task.Approver) {
+            const approverDetails = task.Approver.Student || task.Approver.Faculty ||
+                task.Approver.Staff || task.Approver.RoleUser;
+
+            let name = approverDetails?.name;
+            const email = approverDetails?.email || task.Approver.AuthAccount?.email;
+
+            if (!name) {
+                if (task.Approver.role?.toLowerCase() === 'admin') {
+                    name = 'Administrator';
+                } else {
+                    name = 'Unknown User';
+                }
+            }
+
+            approverInfo = {
+                user_id: task.Approver.user_id,
+                role: task.Approver.role,
+                name: name,
+                email: email || 'Unknown'
+            };
+        }
+
+        // Format faculty info (if task is faculty-specific)
+        let facultyInfo = null;
+        if (task.Faculty) {
+            facultyInfo = {
+                user_id: task.Faculty.user_id,
+                name: task.Faculty.name,
+                email: task.Faculty.email,
+                department_id: task.Faculty.department_id
+            };
+        }
+
+        // Format assignees
+        const assignees = task.TaskAssigns?.map(assign => {
+            const userDetails = assign.User?.Student || assign.User?.Faculty ||
+                assign.User?.Staff || assign.User?.RoleUser;
+
+            let name = userDetails?.name;
+            const email = userDetails?.email || assign.User?.AuthAccount?.email;
+
+            if (!name) {
+                if (assign.User?.role?.toLowerCase() === 'admin') {
+                    name = 'Administrator';
+                } else {
+                    name = 'Unknown User';
+                }
+            }
+
+            return {
+                assignment_id: assign.id,
+                user_id: assign.user_id,
+                role: assign.User?.role || 'Unknown',
+                name: name,
+                email: email || 'Unknown',
+                department_id: userDetails?.department_id || null,
+                year: userDetails?.year || null,
+                status: assign.status,
+                accepted_at: assign.accepted_at,
+                completed_at: assign.completed_at,
+                submitted_time: assign.submitted_time,
+                proof: assign.proof,
+                earned_score: parseFloat(assign.earned_score || 0),
+                penalty_applied: parseFloat(assign.penalty_applied || 0),
+                is_pause_approved: assign.is_pause_approved,
+                pause_start: assign.pause_start,
+                pause_end: assign.pause_end
+            };
+        }) || [];
+
+        // Calculate statistics
+        const totalAssignees = assignees.length;
+        const acceptedCount = assignees.filter(a => a.status === 'accepted').length;
+        const completedCount = assignees.filter(a => a.status === 'completed').length;
+        const pendingCount = assignees.filter(a => a.status === 'pending').length;
+        const rejectedCount = assignees.filter(a => a.status === 'rejected').length;
+
+        // Task response
+        const response = {
+            task_id: task.task_id,
+            title: task.title,
+            description: task.description,
+            category: task.category,
+            priority: task.priority,
+            status: task.status,
+
+            // Scores and Penalties
+            score: parseFloat(task.score || 0),
+            penalty_per_hour: parseFloat(task.penalty_per_hour || 0),
+
+            // Flags
+            is_package: task.is_package,
+            is_pause_allowed: task.is_pause_allowed,
+            is_document: task.is_document,
+            is_mandatory: task.is_mandatory,
+            is_approved: task.is_approved,
+            is_faculty: task.is_faculty,
+            is_deleted: task.is_deleted,
+            is_escalate: task.is_escalate,
+
+            // Related IDs
+            venue_id: task.venue_id,
+            resource_id: task.resource_id,
+            creator_id: task.creator_id,
+            approver_id: task.approver_id,
+            faculty_id: task.faculty_id,
+
+            // Related Details
+            creator: creatorInfo,
+            approver: approverInfo,
+            faculty: facultyInfo,
+            venue: task.Venue ? {
+                venue_id: task.Venue.venue_id,
+                name: task.Venue.name,
+                venue_type: task.Venue.venue_type,
+                location: task.Venue.location,
+                description: task.Venue.description,
+                image_url: task.Venue.image_url
+            } : null,
+            resource: task.Resource ? {
+                resource_id: task.Resource.resource_id,
+                name: task.Resource.name,
+                description: task.Resource.description
+            } : null,
+
+            // Task Type Details
+            task_types: task.TaskTypes?.map(tt => ({
+                id: tt.id,
+                task_name: tt.task_name,
+                start_date: tt.start_date,
+                end_date: tt.end_date,
+                start_time: tt.start_time,
+                end_time: tt.end_time,
+                time_quota_hours: tt.time_quota_hours,
+                venue_id: tt.venue_id,
+                recurrence: tt.recurrence
+            })) || [],
+
+            // Assignees
+            assignees: assignees,
+
+            // Assignment Statistics
+            assignment_stats: {
+                total: totalAssignees,
+                pending: pendingCount,
+                accepted: acceptedCount,
+                completed: completedCount,
+                rejected: rejectedCount
+            },
+
+            // Timestamps
+            created_at: task.created_at,
+            updated_at: task.updated_at
+        };
+
+        res.json(response);
+
+    } catch (error) {
+        console.error('Error in getTaskDetail:', error);
         res.status(500).json({ message: error.message });
     }
 };

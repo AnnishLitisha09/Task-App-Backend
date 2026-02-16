@@ -47,6 +47,10 @@ module.exports = (sequelize, DataTypes) => {
       type: DataTypes.DECIMAL(10, 2),
       defaultValue: 0
     },
+    total_score: {
+      type: DataTypes.DECIMAL(10, 2),
+      defaultValue: 0
+    },
     penalty: {
       type: DataTypes.DECIMAL(10, 2),
       defaultValue: 0

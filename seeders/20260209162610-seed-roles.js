@@ -32,6 +32,12 @@ module.exports = {
         scope_id: 2, // Institution
         created_at: new Date(),
         updated_at: new Date()
+      },
+      {
+        user_role: 'PRINCIPAL',
+        scope_id: 2, // Institution
+        created_at: new Date(),
+        updated_at: new Date()
       }
     ]);
   },

@@ -399,53 +399,442 @@ exports.getFacultyByDepartment = async (req, res) => {
     }
 };
 
+exports.getStudentsByFaculty = async (req, res) => {
+    try {
+        const userId = req.userId; // From verifyToken middleware
+
+        // 1. Find the faculty record for this user
+        const faculty = await Faculty.findOne({ where: { user_id: userId } });
+        if (!faculty) {
+            return res.status(404).json({ message: 'Faculty profile not found' });
+        }
+
+        // 2. Find all students assigned to this faculty
+        const students = await Student.findAll({
+            where: { faculty_id: faculty.id },
+            include: [{ model: Department, attributes: ['name'] }]
+        });
+
+        res.json(students);
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+exports.getFacultyDetailsWithStudents = async (req, res) => {
+    try {
+        const userId = req.userId; // From verifyToken middleware
+
+        // 1. Find the faculty record with Department
+        const faculty = await Faculty.findOne({
+            where: { user_id: userId },
+            include: [{ model: Department, attributes: ['name'] }]
+        });
+
+        if (!faculty) {
+            return res.status(404).json({ message: 'Faculty profile not found' });
+        }
+
+        // 2. Find all students assigned to this faculty
+        const students = await Student.findAll({
+            where: { faculty_id: faculty.id },
+            attributes: ['user_id', 'reg_no', 'name', 'email', 'year', 'c_gpa', 'score', 'penalty'],
+            include: [{ model: Department, attributes: ['name'] }]
+        });
+
+        // 3. Construct response
+        const response = {
+            faculty_info: {
+                id: faculty.id,
+                name: faculty.name,
+                email: faculty.email,
+                reg_no: faculty.reg_no,
+                department: faculty.Department ? faculty.Department.name : 'N/A',
+                type: faculty.type,
+                score: faculty.score,
+                total_score: faculty.total_score,
+                penalty: faculty.penalty
+            },
+            assigned_students: students,
+            student_count: students.length
+        };
+
+        res.json(response);
+
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+exports.getFacultyDailyStats = async (req, res) => {
+    try {
+        const userId = req.userId; // From verifyToken middleware
+        const { Op } = require('sequelize');
+
+        // 1. Get faculty profile with department
+        const faculty = await Faculty.findOne({
+            where: { user_id: userId },
+            include: [{ model: Department, attributes: ['name'] }]
+        });
+
+        if (!faculty) {
+            return res.status(404).json({ message: 'Faculty profile not found' });
+        }
+
+        // 2. Count mentee students
+        const menteeCount = await Student.count({
+            where: { faculty_id: faculty.id }
+        });
+
+        // 3. Get today's date range (start and end of today)
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const tomorrow = new Date(today);
+        tomorrow.setDate(tomorrow.getDate() + 1);
+
+        const TaskAssign = require('../models').TaskAssign;
+        const Task = require('../models').Task;
+        const TaskType = require('../models').TaskType;
+
+        // 4. Fetch ALL "Pending" Tasks (Assignments waiting for acceptance, ANY date)
+        const allPendingAssignments = await TaskAssign.findAll({
+            where: {
+                user_id: userId,
+                status: 'pending' // Status in TaskAssign table
+            },
+            include: [{
+                model: Task,
+                where: { is_deleted: false },
+                include: [{ model: TaskType }]
+            }],
+            order: [['created_at', 'ASC']]
+        });
+
+        // Filter expired pending tasks (Start Time < Now)
+        const now = new Date();
+        const pendingAssignments = allPendingAssignments.filter(assignment => {
+            const task = assignment.Task;
+            const taskType = task.TaskTypes && task.TaskTypes[0];
+
+            if (!taskType) return false; // Or return true to be safe? But usually task has type.
+
+            let startDateTime = null;
+
+            // Logic to determine Start DateTime based on Task Type
+            if (taskType.task_name === 'Fixed Time Task' || taskType.task_name === 'Meeting') {
+                if (taskType.start_date && taskType.start_time) {
+                    // Combine date and time
+                    const dateStr = new Date(taskType.start_date).toISOString().split('T')[0];
+                    const timeStr = taskType.start_time; // format HH:mm:ss
+                    startDateTime = new Date(`${dateStr}T${timeStr}`);
+                } else if (taskType.start_date) {
+                    startDateTime = new Date(taskType.start_date);
+                }
+            } else if (taskType.start_date) {
+                // Other types with date
+                startDateTime = new Date(taskType.start_date);
+            }
+
+            // If start time is in the future, include it. If null, include it (safe default).
+            if (startDateTime && startDateTime > now) {
+                return true;
+            }
+            if (!startDateTime) return true; // Keep tasks without start time just in case
+
+            return false;
+        });
+
+        // 5. Fetch "Scheduled Today" Tasks (Assignments created today AND Accepted/Completed)
+        const todayApprovedAssignments = await TaskAssign.findAll({
+            where: {
+                user_id: userId,
+                status: { [Op.in]: ['accepted', 'completed'] }, // Only show if approved/accepted/completed
+                created_at: {
+                    [Op.gte]: today,
+                    [Op.lt]: tomorrow
+                }
+            },
+            include: [{
+                model: Task,
+                where: { is_deleted: false },
+                include: [{ model: TaskType }]
+            }]
+        });
+
+        const totalTasksToday = todayApprovedAssignments.length;
+        const pendingCount = pendingAssignments.length;
+
+        // 6. Format Approved/Today Tasks
+        const allTasksDetails = todayApprovedAssignments.map(assignment => ({
+            assignment_id: assignment.id,
+            task_id: assignment.Task.task_id,
+            title: assignment.Task.title,
+            description: assignment.Task.description,
+            category: assignment.Task.category,
+            priority: assignment.Task.priority,
+            score: assignment.Task.score,
+            penalty_per_hour: assignment.Task.penalty_per_hour,
+            is_approved: assignment.Task.is_approved,
+            status: assignment.status,
+            task_type: assignment.Task.TaskTypes && assignment.Task.TaskTypes[0]
+                ? {
+                    name: assignment.Task.TaskTypes[0].task_name,
+                    start_date: assignment.Task.TaskTypes[0].start_date,
+                    end_date: assignment.Task.TaskTypes[0].end_date,
+                    start_time: assignment.Task.TaskTypes[0].start_time,
+                    end_time: assignment.Task.TaskTypes[0].end_time
+                }
+                : null,
+            assigned_at: assignment.created_at
+        }));
+
+        // 7. Format Pending Tasks
+        const pendingTaskDetails = pendingAssignments.map(assignment => ({
+            assignment_id: assignment.id,
+            task_id: assignment.Task.task_id,
+            title: assignment.Task.title,
+            description: assignment.Task.description,
+            category: assignment.Task.category,
+            priority: assignment.Task.priority,
+            score: assignment.Task.score,
+            penalty_per_hour: assignment.Task.penalty_per_hour,
+            is_approved: assignment.Task.is_approved,
+            status: assignment.status,
+            task_type: assignment.Task.TaskTypes && assignment.Task.TaskTypes[0]
+                ? {
+                    name: assignment.Task.TaskTypes[0].task_name,
+                    start_date: assignment.Task.TaskTypes[0].start_date,
+                    end_date: assignment.Task.TaskTypes[0].end_date,
+                    start_time: assignment.Task.TaskTypes[0].start_time,
+                    end_time: assignment.Task.TaskTypes[0].end_time,
+                    venue_id: assignment.Task.TaskTypes[0].venue_id
+                }
+                : null,
+            assigned_at: assignment.created_at
+        }));
+
+        // 8. Construct response
+        const response = {
+            faculty_info: {
+                id: faculty.id,
+                name: faculty.name,
+                email: faculty.email,
+                reg_no: faculty.reg_no,
+                department: faculty.Department ? faculty.Department.name : 'N/A',
+                type: faculty.type
+            },
+            daily_stats: {
+                date: new Date(new Date().getTime() - (new Date().getTimezoneOffset() * 60000)).toISOString().split('T')[0],
+                total_tasks_assigned_today: totalTasksToday,
+                pending_tasks_count: pendingCount,
+                mentee_students_count: menteeCount
+            },
+            all_tasks_today: allTasksDetails,
+            pending_tasks: pendingTaskDetails
+        };
+
+        res.json(response);
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+exports.getFacultyTasksByApprovalStatus = async (req, res) => {
+    try {
+        const userId = req.userId;
+        const { approved } = req.query; // 'true' or 'false'
+        const { Op } = require('sequelize');
+
+        if (approved === undefined) {
+            return res.status(400).json({ message: 'Query parameter "approved" is required (true/false)' });
+        }
+
+        const isApproved = approved === 'true';
+
+        // 1. Verify faculty exists
+        const faculty = await Faculty.findOne({ where: { user_id: userId } });
+        if (!faculty) {
+            return res.status(404).json({ message: 'Faculty profile not found' });
+        }
+
+        // 2. Get today's date range
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const tomorrow = new Date(today);
+        tomorrow.setDate(tomorrow.getDate() + 1);
+
+        // 3. Find tasks by approval status for today
+        const TaskAssign = require('../models').TaskAssign;
+        const Task = require('../models').Task;
+        const TaskType = require('../models').TaskType;
+
+        const assignments = await TaskAssign.findAll({
+            where: {
+                user_id: userId,
+                created_at: {
+                    [Op.gte]: today,
+                    [Op.lt]: tomorrow
+                }
+            },
+            include: [{
+                model: Task,
+                where: {
+                    is_deleted: false,
+                    is_approved: isApproved
+                },
+                include: [{ model: TaskType }]
+            }]
+        });
+
+        // 4. Format response
+        const tasks = assignments.map(assignment => ({
+            assignment_id: assignment.id,
+            task_id: assignment.Task.task_id,
+            title: assignment.Task.title,
+            description: assignment.Task.description,
+            category: assignment.Task.category,
+            priority: assignment.Task.priority,
+            score: assignment.Task.score,
+            penalty_per_hour: assignment.Task.penalty_per_hour,
+            is_approved: assignment.Task.is_approved,
+            status: assignment.status,
+            task_type: assignment.Task.TaskTypes && assignment.Task.TaskTypes[0]
+                ? {
+                    name: assignment.Task.TaskTypes[0].task_name,
+                    start_date: assignment.Task.TaskTypes[0].start_date,
+                    end_date: assignment.Task.TaskTypes[0].end_date,
+                    start_time: assignment.Task.TaskTypes[0].start_time,
+                    end_time: assignment.Task.TaskTypes[0].end_time
+                }
+                : null,
+            assigned_at: assignment.created_at
+        }));
+
+        res.json({
+            filter: { approved: isApproved, date: today.toISOString().split('T')[0] },
+            count: tasks.length,
+            tasks
+        });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
 // Helper: Get full profile details by user ID and role
 const getFullProfile = async (id, role) => {
     let userDetails = null;
 
-    switch (role) {
+    switch (role?.toLowerCase()) {
         case 'student':
             userDetails = await Student.findOne({
                 where: { user_id: id },
                 include: [
                     { model: Department },
-                    { model: Faculty, attributes: ['name', 'email'] }
+                    { model: Faculty, attributes: ['id', 'name', 'email', 'reg_no'] },
+                    { model: AuthAccount, attributes: ['email'] }
                 ]
             });
             break;
         case 'faculty':
             userDetails = await Faculty.findOne({
                 where: { user_id: id },
-                include: [Department]
+                include: [Department, { model: AuthAccount, attributes: ['email'] }]
             });
+            // Fetch assigned students (mentees)
+            if (userDetails) {
+                const mentees = await Student.findAll({
+                    where: { faculty_id: userDetails.id },
+                    attributes: ['user_id', 'reg_no', 'name', 'email', 'year', 'c_gpa', 'score', 'total_score', 'penalty'],
+                    include: [{ model: Department, attributes: ['name'] }]
+                });
+                userDetails = userDetails.toJSON();
+                userDetails.mentees = mentees;
+                userDetails.mentee_count = mentees.length;
+            }
             break;
         case 'staff':
-            userDetails = await Staff.findOne({ where: { user_id: id } });
+            userDetails = await Staff.findOne({
+                where: { user_id: id },
+                include: [{ model: AuthAccount, attributes: ['email'] }]
+            });
             break;
         case 'role-user':
             userDetails = await RoleUser.findOne({
                 where: { user_id: id },
-                // Include Role Assignments, Roles, Departments, and Venues
-                include: [{
-                    model: User,
-                    include: [{
-                        model: RoleAssignment,
-                        include: [Role, Department, { model: Venue, as: 'Venue' }]
-                    }]
-                }]
+                include: [{ model: AuthAccount, attributes: ['email'] }]
             });
-            // Flatten for better response if needed, but for now include:
-            const ra = await RoleAssignment.findAll({
+
+            // Fetch generic Role Assignments
+            const roleAssignments = await RoleAssignment.findAll({
                 where: { user_id: id },
-                include: [Role, Department, { model: Venue, as: 'Venue' }]
+                include: [
+                    { model: Role, attributes: ['user_role'] },
+                    { model: Department, attributes: ['name'] },
+                    { model: Venue, as: 'Venue', attributes: ['name', 'location'] }
+                ]
             });
+
             if (userDetails) {
                 userDetails = userDetails.toJSON();
-                userDetails.RoleAssignments = ra;
+
+                // Process counting for HOD / Principal
+                const enhancedAssignments = await Promise.all(roleAssignments.map(async (ra) => {
+                    const roleName = ra.Role?.user_role;
+                    let stats = null;
+
+                    if (roleName === 'HOD' && ra.department_id) {
+                        const facultyCount = await Faculty.count({ where: { department_id: ra.department_id } });
+                        const studentCount = await Student.count({ where: { department_id: ra.department_id } });
+                        stats = { faculty_count: facultyCount, student_count: studentCount };
+                    } else if (roleName === 'PRINCIPAL') {
+                        const totalStudents = await Student.count();
+                        const totalFaculty = await Faculty.count();
+                        const totalStaff = await Staff.count();
+                        const totalHods = await RoleAssignment.count({
+                            include: [{ model: Role, where: { user_role: 'HOD' } }]
+                        });
+                        stats = {
+                            total_students: totalStudents,
+                            total_faculty: totalFaculty,
+                            total_staff: totalStaff,
+                            total_hods: totalHods
+                        };
+                    }
+
+                    return {
+                        role: roleName,
+                        department: ra.Department?.name || 'N/A',
+                        venue: ra.Venue?.name || 'N/A',
+                        venue_location: ra.Venue?.location || 'N/A',
+                        stats: stats
+                    };
+                }));
+
+                userDetails.role_assignments = enhancedAssignments;
             }
             break;
         case 'admin':
-            userDetails = { name: "Admin", email: "admin@example.com" };
+            const adminUser = await User.findByPk(id, {
+                include: [{ model: AuthAccount, attributes: ['email'] }]
+            });
+            const totalStudents = await Student.count();
+            const totalFaculty = await Faculty.count();
+            const totalStaff = await Staff.count();
+            const totalHods = await RoleAssignment.count({
+                include: [{ model: Role, where: { user_role: 'HOD' } }]
+            });
+            userDetails = {
+                user_id: id,
+                name: "Administrator",
+                email: adminUser?.AuthAccount?.email || "admin@taskapp.com",
+                role: 'admin',
+                stats: {
+                    total_students: totalStudents,
+                    total_faculty: totalFaculty,
+                    total_staff: totalStaff,
+                    total_hods: totalHods
+                }
+            };
             break;
         default:
             break;
@@ -671,6 +1060,200 @@ exports.getAllIncharges = async (req, res) => {
         });
 
         res.json(Array.from(inchargeMap.values()));
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+exports.getUnifiedUsers = async (req, res) => {
+    try {
+        const { role, department_id } = req.query;
+
+        if (!role) {
+            return res.status(400).json({ message: 'Role is required' });
+        }
+
+        let users = [];
+
+        if (role === 'student') {
+            const whereClause = {};
+            if (department_id) whereClause.department_id = department_id;
+
+            users = await Student.findAll({
+                where: whereClause,
+                attributes: ['user_id', 'name', 'email', 'reg_no', 'score', 'total_score', 'penalty', 'department_id'],
+                include: [{ model: Department, attributes: ['name'] }]
+            });
+        } else if (role === 'faculty') {
+            const whereClause = {};
+            if (department_id) whereClause.department_id = department_id;
+
+            users = await Faculty.findAll({
+                where: whereClause,
+                attributes: ['user_id', 'name', 'email', 'reg_no', 'score', 'total_score', 'penalty', 'department_id', 'type'],
+                include: [{ model: Department, attributes: ['name'] }]
+            });
+        } else if (role === 'staff') {
+            users = await Staff.findAll({
+                attributes: ['user_id', 'name', 'email', 'designation', 'score', 'total_score', 'penalty']
+            });
+        } else if (role === 'hod') {
+            const hodAssignments = await RoleAssignment.findAll({
+                where: {
+                    '$Role.user_role$': 'HOD',
+                    ...(department_id && { department_id })
+                },
+                include: [
+                    { model: Role, attributes: ['user_role'] },
+                    { model: Department, attributes: ['name'] },
+                    {
+                        model: User,
+                        required: true,
+                        include: [{ model: RoleUser, required: true }]
+                    }
+                ]
+            });
+
+            users = hodAssignments.map(ra => {
+                const profile = ra.User?.RoleUser;
+                return {
+                    user_id: ra.user_id,
+                    name: profile ? profile.name : 'Unknown',
+                    email: profile ? profile.email : 'Unknown',
+                    department: ra.Department?.name || 'N/A',
+                    score: profile ? profile.score : 0,
+                    total_score: profile ? profile.total_score : 0,
+                    penalty: profile ? profile.penalty : 0,
+                    role: 'HOD'
+                };
+            });
+        } else if (role === 'incharge') {
+            // Logic for incharges (assuming they are RoleUsers)
+            const inchargeAssignments = await RoleAssignment.findAll({
+                where: {
+                    [Op.or]: [
+                        { venue_id: { [Op.not]: null } },
+                        { '$Role.user_role$': { [Op.not]: 'HOD' } }
+                    ]
+                },
+                include: [
+                    { model: Role, attributes: ['user_role'] },
+                    { model: Venue, as: 'Venue', attributes: ['name'] },
+                    { model: Department, attributes: ['name'] },
+                    {
+                        model: User,
+                        required: true,
+                        include: [{ model: RoleUser, required: true }]
+                    }
+                ]
+            });
+
+            // Map to unique users with scores
+            const userMap = new Map();
+            inchargeAssignments.forEach(ra => {
+                if (ra.Role?.user_role === 'HOD' && !ra.venue_id) return;
+
+                const profile = ra.User?.RoleUser;
+                if (!profile) return;
+
+                if (!userMap.has(ra.user_id)) {
+                    userMap.set(ra.user_id, {
+                        user_id: ra.user_id,
+                        name: profile.name,
+                        email: profile.email,
+                        score: profile.score,
+                        total_score: profile.total_score,
+                        penalty: profile.penalty,
+                        role: ra.Role?.user_role || 'Incharge',
+                        department: ra.Department?.name || 'N/A',
+                        venue: ra.Venue?.name || 'N/A'
+                    });
+                }
+            });
+            users = Array.from(userMap.values());
+        } else {
+            return res.status(400).json({ message: 'Invalid role specified' });
+        }
+
+        res.json(users);
+
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+exports.getAllUsersByDepartment = async (req, res) => {
+    try {
+        // 1. Get all departments
+        const departments = await Department.findAll({
+            attributes: ['department_id', 'name'],
+            order: [['name', 'ASC']]
+        });
+
+        const result = {
+            students: {},
+            faculty: {},
+            hods: {},
+            staff: []
+        };
+
+        // 2. For each department, fetch students, faculty, and HODs
+        for (const dept of departments) {
+            const deptName = dept.name;
+
+            // Get students for this department
+            const students = await Student.findAll({
+                where: { department_id: dept.department_id },
+                attributes: ['user_id', 'reg_no', 'name', 'email', 'year', 'c_gpa', 'score', 'total_score', 'penalty'],
+                order: [['name', 'ASC']]
+            });
+            result.students[deptName] = students;
+
+            // Get faculty for this department
+            const faculty = await Faculty.findAll({
+                where: { department_id: dept.department_id },
+                attributes: ['user_id', 'id', 'reg_no', 'name', 'email', 'type', 'score', 'total_score', 'penalty'],
+                order: [['name', 'ASC']]
+            });
+            result.faculty[deptName] = faculty;
+
+            // Get HODs for this department
+            const hodRole = await Role.findOne({ where: { user_role: 'HOD' } });
+            if (hodRole) {
+                const hodAssignments = await RoleAssignment.findAll({
+                    where: {
+                        role_id: hodRole.role_id,
+                        department_id: dept.department_id
+                    },
+                    include: [{
+                        model: User,
+                        required: true,
+                        include: [{
+                            model: RoleUser,
+                            required: true,
+                            attributes: ['name', 'email']
+                        }]
+                    }]
+                });
+
+                result.hods[deptName] = hodAssignments.map(assignment => ({
+                    user_id: assignment.user_id,
+                    name: assignment.User?.RoleUser?.name || 'N/A',
+                    email: assignment.User?.RoleUser?.email || 'N/A'
+                }));
+            } else {
+                result.hods[deptName] = [];
+            }
+        }
+
+        // 3. Get all staff (grouped by designation)
+        const staff = await Staff.findAll({
+            attributes: ['user_id', 'name', 'email', 'designation'],
+            order: [['designation', 'ASC'], ['name', 'ASC']]
+        });
+        result.staff = staff;
+
+        res.json(result);
     } catch (error) {
         res.status(500).json({ message: error.message });
     }

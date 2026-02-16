@@ -1,0 +1,43 @@
+﻿--- START DEBUGGING TASK CREATION ---
+Executing (default): SELECT `user_id`, `role`, `status`, `created_at`, `deleted_at` FROM `users` AS `User` WHERE `User`.`role` = 'admin' LIMIT 1;
+Executing (default): SELECT `user_id`, `role`, `status`, `created_at`, `deleted_at` FROM `users` AS `User` WHERE `User`.`role` = 'faculty' LIMIT 1;
+
+
+=== SCENARIO 1: Simulating as ADMIN (User ID: 1) ===
+Creator: User 1 (admin)
+Processing Groups: [{"role":"FACULTY","department_id":5}]
+  - Checking group Role: FACULTY, Dept: 5
+Executing (default): SELECT `id`, `user_id`, `reg_no`, `department_id`, `name`, `email`, `type`, `score`, `total_score`, `penalty`, `created_at`, `updated_at`, `deleted_at`, `created_at` AS `createdAt`, `updated_at` AS `updatedAt`, `deleted_at` AS `deletedAt` FROM `faculties` AS `Faculty` WHERE (`Faculty`.`deleted_at` IS NULL AND `Faculty`.`department_id` = 5);
+    > Found 1 users in this group.
+    > First user in group: GroupUser ID 40
+Processing Specific IDs: [40]
+
+Potential Assignees (Candidates): [40]
+Checking Permissions (canAssignTo)...
+Executing (default): SELECT `user_id`, `role`, `status`, `created_at`, `deleted_at` FROM `users` AS `User` WHERE `User`.`user_id` = 40;
+Executing (default): SELECT `user_id`, `role`, `status`, `created_at`, `deleted_at` FROM `users` AS `User` WHERE `User`.`user_id` = 1;
+Executing (default): SELECT `user_id`, `role`, `status`, `created_at`, `deleted_at` FROM `users` AS `User` WHERE `User`.`user_id` = 40;
+  - Assigning to User 40: ALLOWED
+
+Final Valid Assignments Count: 1
+  -> RESULT: Assignments would be inserted.
+
+
+=== SCENARIO 2: Simulating as FACULTY (User ID: 5) ===
+Creator: User 5 (faculty)
+Processing Groups: [{"role":"FACULTY","department_id":5}]
+  - Checking group Role: FACULTY, Dept: 5
+Executing (default): SELECT `id`, `user_id`, `reg_no`, `department_id`, `name`, `email`, `type`, `score`, `total_score`, `penalty`, `created_at`, `updated_at`, `deleted_at`, `created_at` AS `createdAt`, `updated_at` AS `updatedAt`, `deleted_at` AS `deletedAt` FROM `faculties` AS `Faculty` WHERE (`Faculty`.`deleted_at` IS NULL AND `Faculty`.`department_id` = 5);
+    > Found 1 users in this group.
+    > First user in group: GroupUser ID 40
+Processing Specific IDs: [40]
+
+Potential Assignees (Candidates): [40]
+Checking Permissions (canAssignTo)...
+Executing (default): SELECT `user_id`, `role`, `status`, `created_at`, `deleted_at` FROM `users` AS `User` WHERE `User`.`user_id` = 40;
+Executing (default): SELECT `user_id`, `role`, `status`, `created_at`, `deleted_at` FROM `users` AS `User` WHERE `User`.`user_id` = 5;
+Executing (default): SELECT `user_id`, `role`, `status`, `created_at`, `deleted_at` FROM `users` AS `User` WHERE `User`.`user_id` = 40;
+  - Assigning to User 40: DENIED
+
+Final Valid Assignments Count: 0
+  -> RESULT: Task would be created but NO assignments made (Task Assign Table Empty).

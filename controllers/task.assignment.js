@@ -54,9 +54,7 @@ const canAssignTo = async (assignerId, assigneeId) => {
     }
 
     // Faculty can assign to Incharge and Students
-    if (assignerRole === 'faculty') {
-        return ['role-user', 'student'].includes(assigneeRole);
-    }
+    return ['role-user', 'student', 'faculty'].includes(assigneeRole);
 
     // Incharge can assign to Staff
     if (assignerRole === 'role-user') {

@@ -10,6 +10,9 @@ module.exports = (sequelize, DataTypes) => {
       User.hasOne(models.Staff, { foreignKey: 'user_id' });
       User.hasOne(models.RoleUser, { foreignKey: 'user_id' });
       User.hasMany(models.RoleAssignment, { foreignKey: 'user_id' });
+      User.hasMany(models.TaskEscalation, { foreignKey: 'creator_id', as: 'CreatorEscalations' });
+      User.hasMany(models.TaskEscalation, { foreignKey: 'rejected_user_id', as: 'RejectionEscalations' });
+      User.hasOne(models.AuthAccount, { foreignKey: 'user_id' });
     }
   }
 

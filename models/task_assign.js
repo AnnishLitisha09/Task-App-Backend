@@ -19,6 +19,8 @@ module.exports = (sequelize, DataTypes) => {
     submitted_time: { type: DataTypes.DATE, allowNull: true },
     accepted_at: { type: DataTypes.DATE, allowNull: true },
     rejected_at: { type: DataTypes.DATE, allowNull: true },
+    earned_score: { type: DataTypes.DECIMAL(10, 2), defaultValue: 0 },
+    penalty_applied: { type: DataTypes.DECIMAL(10, 2), defaultValue: 0 },
     created_at: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
     updated_at: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
     deleted_at: { type: DataTypes.DATE, allowNull: true }

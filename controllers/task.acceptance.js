@@ -1,4 +1,4 @@
-const { Task, TaskAssign, TaskType, User } = require('../models');
+const { Task, TaskAssign, TaskType, User, TaskEscalation } = require('../models');
 
 // Accept assigned task
 exports.acceptTask = async (req, res) => {
@@ -24,6 +24,7 @@ exports.acceptTask = async (req, res) => {
 
         // Update assignment
         await assignment.update({
+            status: 'accepted',
             accepted_at: new Date()
         });
 
@@ -31,7 +32,7 @@ exports.acceptTask = async (req, res) => {
             message: 'Task accepted successfully',
             assignment: {
                 task_id: assignment.task_id,
-                status: assignment.status,
+                status: 'accepted',
                 accepted_at: assignment.accepted_at
             }
         });
@@ -59,7 +60,7 @@ exports.rejectTask = async (req, res) => {
         const assignment = await TaskAssign.findOne({
             where: { task_id: taskId, user_id: userId },
             include: [
-                { model: Task },
+                { model: Task, include: [{ model: TaskType }] }, // Include TaskType for validation if needed
                 { model: User }
             ]
         });
@@ -88,7 +89,7 @@ exports.rejectTask = async (req, res) => {
         // Update assignment
         await assignment.update({
             status: 'rejected',
-            reason: reason.trim(),
+            reason: reason.trim(), // Save reason
             rejected_at: new Date(),
             submitted_time: new Date()
         });
@@ -98,8 +99,14 @@ exports.rejectTask = async (req, res) => {
             is_escalate: true
         });
 
-        // TODO: Send notification to task creator
-        // await sendRejectionNotification(task.creator_id, user, task, reason);
+        // 6a. Create formal Task Escalation record
+        await TaskEscalation.create({
+            task_id: taskId,
+            reason: reason.trim(),
+            creator_id: task.creator_id,
+            rejected_user_id: userId,
+            status: 'pending'
+        });
 
         res.json({
             message: 'Task rejected successfully',
@@ -126,38 +133,10 @@ const canUserRejectTask = async (task, user) => {
         };
     }
 
-    const userRole = user.role;
-
-    // Students can only reject bidding tasks
-    if (userRole === 'student') {
-        const taskType = await TaskType.findOne({
-            where: { task_id: task.task_id }
-        });
-
-        const isBiddingTask = taskType?.task_name === 'Bidding / Nomination Task';
-
-        if (!isBiddingTask) {
-            return {
-                allowed: false,
-                reason: 'Students cannot reject this type of task'
-            };
-        }
-    }
-
-    // Faculty, role-user, staff can reject non-mandatory tasks
-    if (['faculty', 'role-user', 'staff'].includes(userRole)) {
-        return { allowed: true };
-    }
-
-    // Admin can reject (though shouldn't be assigned tasks typically)
-    if (userRole === 'admin') {
-        return { allowed: true };
-    }
-
-    return {
-        allowed: false,
-        reason: 'You do not have permission to reject this task'
-    };
+    // Everyone can reject non-mandatory tasks
+    // If specific logic is needed for students, add here. 
+    // Currently allowing everyone based on user request: "everyone want to approve or reject"
+    return { allowed: true };
 };
 
 module.exports = exports;

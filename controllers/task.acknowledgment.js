@@ -1,4 +1,4 @@
-const { Task, TaskAssign, TaskAcknowledgment, User } = require('../models');
+const { Task, TaskAssign, TaskAcknowledgment, User, Student, Faculty, Staff, RoleUser, RoleAssignment, Role } = require('../models');
 const { Op } = require('sequelize');
 
 // Acknowledge today's tasks
@@ -191,6 +191,90 @@ exports.cleanupOldAcknowledgments = async () => {
     } catch (error) {
         console.error('[CRON ERROR] cleanupOldAcknowledgments:', error.message);
         return { error: error.message };
+    }
+};
+
+// Get report of users who haven't acknowledged today (Admin only)
+exports.getUnacknowledgedUsersReport = async (req, res) => {
+    try {
+        const today = new Date().toISOString().split('T')[0];
+
+        // 1. Get all active users who are not admins
+        const users = await User.findAll({
+            where: { role: { [Op.ne]: 'admin' }, status: 'active' },
+            include: [
+                { model: Student, attributes: ['name', 'email', 'department_id', 'year'] },
+                { model: Faculty, attributes: ['name', 'email', 'department_id'] },
+                { model: Staff, attributes: ['name', 'email', 'designation'] },
+                { model: RoleUser, attributes: ['name', 'email'] },
+                {
+                    model: RoleAssignment,
+                    include: [{ model: Role, attributes: ['user_role'] }]
+                }
+            ]
+        });
+
+        // 2. Get all acknowledgments for today
+        const todaysAcks = await TaskAcknowledgment.findAll({
+            where: { acknowledge_date: today, acknowledged_at: { [Op.ne]: null } },
+            attributes: ['user_id']
+        });
+
+        const acknowledgedUserIds = new Set(todaysAcks.map(a => a.user_id));
+
+        // 3. Filter unacknowledged users and categorize
+        const report = {
+            date: today,
+            student: [],
+            faculty: [],
+            staff: [],
+            hod: [],
+            principal: [],
+            incharge: [],
+            others: []
+        };
+
+        for (const user of users) {
+            if (!acknowledgedUserIds.has(user.user_id)) {
+                const details = user.Student || user.Faculty || user.Staff || user.RoleUser;
+                const userData = {
+                    user_id: user.user_id,
+                    role: user.role,
+                    name: details?.name || 'Unknown',
+                    email: details?.email || 'Unknown',
+                    department_id: details?.department_id || null,
+                    year: details?.year || null,
+                    designation: details?.designation || null
+                };
+
+                // Specific categorization for role-users
+                if (user.role === 'role-user') {
+                    const roles = user.RoleAssignments?.map(ra => ra.Role?.user_role?.toLowerCase()) || [];
+                    if (roles.includes('hod')) report.hod.push(userData);
+                    else if (roles.includes('principal')) report.principal.push(userData);
+                    else if (roles.includes('incharge')) report.incharge.push(userData);
+                    else report.others.push(userData);
+                } else if (user.role === 'student') {
+                    report.student.push(userData);
+                } else if (user.role === 'faculty') {
+                    report.faculty.push(userData);
+                } else if (user.role === 'staff') {
+                    report.staff.push(userData);
+                }
+            }
+        }
+
+        res.json({
+            success: true,
+            total_unacknowledged:
+                report.student.length + report.faculty.length + report.staff.length +
+                report.hod.length + report.principal.length + report.incharge.length + report.others.length,
+            report
+        });
+
+    } catch (error) {
+        console.error('Error in getUnacknowledgedUsersReport:', error);
+        res.status(500).json({ message: error.message });
     }
 };
 

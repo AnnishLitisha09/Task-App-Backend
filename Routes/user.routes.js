@@ -23,10 +23,16 @@ router.get('/:id/details', userController.getUserDetails); // Admin viewing spec
 
 // Fetch Lists (Accessible to authenticated users)
 router.get('/students/:deptId', userController.getStudentsByDepartment);
+router.get('/faculty/students', userController.getStudentsByFaculty); // Added for faculty use
+router.get('/faculty/profile', userController.getFacultyDetailsWithStudents); // NEW: Full faculty dashboard details
+router.get('/faculty/stats/daily', userController.getFacultyDailyStats); // NEW: Daily statistics for faculty
+router.get('/faculty/tasks/by-approval', userController.getFacultyTasksByApprovalStatus); // NEW: Filter tasks by approval status
 router.get('/faculty/:deptId', userController.getFacultyByDepartment);
 router.get('/management-staff', userController.getManagementStaff);
 router.get('/hods', userController.getAllHODs);
 router.get('/incharges', userController.getAllIncharges);
+router.get('/fetch', userController.getUnifiedUsers); // Unified User Fetch
+router.get('/by-department', userController.getAllUsersByDepartment); // NEW: Get all users grouped by department
 
 // ==========================================
 // Admin Only Routes

@@ -31,16 +31,28 @@ router.post('/:id/reject', verifyToken, taskAcceptance.rejectTask);
 router.get('/today/unacknowledged', verifyToken, taskAcknowledgment.getTodaysUnacknowledgedTasks);
 router.post('/acknowledge', verifyToken, taskAcknowledgment.acknowledgeTodaysTasks);
 router.get('/acknowledgments', verifyToken, taskAcknowledgment.getAcknowledgmentHistory);
+router.get('/acknowledgments/unacknowledged-report', verifyToken, taskAcknowledgment.getUnacknowledgedUsersReport); // Admin report
 
 // Fetch APIs
 router.get('/', verifyToken, taskController.getAllTasks);
+router.get('/stats/me', verifyToken, taskController.getUserTaskStats);
 router.get('/created-by/:userId', verifyToken, taskController.getTasksCreatedByUser);
 router.get('/assigned-to/:userId', verifyToken, taskController.getTasksAssignedToUser);
+router.get('/pending-upcoming', verifyToken, taskController.getPendingUpcomingTasks);
+router.get('/pending-proof', verifyToken, taskController.getPendingProofTasks); // NEW: Pending Proof
+router.get('/assigned-today', verifyToken, taskController.getTasksAssignedToday); // NEW: Assigned Today
+router.get('/approved-upcoming', verifyToken, taskController.getApprovedUpcomingTasks); // NEW: Approved Upcoming
+router.get('/schedule/monthly', verifyToken, taskController.getMonthlySchedule); // NEW: Monthly Schedule
+
+// Task Detail (Comprehensive)
+router.get('/:id/detail', verifyToken, taskController.getTaskDetail); // NEW: Get all task details
+
 // Task Completion & Proof
 router.post('/:id/submit-proof', verifyToken, taskController.submitTaskProof);
 
 // Escalation Support
 router.get('/escalated/creator', verifyToken, taskController.getEscalatedTasksForCreator);
+router.get('/rejections/me', verifyToken, taskController.getRejectionEscalationsForCreator); // NEW: Rejection Escalations
 router.post('/:id/escalate', verifyToken, taskController.manualEscalateTask);
 router.get('/:id/escalation-report', verifyToken, taskController.getTaskEscalationReport);
 

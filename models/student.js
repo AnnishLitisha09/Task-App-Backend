@@ -40,15 +40,19 @@ module.exports = (sequelize, DataTypes) => {
       allowNull: false
     },
     score: {
-      type: DataTypes.DECIMAL(10,2),
+      type: DataTypes.DECIMAL(10, 2),
+      defaultValue: 0
+    },
+    total_score: {
+      type: DataTypes.DECIMAL(10, 2),
       defaultValue: 0
     },
     penalty: {
-      type: DataTypes.DECIMAL(10,2),
+      type: DataTypes.DECIMAL(10, 2),
       defaultValue: 0
     },
     c_gpa: {
-      type: DataTypes.DECIMAL(4,2),
+      type: DataTypes.DECIMAL(4, 2),
       allowNull: true
     },
     faculty_id: {
