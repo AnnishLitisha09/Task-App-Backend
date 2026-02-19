@@ -5,6 +5,7 @@ module.exports = (sequelize, DataTypes) => {
   class RoleUser extends Model {
     static associate(models) {
       RoleUser.belongsTo(models.User, { foreignKey: 'user_id' });
+      RoleUser.belongsTo(models.AuthAccount, { foreignKey: 'user_id' });
     }
   }
 

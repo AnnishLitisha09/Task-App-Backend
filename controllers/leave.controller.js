@@ -1,4 +1,5 @@
 const { Leave, User, Student, Faculty, Department } = require('../models');
+const { getPagination, getPagingData } = require('../utils/pagination');
 
 // --- Student Actions ---
 
@@ -12,7 +13,7 @@ exports.applyLeave = async (req, res) => {
             return res.status(403).json({ message: 'Only students can apply for leave' });
         }
 
-        const { leave_type, from_date, to_date, reason } = req.body;
+        const { leave_type, from_date, to_date, from_time, to_time, reason } = req.body;
 
         if (!leave_type || !from_date || !to_date) {
             return res.status(400).json({ message: 'Leave type, from date, and to date are required' });
@@ -23,6 +24,8 @@ exports.applyLeave = async (req, res) => {
             leave_type,
             from_date,
             to_date,
+            from_time,
+            to_time,
             reason,
             status: 'pending'
         });
@@ -59,11 +62,15 @@ exports.deleteLeave = async (req, res) => {
 exports.getStudentLeaves = async (req, res) => {
     try {
         const userId = req.userId;
-        const leaves = await Leave.findAll({
+        const { limit, offset, page } = getPagination(req.query);
+
+        const leaves = await Leave.findAndCountAll({
             where: { user_id: userId },
-            order: [['created_at', 'DESC']]
+            order: [['created_at', 'DESC']],
+            limit,
+            offset
         });
-        res.json(leaves);
+        res.json(getPagingData(leaves, page, limit));
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -76,6 +83,7 @@ exports.getFacultyPendingApprovals = async (req, res) => {
     try {
         const userId = req.userId; // Faculty's user_id
         const userRole = req.userRole;
+        const { limit, offset, page } = getPagination(req.query);
 
         if (userRole !== 'faculty') {
             return res.status(403).json({ message: 'Access denied' });
@@ -89,14 +97,14 @@ exports.getFacultyPendingApprovals = async (req, res) => {
 
         // Find students assigned to this faculty
         const assignedStudents = await Student.findAll({
-            where: { faculty_id: facultyProfile.faculty_id },
+            where: { faculty_id: facultyProfile.id },
             attributes: ['user_id']
         });
 
         const studentUserIds = assignedStudents.map(s => s.user_id);
 
         // Fetch leaves for these students
-        const leaves = await Leave.findAll({
+        const leaves = await Leave.findAndCountAll({
             where: {
                 user_id: studentUserIds,
                 status: 'pending'
@@ -109,10 +117,58 @@ exports.getFacultyPendingApprovals = async (req, res) => {
                     attributes: ['name', 'reg_no', 'department_id'],
                     include: [{ model: Department, attributes: ['name'] }]
                 }]
-            }]
+            }],
+            limit,
+            offset,
+            order: [['created_at', 'DESC']]
         });
 
-        res.json(leaves);
+        res.json(getPagingData(leaves, page, limit));
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+// Fetch all leave applications from students assigned to this faculty (regardless of status)
+exports.getFacultyStudentLeaves = async (req, res) => {
+    try {
+        const userId = req.userId;
+        const userRole = req.userRole;
+        const { limit, offset, page } = getPagination(req.query);
+
+        if (userRole !== 'faculty') {
+            return res.status(403).json({ message: 'Access denied' });
+        }
+
+        const facultyProfile = await Faculty.findOne({ where: { user_id: userId } });
+        if (!facultyProfile) {
+            return res.status(404).json({ message: 'Faculty profile not found' });
+        }
+
+        const assignedStudents = await Student.findAll({
+            where: { faculty_id: facultyProfile.id },
+            attributes: ['user_id']
+        });
+
+        const studentUserIds = assignedStudents.map(s => s.user_id);
+
+        const leaves = await Leave.findAndCountAll({
+            where: { user_id: studentUserIds },
+            include: [{
+                model: User,
+                attributes: ['user_id', 'role'],
+                include: [{
+                    model: Student,
+                    attributes: ['name', 'reg_no', 'department_id'],
+                    include: [{ model: Department, attributes: ['name'] }]
+                }]
+            }],
+            limit,
+            offset,
+            order: [['created_at', 'DESC']]
+        });
+
+        res.json(getPagingData(leaves, page, limit));
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -144,7 +200,7 @@ exports.approveOrRejectLeave = async (req, res) => {
 
         // Verify that this student is assigned to this faculty
         const facultyProfile = await Faculty.findOne({ where: { user_id: userId } });
-        if (!facultyProfile || leave.User.Student.faculty_id !== facultyProfile.faculty_id) {
+        if (!facultyProfile || leave.User.Student.faculty_id !== facultyProfile.id) {
             return res.status(403).json({ message: 'You are not authorized to process this leave' });
         }
 

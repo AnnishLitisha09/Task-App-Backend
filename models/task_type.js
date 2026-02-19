@@ -27,7 +27,8 @@ module.exports = (sequelize, DataTypes) => {
         'Subscription Task',
         'Recurring Task',
         'Bidding / Nomination Task',
-        'Meeting'
+        'Meeting',
+        'Self Log'
       ),
       allowNull: false
     },

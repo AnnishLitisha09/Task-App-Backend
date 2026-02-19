@@ -1,10 +1,11 @@
-const { Task, TaskAssign, TaskType, TaskPackageClosure, User, Student, Faculty, Staff, RoleUser, RoleAssignment, Role, Department, TaskEscalation, AuthAccount } = require('../models');
+const { Task, TaskAssign, TaskType, TaskPackageClosure, TaskClosure, User, Student, Faculty, Staff, RoleUser, RoleAssignment, Role, Department, TaskEscalation, AuthAccount, Notification, TaskLog, TaskTitle } = require('../models');
 const XLSX = require('xlsx');
 const { canAssignTo } = require('./task.assignment');
+const { getPagination, getPagingData } = require('../utils/pagination');
 
 // Helper: Check if user can create tasks
 const canCreateTask = (userRole) => {
-    return ['admin', 'role-user', 'faculty'].includes(userRole);
+    return ['admin', 'role-user', 'faculty', 'student', 'staff'].includes(userRole?.toLowerCase());
 };
 
 // Helper: Validate task type specific fields
@@ -36,8 +37,8 @@ const validateTaskType = (taskTypeData) => {
             if (!recurrence || recurrence === 'none') {
                 throw new Error('Recurring Task requires recurrence pattern (daily, weekly, monthly)');
             }
-            if (!start_date) {
-                throw new Error('Recurring Task requires start_date');
+            if (!start_date || !end_date) {
+                throw new Error('Recurring Task requires both start_date and end_date for expansion');
             }
             break;
         case 'Meeting':
@@ -47,6 +48,11 @@ const validateTaskType = (taskTypeData) => {
             break;
         case 'Bidding / Nomination Task':
             // No special validation required
+            break;
+        case 'Self Log':
+            if (!start_date) {
+                throw new Error('Self Log requires start_date');
+            }
             break;
         default:
             throw new Error(`Unknown task type: ${task_name}`);
@@ -129,6 +135,14 @@ exports.createTask = async (req, res) => {
         }, { transaction: t });
 
         await t.commit();
+
+        await TaskLog.create({
+            task_id: task.task_id,
+            user_id: userId,
+            action: 'create',
+            details: `Task created: ${title}`
+        });
+
         res.status(201).json({
             message: 'Task created successfully',
             task_id: task.task_id
@@ -143,15 +157,21 @@ exports.createTask = async (req, res) => {
 // Get all tasks
 exports.getAllTasks = async (req, res) => {
     try {
-        const tasks = await Task.findAll({
+        const { limit, offset, page } = getPagination(req.query);
+        const tasks = await Task.findAndCountAll({
             where: { is_deleted: false },
+            attributes: ['task_id', 'title', 'description', 'category', 'priority', 'score', 'penalty_per_hour', 'is_approved', 'created_at'],
             include: [
                 { model: User, as: 'Creator', attributes: ['user_id', 'role'] },
                 { model: TaskType },
-                { model: Faculty, attributes: ['name', 'department_id'] }
-            ]
+                { model: Faculty, attributes: ['name', 'department_id'] },
+                { model: TaskTitle, attributes: ['id', 'title'] }
+            ],
+            limit,
+            offset,
+            order: [['task_id', 'DESC']]
         });
-        res.json(tasks);
+        res.json(getPagingData(tasks, page, limit));
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -188,14 +208,18 @@ exports.getTaskById = async (req, res) => {
 exports.getTasksCreatedByUser = async (req, res) => {
     try {
         const { userId } = req.params;
-        const tasks = await Task.findAll({
+        const { limit, offset, page } = getPagination(req.query);
+        const tasks = await Task.findAndCountAll({
             where: { creator_id: userId, is_deleted: false },
             include: [
                 { model: TaskType },
                 { model: TaskAssign, include: [{ model: User, attributes: ['user_id', 'role'] }] }
-            ]
+            ],
+            limit,
+            offset,
+            order: [['task_id', 'DESC']]
         });
-        res.json(tasks);
+        res.json(getPagingData(tasks, page, limit));
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -205,7 +229,8 @@ exports.getTasksCreatedByUser = async (req, res) => {
 exports.getTasksAssignedToUser = async (req, res) => {
     try {
         const { userId } = req.params;
-        const assignments = await TaskAssign.findAll({
+        const { limit, offset, page } = getPagination(req.query);
+        const assignments = await TaskAssign.findAndCountAll({
             where: { user_id: userId },
             include: [
                 {
@@ -216,9 +241,12 @@ exports.getTasksAssignedToUser = async (req, res) => {
                         { model: TaskType }
                     ]
                 }
-            ]
+            ],
+            limit,
+            offset,
+            order: [['id', 'DESC']] // TaskAssign typically uses 'id' for auto-increment PK
         });
-        res.json(assignments);
+        res.json(getPagingData(assignments, page, limit));
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -237,7 +265,11 @@ exports.submitTaskProof = async (req, res) => {
 
         // Find assignment
         const assignment = await TaskAssign.findOne({
-            where: { task_id: id, user_id: userId, status: 'pending' },
+            where: {
+                task_id: id,
+                user_id: userId,
+                status: { [require('sequelize').Op.in]: ['pending', 'accepted'] }
+            },
             include: [{
                 model: Task,
                 include: [{ model: TaskType }]
@@ -245,7 +277,7 @@ exports.submitTaskProof = async (req, res) => {
         });
 
         if (!assignment) {
-            return res.status(404).json({ message: 'Pending task assignment not found' });
+            return res.status(404).json({ message: 'Eligible task assignment (pending or accepted) not found' });
         }
 
         const task = assignment.Task;
@@ -302,6 +334,13 @@ exports.submitTaskProof = async (req, res) => {
                 total_score: currentTotalScore + parseFloat(task.score) // Gross + Base
             });
         }
+
+        await TaskLog.create({
+            task_id: id,
+            user_id: userId,
+            action: 'submit_proof',
+            details: `Proof submitted: ${proofPath}`
+        });
 
         res.json({
             message: 'Task submitted successfully',
@@ -523,6 +562,7 @@ exports.createUnifiedTask = async (req, res) => {
     try {
         const userId = req.userId;
         const userRole = req.userRole;
+        const { Op } = require('sequelize');
 
         if (!canCreateTask(userRole)) {
             return res.status(403).json({ message: 'You do not have permission to create tasks' });
@@ -536,8 +576,19 @@ exports.createUnifiedTask = async (req, res) => {
             task_type_data,
             assignee_ids, // [1, 2, 3] or single ID
             assign_to_groups, // [ { role: 'STUDENT', department_id: 1 }, { role: 'STAFF' } ]
-            closure_ids // [1, 2]
+            closure_ids, // [1, 2]
+            task_title_id, // NEW: ID of the master title
+            origin_type // 'directive' or 'self-log'
         } = req.body;
+
+        // Force self-log for students/staff if not specified or as a restriction
+        if (userRole?.toLowerCase() === 'student' || userRole?.toLowerCase() === 'staff') {
+            origin_type = 'self-log';
+            // Auto-assign to self if it's a self-log
+            if (!assignee_ids) assignee_ids = [userId];
+            else if (Array.isArray(assignee_ids) && !assignee_ids.includes(userId)) assignee_ids.push(userId);
+            else if (typeof assignee_ids === 'number' && assignee_ids !== userId) assignee_ids = [assignee_ids, userId];
+        }
 
         // Handle multipart/form-data (parse JSON strings if necessary)
         try {
@@ -554,6 +605,14 @@ exports.createUnifiedTask = async (req, res) => {
         if (typeof is_approved === 'string') is_approved = is_approved === 'true';
         if (typeof is_mandatory === 'string') is_mandatory = is_mandatory === 'true';
 
+        // --- NEW: Handle Master Task Title ---
+        if (task_title_id) {
+            const masterTitle = await TaskTitle.findByPk(task_title_id);
+            if (masterTitle) {
+                title = title || masterTitle.title;
+            }
+        }
+
         if (!title || !category || !priority || !task_type_data || !task_type_data.task_name) {
             return res.status(400).json({ message: 'Missing required task or type fields' });
         }
@@ -564,51 +623,17 @@ exports.createUnifiedTask = async (req, res) => {
 
         validateTaskType(task_type_data);
 
-        // 1. Create Task
-        const task = await Task.create({
-            title, description, category, priority,
-            is_package: is_package || false,
-            venue_id: venue_id || null,
-            is_pause_allowed: is_pause_allowed || false,
-            score: score || 0,
-            penalty_per_hour: penalty_per_hour || 0,
-            is_document: is_document || false,
-            is_mandatory: is_mandatory || false,
-            is_approved: is_approved || false,
-            approver_id: approver_id || null,
-            resource_id: resource_id || null,
-            is_faculty: is_faculty || false,
-            faculty_id: faculty_id || null,
-            creator_id: userId,
-            status: 'Active'
-        }, { transaction: t });
-
-        // 2. Create TaskType
-        await TaskType.create({
-            task_id: task.task_id,
-            task_name: task_type_data.task_name,
-            start_date: task_type_data.start_date || null,
-            end_date: task_type_data.end_date || null,
-            start_time: task_type_data.start_time || null,
-            end_time: task_type_data.end_time || null,
-            time_quota_hours: task_type_data.time_quota_hours || null,
-            venue_id: task_type_data.venue_id || null,
-            recurrence: task_type_data.recurrence || 'none'
-        }, { transaction: t });
-
-        // 3. Handle Assignments
+        // --- PRE-CALCULATE ASSIGNEES ---
         let finalAssigneeIds = [];
-
         if (assignee_ids) {
             const ids = Array.isArray(assignee_ids) ? assignee_ids : [assignee_ids];
-            ids.forEach(id => { if (id && !finalAssigneeIds.includes(id)) finalAssigneeIds.push(id); });
+            ids.forEach(id => { if (id && !finalAssigneeIds.includes(id)) finalAssigneeIds.push(id * 1); });
         }
 
         if (assign_to_groups && Array.isArray(assign_to_groups)) {
             for (const group of assign_to_groups) {
                 let users = [];
                 const { role, department_id } = group;
-
                 if (role === 'STUDENT') {
                     users = await Student.findAll({ where: department_id ? { department_id } : {} });
                 } else if (role === 'FACULTY') {
@@ -617,10 +642,7 @@ exports.createUnifiedTask = async (req, res) => {
                     const hodRole = await Role.findOne({ where: { user_role: 'HOD' } });
                     if (hodRole) {
                         const ra = await RoleAssignment.findAll({
-                            where: {
-                                role_id: hodRole.role_id,
-                                ...(department_id && { department_id })
-                            }
+                            where: { role_id: hodRole.role_id, ...(department_id && { department_id }) }
                         });
                         users = ra;
                     }
@@ -630,85 +652,267 @@ exports.createUnifiedTask = async (req, res) => {
                     const targetRole = await Role.findOne({ where: { user_role: role } });
                     if (targetRole) {
                         const ra = await RoleAssignment.findAll({
-                            where: {
-                                role_id: targetRole.role_id,
-                                ...(department_id && { department_id })
-                            }
+                            where: { role_id: targetRole.role_id, ...(department_id && { department_id }) }
                         });
                         users = ra;
                     }
                 }
-                users.forEach(u => { if (u.user_id && !finalAssigneeIds.includes(u.user_id)) finalAssigneeIds.push(u.user_id); });
+                users.forEach(u => { if (u.user_id && !finalAssigneeIds.includes(u.user_id * 1)) finalAssigneeIds.push(u.user_id * 1); });
             }
         }
 
-        // 3.1 Handle Excel Assignments
+        // --- NEW: Faculty Ownership Logic ---
+        if (is_faculty && faculty_id) {
+            const facultyUser = await Faculty.findByPk(faculty_id);
+            if (facultyUser && facultyUser.user_id && !finalAssigneeIds.includes(facultyUser.user_id * 1)) {
+                finalAssigneeIds.push(facultyUser.user_id * 1);
+            }
+        }
+
+        // --- NEW: Venue Incharge Logic ---
+        if (venue_id) {
+            const incharges = await RoleAssignment.findAll({
+                where: { venue_id },
+                include: [{
+                    model: Role,
+                    where: { user_role: { [Op.like]: '%INCHARGE%' } }
+                }]
+            });
+            incharges.forEach(ra => {
+                if (ra.user_id && !finalAssigneeIds.includes(ra.user_id * 1)) {
+                    finalAssigneeIds.push(ra.user_id * 1);
+                }
+            });
+        }
+
+        // --- NEW: Approver Assignment ---
+        if (approver_id && !finalAssigneeIds.includes(approver_id * 1)) {
+            finalAssigneeIds.push(approver_id * 1);
+        }
+
         if (req.file) {
             try {
                 const workbook = XLSX.readFile(req.file.path);
-                const sheetName = workbook.SheetNames[0];
-                const data = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName]);
-
+                const data = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]]);
                 for (const row of data) {
                     const { email, user_id } = row;
                     let excelUserId = user_id;
-
                     if (!excelUserId && email) {
-                        const student = await Student.findOne({ where: { email } });
-                        const faculty = await Faculty.findOne({ where: { email } });
-                        const roleUser = await RoleUser.findOne({ where: { email } });
-                        const staff = await Staff.findOne({ where: { email } });
-                        excelUserId = student?.user_id || faculty?.user_id || roleUser?.user_id || staff?.user_id;
+                        const profiles = await Promise.all([
+                            Student.findOne({ where: { email } }),
+                            Faculty.findOne({ where: { email } }),
+                            RoleUser.findOne({ where: { email } }),
+                            Staff.findOne({ where: { email } })
+                        ]);
+                        excelUserId = profiles.find(p => p)?.user_id;
                     }
-
                     if (excelUserId) {
                         const numericId = parseInt(excelUserId);
-                        if (!isNaN(numericId) && !finalAssigneeIds.includes(numericId)) {
-                            finalAssigneeIds.push(numericId);
-                        }
+                        if (!isNaN(numericId) && !finalAssigneeIds.includes(numericId)) finalAssigneeIds.push(numericId);
                     }
                 }
-            } catch (excelError) {
-                console.error('Excel processing error:', excelError);
-            }
+            } catch (e) { console.error('Excel processing error:', e); }
         }
 
-        if (finalAssigneeIds.length > 0) {
-            const assignments = [];
-            for (const assigneeId of finalAssigneeIds) {
-                const allowed = await canAssignTo(userId, assigneeId);
-                if (allowed) {
-                    assignments.push({
-                        task_id: task.task_id,
-                        user_id: assigneeId,
-                        status: is_mandatory ? 'accepted' : 'pending',
-                        accepted_at: is_mandatory ? new Date() : null
-                    });
+        // --- CALCULATE DATES FOR EXPANSION ---
+        const occurrenceDates = [];
+        const start = new Date(task_type_data.start_date);
+        const end = task_type_data.end_date ? new Date(task_type_data.end_date) : start;
+        const recurrence = task_type_data.recurrence || 'none';
+
+        if (task_type_data.task_name === 'Recurring Task' && recurrence !== 'none') {
+            let current = new Date(start);
+            while (current <= end) {
+                occurrenceDates.push(new Date(current));
+                if (recurrence === 'daily') current.setDate(current.getDate() + 1);
+                else if (recurrence === 'weekly') current.setDate(current.getDate() + 7);
+                else if (recurrence === 'monthly') current.setMonth(current.getMonth() + 1);
+                else break;
+
+                // Safety limit: Max 365 occurrences per creation
+                if (occurrenceDates.length >= 365) break;
+            }
+        } else {
+            occurrenceDates.push(start);
+        }
+
+        // --- BATCH CREATION ---
+        const createdTaskIds = [];
+
+        for (const oDate of occurrenceDates) {
+            // 1. Create Task
+            const task = await Task.create({
+                title, description, category, priority,
+                task_title_id: task_title_id || null, // NEW
+                is_package: is_package || false,
+                venue_id: venue_id || null,
+                is_pause_allowed: is_pause_allowed || false,
+                score: score || 0,
+                penalty_per_hour: penalty_per_hour || 0,
+                is_document: is_document || false,
+                is_mandatory: is_mandatory || false,
+                is_approved: is_approved || false,
+                approver_id: approver_id || null,
+                resource_id: resource_id || null,
+                is_faculty: is_faculty || false,
+                faculty_id: faculty_id || null,
+                creator_id: userId,
+                origin_type: origin_type || 'directive',
+                status: 'Active'
+            }, { transaction: t });
+
+            createdTaskIds.push(task.task_id);
+
+            // 2. Create TaskType (Marked as none recurrence for expanded instances)
+            await TaskType.create({
+                task_id: task.task_id,
+                task_name: task_type_data.task_name,
+                start_date: oDate,
+                end_date: oDate, // For expansion, each day is its own single-day task
+                start_time: task_type_data.start_time || null,
+                end_time: task_type_data.end_time || null,
+                time_quota_hours: task_type_data.time_quota_hours || null,
+                venue_id: task_type_data.venue_id || null,
+                recurrence: 'none' // The spawned task is a single instance
+            }, { transaction: t });
+
+            // 3. Handle Assignments (General Assignees)
+            if (finalAssigneeIds.length > 0) {
+                const assignments = [];
+                for (const assigneeId of finalAssigneeIds) {
+                    const allowed = await canAssignTo(userId, assigneeId);
+                    if (allowed) {
+                        assignments.push({
+                            task_id: task.task_id,
+                            user_id: assigneeId,
+                            status: is_mandatory ? 'accepted' : 'pending',
+                            accepted_at: is_mandatory ? new Date() : null
+                        });
+
+                        // Notify Assignee
+                        await Notification.create({
+                            user_id: assigneeId,
+                            title: 'New Task Assigned',
+                            msg: `You have been assigned a new task: ${title}`,
+                            type: 'task_created'
+                        }, { transaction: t });
+                    }
+                }
+                if (assignments.length > 0) {
+                    await TaskAssign.bulkCreate(assignments, { transaction: t, ignoreDuplicates: true });
                 }
             }
-            if (assignments.length > 0) {
-                await TaskAssign.bulkCreate(assignments, { transaction: t, ignoreDuplicates: true });
-            }
-        }
 
-        // 4. Handle Closure Rules
-        if (closure_ids && Array.isArray(closure_ids)) {
-            const closures = closure_ids.map(cid => ({
-                task_id: task.task_id,
-                closure_id: cid
-            }));
-            await TaskPackageClosure.bulkCreate(closures, { transaction: t });
+            // 4. Handle Special Permission Tasks (Venue, Approver, Faculty)
+            const specialRoles = [];
+            if (venue_id) {
+                const inchargers = await RoleAssignment.findAll({
+                    where: { venue_id },
+                    include: [{ model: Role, where: { user_role: { [Op.like]: '%INCHARGE%' } } }]
+                });
+                inchargers.forEach(ra => specialRoles.push({ user_id: ra.user_id, role: 'Venue Incharge', msg: 'Venue Permission Required' }));
+            }
+            if (approver_id) specialRoles.push({ user_id: approver_id, role: 'Approver', msg: 'Permission for Approval Required' });
+            if (is_faculty && faculty_id) {
+                const faculty = await Faculty.findByPk(faculty_id);
+                if (faculty) specialRoles.push({ user_id: faculty.user_id, role: 'Faculty Owner', msg: 'Faculty Ownership Permission' });
+            }
+
+            for (const sr of specialRoles) {
+                if (!sr.user_id) continue;
+
+                // Create separate Permission Task
+                const pTask = await Task.create({
+                    title: `Permission: ${sr.role} - ${title}`,
+                    description: `${sr.msg} for task: ${title}. ${description || ''}`,
+                    category: 'Admin',
+                    priority: 'high',
+                    is_package: false,
+                    is_pause_allowed: false,
+                    score: 0,
+                    penalty_per_hour: 0,
+                    is_document: false, // No proof needed
+                    is_mandatory: false,
+                    is_approved: false,
+                    creator_id: userId,
+                    parent_task_id: task.task_id,
+                    origin_type: 'directive',
+                    status: 'Active'
+                }, { transaction: t });
+
+                // Create TaskType for Permission Task
+                await TaskType.create({
+                    task_id: pTask.task_id,
+                    task_name: 'Permission Request',
+                    start_date: oDate,
+                    end_date: oDate,
+                    start_time: task_type_data.start_time || null,
+                    end_time: task_type_data.end_time || null,
+                    recurrence: 'none'
+                }, { transaction: t });
+
+                // Assign to special role user
+                await TaskAssign.create({
+                    task_id: pTask.task_id,
+                    user_id: sr.user_id,
+                    status: 'pending',
+                    reason: sr.msg
+                }, { transaction: t });
+
+                // Notify Special Role User
+                await Notification.create({
+                    user_id: sr.user_id,
+                    title: 'New Permission Task',
+                    msg: `You have a new permission task for: ${title}`,
+                    type: 'task_created'
+                }, { transaction: t });
+            }
+
+            // 5. Notify Creator on Success
+            await Notification.create({
+                user_id: userId,
+                title: 'Task Created Successfully',
+                msg: `Task "${title}" has been created and assigned to ${finalAssigneeIds.length} users.`,
+                type: 'task_created'
+            }, { transaction: t });
+
+            // 3.1 Handle Self-Log Auto-Assignment
+            if (origin_type === 'self-log') {
+                await TaskAssign.upsert({
+                    task_id: task.task_id,
+                    user_id: userId,
+                    status: 'completed',
+                    accepted_at: new Date(),
+                    submitted_time: new Date()
+                }, { transaction: t });
+            }
+
+            // 4. Handle Closure Rules
+            if (closure_ids && Array.isArray(closure_ids)) {
+                const closures = closure_ids.map(cid => ({ task_id: task.task_id, closure_id: cid }));
+                await TaskPackageClosure.bulkCreate(closures, { transaction: t });
+            }
         }
 
         await t.commit();
+
+        await TaskLog.create({
+            task_id: createdTaskIds[0], // Log the first one at least for the series
+            user_id: userId,
+            action: 'create_unified',
+            details: `Unified task series created: ${title}. Count: ${occurrenceDates.length}`
+        });
+
         res.status(201).json({
-            message: 'Unified task created and assigned successfully',
-            task_id: task.task_id,
+            message: `Successfully created ${occurrenceDates.length} occurrences for the task series.`,
+            task_ids: createdTaskIds,
+            occurrences: occurrenceDates.length,
             assigned_count: finalAssigneeIds.length
         });
 
     } catch (error) {
         await t.rollback();
+        console.error('Error in createUnifiedTask:', error);
         res.status(500).json({ message: error.message });
     }
 };
@@ -926,11 +1130,23 @@ exports.getPendingProofTasks = async (req, res) => {
     try {
         const userId = req.userId;
         const { Op } = require('sequelize');
+        const { limit, offset, page } = getPagination(req.query);
 
-        const tasks = await TaskAssign.findAll({
+        // Setup Today's Date logic (IST)
+        const now = new Date();
+        const istOffset = 330 * 60 * 1000;
+        const localNow = new Date(now.getTime() + (now.getTimezoneOffset() * 60000) + istOffset);
+
+        const today = new Date(localNow);
+        today.setHours(0, 0, 0, 0);
+
+        const tomorrow = new Date(today);
+        tomorrow.setDate(tomorrow.getDate() + 1);
+
+        const tasksCount = await TaskAssign.count({
             where: {
                 user_id: userId,
-                status: 'accepted',
+                status: { [Op.in]: ['pending', 'accepted'] },
                 [Op.or]: [
                     { proof: null },
                     { proof: '' }
@@ -942,8 +1158,48 @@ exports.getPendingProofTasks = async (req, res) => {
                     is_deleted: false,
                     is_document: true
                 },
-                include: [{ model: TaskType }]
+                include: [{
+                    model: TaskType,
+                    required: true,
+                    where: {
+                        start_date: {
+                            [Op.gte]: today,
+                            [Op.lt]: tomorrow
+                        }
+                    }
+                }]
             }]
+        });
+
+        const tasks = await TaskAssign.findAll({
+            where: {
+                user_id: userId,
+                status: { [Op.in]: ['pending', 'accepted'] },
+                [Op.or]: [
+                    { proof: null },
+                    { proof: '' }
+                ]
+            },
+            include: [{
+                model: Task,
+                where: {
+                    is_deleted: false,
+                    is_document: true
+                },
+                include: [{
+                    model: TaskType,
+                    required: true,
+                    where: {
+                        start_date: {
+                            [Op.gte]: today,
+                            [Op.lt]: tomorrow
+                        }
+                    }
+                }]
+            }],
+            limit,
+            offset,
+            order: [[Task, TaskType, 'start_time', 'ASC']]
         });
 
         const formatted = tasks.map(a => ({
@@ -961,10 +1217,7 @@ exports.getPendingProofTasks = async (req, res) => {
                 } : null
         }));
 
-        res.json({
-            count: formatted.length,
-            tasks: formatted
-        });
+        res.json(getPagingData({ count: tasksCount, rows: formatted }, page, limit));
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -1020,6 +1273,7 @@ exports.getApprovedUpcomingTasks = async (req, res) => {
     try {
         const userId = req.userId;
         const now = new Date();
+        const { limit, offset, page } = getPagination(req.query);
 
         // Fetch accepted assignments
         const assignments = await TaskAssign.findAll({
@@ -1063,10 +1317,10 @@ exports.getApprovedUpcomingTasks = async (req, res) => {
             status: a.status
         }));
 
-        res.json({
-            count: formatted.length,
-            tasks: formatted
-        });
+        // Manual pagination
+        const paginated = formatted.slice(offset, offset + limit);
+
+        res.json(getPagingData({ count: formatted.length, rows: paginated }, page, limit));
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -1078,6 +1332,7 @@ exports.getPendingUpcomingTasks = async (req, res) => {
     try {
         const userId = req.userId;
         const now = new Date();
+        const { limit, offset, page } = getPagination(req.query);
 
         // 1. Fetch pending assignments
         const assignments = await TaskAssign.findAll({
@@ -1121,10 +1376,10 @@ exports.getPendingUpcomingTasks = async (req, res) => {
             status: a.status
         }));
 
-        res.json({
-            count: formatted.length,
-            tasks: formatted
-        });
+        // Manual pagination
+        const paginated = formatted.slice(offset, offset + limit);
+
+        res.json(getPagingData({ count: formatted.length, rows: paginated }, page, limit));
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -1171,7 +1426,10 @@ exports.getMonthlySchedule = async (req, res) => {
         const endDateStr = getLocalDateString(endDate);
 
         const assignments = await TaskAssign.findAll({
-            where: { user_id: userId },
+            where: {
+                user_id: userId,
+                status: { [Op.in]: ['accepted', 'completed'] }
+            },
             include: [{
                 model: Task,
                 where: { is_deleted: false },
@@ -1281,8 +1539,33 @@ exports.getMonthlySchedule = async (req, res) => {
             });
         });
 
+        // Filter overlaps and sort
         Object.keys(schedule).forEach(dKey => {
+            // Sort by start_time
             schedule[dKey].sort((b, c) => (b.timing.start_time || '').localeCompare(c.timing.start_time || ''));
+
+            // Overlap removal logic: Keep only the first task that starts after the previous task ends
+            const filteredTasks = [];
+            let lastEndTime = null;
+
+            for (const task of schedule[dKey]) {
+                const startTime = task.timing.start_time;
+                const endTime = task.timing.end_time;
+
+                if (!lastEndTime || (startTime && startTime >= lastEndTime)) {
+                    filteredTasks.push(task);
+                    if (endTime) {
+                        lastEndTime = endTime;
+                    } else if (startTime) {
+                        // If no end time, assume a duration of 30 mins or just block the slot
+                        const [hours, minutes, seconds] = startTime.split(':').map(Number);
+                        const end = new Date();
+                        end.setHours(hours, minutes + 30, seconds || 0);
+                        lastEndTime = `${String(end.getHours()).padStart(2, '0')}:${String(end.getMinutes()).padStart(2, '0')}:${String(end.getSeconds()).padStart(2, '0')}`;
+                    }
+                }
+            }
+            schedule[dKey] = filteredTasks;
         });
 
         if (date) {
@@ -1378,6 +1661,14 @@ exports.getTaskDetail = async (req, res) => {
                             ]
                         }
                     ]
+                },
+                {
+                    model: TaskPackageClosure,
+                    include: [{ model: TaskClosure, attributes: ['name'] }]
+                },
+                {
+                    model: TaskTitle,
+                    required: false
                 }
             ]
         });
@@ -1504,7 +1795,12 @@ exports.getTaskDetail = async (req, res) => {
         // Task response
         const response = {
             task_id: task.task_id,
+            task_title_id: task.task_title_id, // NEW
             title: task.title,
+            master_title: task.TaskTitle ? {
+                id: task.TaskTitle.id,
+                title: task.TaskTitle.title
+            } : null,
             description: task.description,
             category: task.category,
             priority: task.priority,
@@ -1574,6 +1870,9 @@ exports.getTaskDetail = async (req, res) => {
                 rejected: rejectedCount
             },
 
+            // Closure Details
+            closure_rules: task.TaskPackageClosures?.map(tpc => tpc.TaskClosure?.name) || [],
+
             // Timestamps
             created_at: task.created_at,
             updated_at: task.updated_at
@@ -1583,6 +1882,303 @@ exports.getTaskDetail = async (req, res) => {
 
     } catch (error) {
         console.error('Error in getTaskDetail:', error);
+        res.status(500).json({ message: error.message });
+    }
+};
+
+// 7. Get Unapproved Tasks (Pending + Start Time <= Now)
+exports.getUnapprovedTasks = async (req, res) => {
+    try {
+        const userId = req.userId;
+        const now = new Date();
+        const { limit, offset, page } = getPagination(req.query);
+
+        const assignments = await TaskAssign.findAll({
+            where: { user_id: userId, status: 'pending' },
+            include: [{
+                model: Task,
+                where: { is_deleted: false },
+                include: [
+                    { model: TaskType },
+                    { model: Venue, attributes: ['name', 'location'] }
+                ]
+            }]
+        });
+
+        const filtered = assignments.filter(a => {
+            const taskType = a.Task.TaskTypes && a.Task.TaskTypes[0];
+            if (!taskType) return false;
+
+            let startDateTime = null;
+            if (taskType.task_name === 'Fixed Time Task' || taskType.task_name === 'Meeting') {
+                if (taskType.start_date && taskType.start_time) {
+                    const dateStr = new Date(taskType.start_date).toISOString().split('T')[0];
+                    startDateTime = new Date(`${dateStr}T${taskType.start_time}`);
+                } else if (taskType.start_date) {
+                    startDateTime = new Date(taskType.start_date);
+                }
+            } else if (taskType.start_date) {
+                startDateTime = new Date(taskType.start_date);
+            }
+
+            return startDateTime && startDateTime <= now;
+        });
+
+        const formatted = filtered.map(a => ({
+            assignment_id: a.id,
+            task_id: a.Task.task_id,
+            title: a.Task.title,
+            category: a.Task.category,
+            priority: a.Task.priority,
+            origin_type: a.Task.origin_type,
+            start_date: a.Task.TaskTypes[0]?.start_date,
+            start_time: a.Task.TaskTypes[0]?.start_time,
+            location: a.Task.Venue ? a.Task.Venue.name : null,
+            status: a.status
+        }));
+
+        // Manual pagination
+        const paginated = formatted.slice(offset, offset + limit);
+
+        res.json(getPagingData({ count: formatted.length, rows: paginated }, page, limit));
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+// 8. Get Today's Approved Schedule
+exports.getTodaysApprovedSchedule = async (req, res) => {
+    try {
+        const userId = req.userId;
+        const { Op } = require('sequelize');
+
+        // Helper: Get YYYY-MM-DD in local time
+        const getLocalDateString = (d) => {
+            const dateObj = new Date(d);
+            const year = dateObj.getFullYear();
+            const month = String(dateObj.getMonth() + 1).padStart(2, '0');
+            const day = String(dateObj.getDate()).padStart(2, '0');
+            return `${year}-${month}-${day}`;
+        };
+
+        const todayDate = new Date();
+        const todayStr = getLocalDateString(todayDate);
+
+        const assignments = await TaskAssign.findAll({
+            where: { user_id: userId, status: 'accepted' },
+            include: [{
+                model: Task,
+                where: { is_deleted: false },
+                include: [
+                    { model: TaskType, required: true },
+                    { model: Venue, attributes: ['name', 'location'] }
+                ]
+            }]
+        });
+
+        const isOccurrence = (targetDateStr, tStart, tEnd, recurrence) => {
+            const startStr = getLocalDateString(tStart);
+            const endStr = tEnd ? getLocalDateString(tEnd) : null;
+            if (targetDateStr < startStr) return false;
+            if (endStr && targetDateStr > endStr) return false;
+            if (recurrence === 'none') return targetDateStr === startStr;
+            if (recurrence === 'daily') return true;
+            const targetDate = new Date(`${targetDateStr}T00:00:00`);
+            const startDate = new Date(`${startStr}T00:00:00`);
+            if (recurrence === 'weekly') return targetDate.getDay() === startDate.getDay();
+            if (recurrence === 'monthly') return targetDate.getDate() === startDate.getDate();
+            return false;
+        };
+
+        const todaysTasks = [];
+        assignments.forEach(a => {
+            a.Task.TaskTypes.forEach(tt => {
+                if (isOccurrence(todayStr, tt.start_date, tt.end_date, tt.recurrence)) {
+                    todaysTasks.push({
+                        assignment_id: a.id,
+                        task_id: a.Task.task_id,
+                        title: a.Task.title,
+                        category: a.Task.category,
+                        priority: a.Task.priority,
+                        origin_type: a.Task.origin_type,
+                        timing: {
+                            start_time: tt.start_time,
+                            end_time: tt.end_time,
+                            recurrence: tt.recurrence
+                        },
+                        location: a.Task.Venue ? { name: a.Task.Venue.name, location: a.Task.Venue.location } : null,
+                        status: a.status
+                    });
+                }
+            });
+        });
+
+        // Sort by start time
+        todaysTasks.sort((a, b) => (a.timing.start_time || '').localeCompare(b.timing.start_time || ''));
+
+        res.json({
+            date: todayStr,
+            count: todaysTasks.length,
+            tasks: todaysTasks
+        });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+// Pause a task
+exports.pauseTask = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const userId = req.userId;
+
+        const task = await Task.findByPk(id);
+        if (!task || task.is_deleted) return res.status(404).json({ message: 'Task not found' });
+
+        if (!task.is_pause_allowed) {
+            return res.status(400).json({ message: 'Pausing is not allowed for this task' });
+        }
+
+        if (task.is_paused) return res.status(400).json({ message: 'Task is already paused' });
+
+        await task.update({ is_paused: true });
+
+        await TaskLog.create({
+            task_id: id,
+            user_id: userId,
+            action: 'pause',
+            details: `Task paused at ${new Date().toISOString()}`
+        });
+
+        res.json({ message: 'Task paused successfully' });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+// Resume a task
+exports.resumeTask = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const userId = req.userId;
+
+        const task = await Task.findByPk(id);
+        if (!task || task.is_deleted) return res.status(404).json({ message: 'Task not found' });
+
+        if (!task.is_paused) return res.status(400).json({ message: 'Task is not paused' });
+
+        await task.update({ is_paused: false });
+
+        await TaskLog.create({
+            task_id: id,
+            user_id: userId,
+            action: 'resume',
+            details: `Task resumed at ${new Date().toISOString()}`
+        });
+
+        res.json({ message: 'Task resumed successfully' });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+// 7.5. Get Unified Daily Tasks (Directives + Self-Logs)
+exports.getDailyTasks = async (req, res) => {
+    try {
+        const userId = req.userId;
+        const { date } = req.query; // Expect YYYY-MM-DD
+        const { Op } = require('sequelize');
+
+        // Helper: Get YYYY-MM-DD in local time
+        const getLocalDateString = (d) => {
+            const dateObj = new Date(d);
+            const year = dateObj.getFullYear();
+            const month = String(dateObj.getMonth() + 1).padStart(2, '0');
+            const day = String(dateObj.getDate()).padStart(2, '0');
+            return `${year}-${month}-${day}`;
+        };
+
+        const targetDate = date ? new Date(date) : new Date();
+        const dateString = getLocalDateString(targetDate);
+
+        // 1. Fetch Directive Tasks (Assigned to the user)
+        const directives = await TaskAssign.findAll({
+            where: { user_id: userId },
+            include: [{
+                model: Task,
+                where: {
+                    origin_type: 'directive',
+                    is_deleted: false
+                },
+                include: [{
+                    model: TaskType,
+                    where: {
+                        [Op.or]: [
+                            { start_date: dateString },
+                            {
+                                [Op.and]: [
+                                    { start_date: { [Op.lte]: dateString } },
+                                    { end_date: { [Op.gte]: dateString } }
+                                ]
+                            }
+                        ]
+                    }
+                }]
+            }]
+        });
+
+        // 2. Fetch Self-Log Tasks (Created by the user)
+        const selfLogs = await Task.findAll({
+            where: {
+                creator_id: userId,
+                origin_type: 'self-log',
+                is_deleted: false
+            },
+            include: [{
+                model: TaskType,
+                where: {
+                    [Op.or]: [
+                        { start_date: dateString },
+                        {
+                            [Op.and]: [
+                                { start_date: { [Op.lte]: dateString } },
+                                { end_date: { [Op.gte]: dateString } }
+                            ]
+                        }
+                    ]
+                }
+            }]
+        });
+
+        res.json({
+            date: dateString,
+            directives: directives.map(d => ({
+                task_id: d.Task.task_id,
+                title: d.Task.title,
+                status: d.status,
+                category: d.Task.category,
+                priority: d.Task.priority,
+                time: d.Task.TaskTypes?.[0] ? {
+                    start_time: d.Task.TaskTypes[0].start_time,
+                    end_time: d.Task.TaskTypes[0].end_time,
+                    recurrence: d.Task.TaskTypes[0].recurrence
+                } : null
+            })),
+            self_logs: selfLogs.map(s => ({
+                task_id: s.task_id,
+                title: s.title,
+                status: 'Active', // Self-logs are usually always active if not deleted
+                category: s.category,
+                priority: s.priority,
+                time: s.TaskTypes?.[0] ? {
+                    start_time: s.TaskTypes[0].start_time,
+                    end_time: s.TaskTypes[0].end_time,
+                    recurrence: s.TaskTypes[0].recurrence
+                } : null
+            }))
+        });
+
+    } catch (error) {
         res.status(500).json({ message: error.message });
     }
 };

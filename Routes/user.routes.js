@@ -19,6 +19,7 @@ router.use(verifyToken);
 router.get('/profile', userController.getProfile); // Profile from token
 router.get('/me', userController.getProfile);      // Alias for profile from token
 router.get('/:id/details', userController.getUserDetails); // Admin viewing specific user
+router.get('/:id/activity', userController.getUserActivity); // NEW: Unified Profile + Daily Tasks
 
 
 // Fetch Lists (Accessible to authenticated users)
@@ -59,5 +60,6 @@ router.get('/dashboard/stats', userDashboard.getSystemStats);      // System cou
 router.get('/dashboard/students/leaderboard', userDashboard.getStudentLeaderboard);
 router.get('/dashboard/faculty/leaderboard', userDashboard.getFacultyLeaderboard);
 router.post('/assign-role', userController.assignRole);
+router.put('/students/:id/faculty', userController.updateStudentFaculty);
 
 module.exports = router;

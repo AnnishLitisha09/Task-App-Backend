@@ -1,0 +1,23 @@
+SCHEMA MISSING COLUMNS REPORT
+============================
+
+Table 'tasks' is missing columns: is_paused
+ALTER TABLE tasks ADD COLUMN is_paused TINYINT(1) NULL DEFAULT 0;
+
+Table 'task_assign' is missing columns: createdAt, updatedAt, deletedAt
+ALTER TABLE task_assign ADD COLUMN createdAt DATETIME NOT NULL;
+ALTER TABLE task_assign ADD COLUMN updatedAt DATETIME NOT NULL;
+ALTER TABLE task_assign ADD COLUMN deletedAt DATETIME NULL;
+
+Table 'task_escalations' is missing columns: createdAt, updatedAt
+ALTER TABLE task_escalations ADD COLUMN createdAt DATETIME NOT NULL;
+ALTER TABLE task_escalations ADD COLUMN updatedAt DATETIME NOT NULL;
+
+Table 'task_logs' is missing columns: createdAt, updatedAt
+ALTER TABLE task_logs ADD COLUMN createdAt DATETIME NOT NULL;
+ALTER TABLE task_logs ADD COLUMN updatedAt DATETIME NOT NULL;
+
+Table 'task_types' is missing columns: createdAt, updatedAt
+ALTER TABLE task_types ADD COLUMN createdAt DATETIME NOT NULL;
+ALTER TABLE task_types ADD COLUMN updatedAt DATETIME NOT NULL;
+

@@ -9,15 +9,19 @@ module.exports = (sequelize, DataTypes) => {
       Task.belongsTo(models.User, { foreignKey: 'creator_id', as: 'Creator' });
       Task.belongsTo(models.Faculty, { foreignKey: 'faculty_id' });
       Task.belongsTo(models.Resource, { foreignKey: 'resource_id' });
+      Task.belongsTo(models.TaskTitle, { foreignKey: 'task_title_id' }); // NEW: Link to master titles
       Task.hasMany(models.TaskType, { foreignKey: 'task_id' }); // One task → many task types
       Task.hasMany(models.TaskPackageClosure, { foreignKey: 'task_id' });
       Task.hasMany(models.TaskAssign, { foreignKey: 'task_id' }); // One task → many assignments
       Task.hasMany(models.TaskEscalation, { foreignKey: 'task_id' }); // One task → many escalations
+      Task.belongsTo(models.Task, { as: 'Parent', foreignKey: 'parent_task_id' });
+      Task.hasMany(models.Task, { as: 'Children', foreignKey: 'parent_task_id' });
     }
   }
 
   Task.init({
     task_id: { type: DataTypes.BIGINT.UNSIGNED, autoIncrement: true, primaryKey: true },
+    task_title_id: { type: DataTypes.BIGINT.UNSIGNED, allowNull: true },
     title: { type: DataTypes.STRING(255), allowNull: false },
     description: { type: DataTypes.TEXT },
     category: { type: DataTypes.ENUM('Academic', 'Admin', 'Compliance', 'Others'), allowNull: false },
@@ -31,15 +35,18 @@ module.exports = (sequelize, DataTypes) => {
     penalty_per_hour: { type: DataTypes.DECIMAL(10, 2), defaultValue: 0 },
     package_completion: { type: DataTypes.JSON },
     is_escalate: { type: DataTypes.BOOLEAN, defaultValue: false },
+    is_paused: { type: DataTypes.BOOLEAN, defaultValue: false },
     is_document: { type: DataTypes.BOOLEAN, defaultValue: false },
     creator_id: { type: DataTypes.BIGINT.UNSIGNED, allowNull: false },
+    parent_task_id: { type: DataTypes.BIGINT.UNSIGNED, allowNull: true },
     created_at: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
     is_deleted: { type: DataTypes.BOOLEAN, defaultValue: false },
     status: { type: DataTypes.ENUM('Active', 'Inactive'), defaultValue: 'Active' },
     is_mandatory: { type: DataTypes.BOOLEAN, defaultValue: false },
     resource_id: { type: DataTypes.BIGINT.UNSIGNED, allowNull: true },
     is_faculty: { type: DataTypes.BOOLEAN, defaultValue: false },
-    faculty_id: { type: DataTypes.BIGINT.UNSIGNED, allowNull: true }
+    faculty_id: { type: DataTypes.BIGINT.UNSIGNED, allowNull: true },
+    origin_type: { type: DataTypes.ENUM('directive', 'self-log'), defaultValue: 'directive', allowNull: false }
   }, {
     sequelize,
     modelName: 'Task',

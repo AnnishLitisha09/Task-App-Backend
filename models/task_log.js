@@ -2,46 +2,50 @@
 const { Model } = require('sequelize');
 
 module.exports = (sequelize, DataTypes) => {
-    class TaskAcknowledgment extends Model {
+    class TaskLog extends Model {
         static associate(models) {
-            TaskAcknowledgment.belongsTo(models.Task, { foreignKey: 'task_id' });
-            TaskAcknowledgment.belongsTo(models.User, { foreignKey: 'user_id' });
+            TaskLog.belongsTo(models.Task, { foreignKey: 'task_id' });
+            TaskLog.belongsTo(models.User, { foreignKey: 'user_id' });
         }
     }
 
-    TaskAcknowledgment.init({
-        acknowledgment_id: {
+    TaskLog.init({
+        id: {
             type: DataTypes.BIGINT.UNSIGNED,
             autoIncrement: true,
             primaryKey: true
         },
         task_id: {
             type: DataTypes.BIGINT.UNSIGNED,
-            allowNull: true
+            allowNull: false
         },
         user_id: {
             type: DataTypes.BIGINT.UNSIGNED,
             allowNull: false
         },
-        acknowledge_date: {
-            type: DataTypes.DATEONLY,
+        action: {
+            type: DataTypes.STRING(50),
             allowNull: false
         },
-        acknowledged_at: {
-            type: DataTypes.DATE,
+        details: {
+            type: DataTypes.TEXT,
             allowNull: true
         },
         created_at: {
             type: DataTypes.DATE,
             defaultValue: DataTypes.NOW
+        },
+        updated_at: {
+            type: DataTypes.DATE,
+            defaultValue: DataTypes.NOW
         }
     }, {
         sequelize,
-        modelName: 'TaskAcknowledgment',
-        tableName: 'task_acknowledgments',
-        timestamps: false,
+        modelName: 'TaskLog',
+        tableName: 'task_logs',
+        timestamps: true,
         underscored: true
     });
 
-    return TaskAcknowledgment;
+    return TaskLog;
 };

@@ -22,6 +22,7 @@ const resourceRoutes = require('./Routes/resource.routes');
 const taskRoutes = require('./Routes/task.routes');
 const couponRoutes = require('./Routes/coupon.routes');
 const leaveRoutes = require('./Routes/leave.routes');
+const notificationRoutes = require('./Routes/notification.routes');
 const path = require('path');
 
 app.use('/api/auth', authRoutes);
@@ -30,6 +31,7 @@ app.use('/api/resources', resourceRoutes);
 app.use('/api/tasks', taskRoutes);
 app.use('/api/coupons', couponRoutes);
 app.use('/api/leaves', leaveRoutes);
+app.use('/api/notifications', notificationRoutes);
 
 // Serve static files from uploads folder
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));

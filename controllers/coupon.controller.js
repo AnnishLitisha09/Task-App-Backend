@@ -1,4 +1,5 @@
 const { Coupon, Redeem, User, Student, Faculty, RoleUser, Staff } = require('../models');
+const { getPagination, getPagingData } = require('../utils/pagination');
 
 // --- Coupon CRUD ---
 
@@ -68,13 +69,18 @@ exports.deleteCoupon = async (req, res) => {
 
 exports.getAllCoupons = async (req, res) => {
     try {
-        const coupons = await Coupon.findAll({
-            order: [['id', 'DESC']]
+        const { limit, offset, page } = getPagination(req.query);
+        const coupons = await Coupon.findAndCountAll({
+            order: [['id', 'DESC']],
+            limit,
+            offset
         });
 
         const activeCount = await Coupon.count({ where: { status: 'active' } });
         const inactiveCount = await Coupon.count({ where: { status: 'inactive' } });
         const totalIssuedCount = await Redeem.count();
+
+        const pagingData = getPagingData(coupons, page, limit);
 
         res.json({
             success: true,
@@ -83,7 +89,7 @@ exports.getAllCoupons = async (req, res) => {
                 inactive_coupons: inactiveCount,
                 total_issued: totalIssuedCount
             },
-            coupons: coupons
+            ...pagingData
         });
     } catch (error) {
         res.status(500).json({ message: error.message });
@@ -164,11 +170,15 @@ exports.redeemCoupon = async (req, res) => {
 exports.getUserRedeemedCoupons = async (req, res) => {
     try {
         const userId = req.userId;
-        const redemptions = await Redeem.findAll({
+        const { limit, offset, page } = getPagination(req.query);
+        const redemptions = await Redeem.findAndCountAll({
             where: { user_id: userId },
-            include: [{ model: Coupon }]
+            include: [{ model: Coupon }],
+            order: [['id', 'DESC']],
+            limit,
+            offset
         });
-        res.json(redemptions);
+        res.json(getPagingData(redemptions, page, limit));
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -177,11 +187,15 @@ exports.getUserRedeemedCoupons = async (req, res) => {
 exports.getRedeemedCouponsByUserId = async (req, res) => {
     try {
         const { userId } = req.params;
-        const redemptions = await Redeem.findAll({
+        const { limit, offset, page } = getPagination(req.query);
+        const redemptions = await Redeem.findAndCountAll({
             where: { user_id: userId },
-            include: [{ model: Coupon }]
+            include: [{ model: Coupon }],
+            order: [['id', 'DESC']],
+            limit,
+            offset
         });
-        res.json(redemptions);
+        res.json(getPagingData(redemptions, page, limit));
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -190,7 +204,8 @@ exports.getRedeemedCouponsByUserId = async (req, res) => {
 exports.getUsersByRedeemedCoupon = async (req, res) => {
     try {
         const { couponId } = req.params;
-        const redemptions = await Redeem.findAll({
+        const { limit, offset, page } = getPagination(req.query);
+        const redemptions = await Redeem.findAndCountAll({
             where: { coupon_id: couponId },
             include: [{
                 model: User,
@@ -201,10 +216,13 @@ exports.getUsersByRedeemedCoupon = async (req, res) => {
                     { model: RoleUser, attributes: ['name', 'email'] },
                     { model: Staff, attributes: ['name', 'email'] }
                 ]
-            }]
+            }],
+            limit,
+            offset,
+            order: [['id', 'DESC']]
         });
 
-        const users = redemptions.map(r => {
+        const users = redemptions.rows.map(r => {
             const u = r.User;
             let details = null;
             if (u.Student) details = u.Student;
@@ -220,10 +238,11 @@ exports.getUsersByRedeemedCoupon = async (req, res) => {
             };
         });
 
+        const pagingData = getPagingData({ count: redemptions.count, rows: users }, page, limit);
+
         res.json({
             coupon_id: couponId,
-            redemption_count: users.length,
-            users: users
+            ...pagingData
         });
     } catch (error) {
         res.status(500).json({ message: error.message });

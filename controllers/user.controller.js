@@ -1,7 +1,8 @@
-const { User, Student, Faculty, Staff, RoleUser, Department, RoleAssignment, Role, AuthAccount, Venue } = require('../models');
+const { User, Student, Faculty, Staff, RoleUser, Department, RoleAssignment, Role, AuthAccount, Venue, TaskAssign } = require('../models');
 const xlsx = require('xlsx');
 const bcrypt = require('bcryptjs');
 const { Op } = require('sequelize');
+const { getPagination, getPagingData } = require('../utils/pagination');
 
 // Helper to create base user
 const createBaseUser = async (role, transaction) => {
@@ -377,11 +378,14 @@ exports.assignRole = async (req, res) => {
 exports.getStudentsByDepartment = async (req, res) => {
     try {
         const { deptId } = req.params;
-        const students = await Student.findAll({
+        const { limit, offset, page } = getPagination(req.query);
+        const students = await Student.findAndCountAll({
             where: { department_id: deptId },
-            // include: [{ model: User, attributes: ['status'] }] // Optional
+            limit,
+            offset,
+            order: [['name', 'ASC']]
         });
-        res.json(students);
+        res.json(getPagingData(students, page, limit));
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -390,10 +394,14 @@ exports.getStudentsByDepartment = async (req, res) => {
 exports.getFacultyByDepartment = async (req, res) => {
     try {
         const { deptId } = req.params;
-        const faculty = await Faculty.findAll({
-            where: { department_id: deptId }
+        const { limit, offset, page } = getPagination(req.query);
+        const faculty = await Faculty.findAndCountAll({
+            where: { department_id: deptId },
+            limit,
+            offset,
+            order: [['name', 'ASC']]
         });
-        res.json(faculty);
+        res.json(getPagingData(faculty, page, limit));
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -401,21 +409,23 @@ exports.getFacultyByDepartment = async (req, res) => {
 
 exports.getStudentsByFaculty = async (req, res) => {
     try {
-        const userId = req.userId; // From verifyToken middleware
+        const userId = req.userId;
+        const { limit, offset, page } = getPagination(req.query);
 
-        // 1. Find the faculty record for this user
         const faculty = await Faculty.findOne({ where: { user_id: userId } });
         if (!faculty) {
             return res.status(404).json({ message: 'Faculty profile not found' });
         }
 
-        // 2. Find all students assigned to this faculty
-        const students = await Student.findAll({
+        const students = await Student.findAndCountAll({
             where: { faculty_id: faculty.id },
-            include: [{ model: Department, attributes: ['name'] }]
+            include: [{ model: Department, attributes: ['name'] }],
+            limit,
+            offset,
+            order: [['name', 'ASC']]
         });
 
-        res.json(students);
+        res.json(getPagingData(students, page, limit));
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -468,10 +478,13 @@ exports.getFacultyDetailsWithStudents = async (req, res) => {
 
 exports.getFacultyDailyStats = async (req, res) => {
     try {
-        const userId = req.userId; // From verifyToken middleware
+        const userId = req.userId;
         const { Op } = require('sequelize');
+        const TaskAssign = require('../models').TaskAssign;
+        const Task = require('../models').Task;
+        const TaskType = require('../models').TaskType;
 
-        // 1. Get faculty profile with department
+        // 1. Get faculty profile
         const faculty = await Faculty.findOne({
             where: { user_id: userId },
             include: [{ model: Department, attributes: ['name'] }]
@@ -486,155 +499,128 @@ exports.getFacultyDailyStats = async (req, res) => {
             where: { faculty_id: faculty.id }
         });
 
-        // 3. Get today's date range (start and end of today)
-        const today = new Date();
+        // 3. Setup Date logic (Local time)
+        const now = new Date();
+        const istOffset = 330 * 60 * 1000; // Offset for IST (UTC+5:30) if server is in UTC
+        const localNow = new Date(now.getTime() + (now.getTimezoneOffset() * 60000) + istOffset);
+
+        const today = new Date(localNow);
         today.setHours(0, 0, 0, 0);
+
         const tomorrow = new Date(today);
         tomorrow.setDate(tomorrow.getDate() + 1);
 
-        const TaskAssign = require('../models').TaskAssign;
-        const Task = require('../models').Task;
-        const TaskType = require('../models').TaskType;
+        const dayAfterTomorrow = new Date(tomorrow);
+        dayAfterTomorrow.setDate(dayAfterTomorrow.getDate() + 1);
 
-        // 4. Fetch ALL "Pending" Tasks (Assignments waiting for acceptance, ANY date)
-        const allPendingAssignments = await TaskAssign.findAll({
-            where: {
-                user_id: userId,
-                status: 'pending' // Status in TaskAssign table
-            },
+        // Visibility Rule: Show tomorrow's tasks after 4:30 PM (16:30)
+        const isEvening = localNow.getHours() > 16 || (localNow.getHours() === 16 && localNow.getMinutes() >= 30);
+
+        // Date range for fetching:
+        // Always include Today.
+        // Include Tomorrow only if after 4:30 PM.
+        const dateLimit = isEvening ? dayAfterTomorrow : tomorrow;
+
+        // 4. Fetch Tasks (Filter by TaskType.start_date)
+        const assignments = await TaskAssign.findAll({
+            where: { user_id: userId },
             include: [{
                 model: Task,
                 where: { is_deleted: false },
-                include: [{ model: TaskType }]
+                include: [{
+                    model: TaskType,
+                    required: true,
+                    where: {
+                        start_date: {
+                            [Op.gte]: today,
+                            [Op.lt]: dateLimit
+                        }
+                    }
+                }]
             }],
-            order: [['created_at', 'ASC']]
+            order: [
+                [Task, TaskType, 'start_date', 'ASC'],
+                [Task, TaskType, 'start_time', 'ASC']
+            ]
         });
 
-        // Filter expired pending tasks (Start Time < Now)
-        const now = new Date();
-        const pendingAssignments = allPendingAssignments.filter(assignment => {
+        // 5. Categorize Tasks
+        const allTasksToday = [];
+        const pendingTasks = [];
+
+        // Helper to format date as YYYY-MM-DD in local time
+        const toLocalISO = (d) => {
+            const year = d.getFullYear();
+            const month = String(d.getMonth() + 1).padStart(2, '0');
+            const day = String(d.getDate()).padStart(2, '0');
+            return `${year}-${month}-${day}`;
+        };
+
+        const todayStr = toLocalISO(today);
+        const focusDayStr = isEvening ? toLocalISO(tomorrow) : todayStr;
+
+        assignments.forEach(assignment => {
             const task = assignment.Task;
-            const taskType = task.TaskTypes && task.TaskTypes[0];
+            const taskType = task.TaskTypes[0];
 
-            if (!taskType) return false; // Or return true to be safe? But usually task has type.
+            const formattedTask = {
+                assignment_id: assignment.id,
+                task_id: task.task_id,
+                title: task.title,
+                description: task.description,
+                category: task.category,
+                priority: task.priority,
+                score: task.score,
+                penalty_per_hour: task.penalty_per_hour,
+                is_approved: task.is_approved,
+                status: assignment.status,
+                task_type: {
+                    name: taskType.task_name,
+                    start_date: taskType.start_date,
+                    end_date: taskType.end_date,
+                    start_time: taskType.start_time,
+                    end_time: taskType.end_time,
+                    venue_id: taskType.venue_id
+                },
+                assigned_at: assignment.created_at
+            };
 
-            let startDateTime = null;
+            const taskDateStr = toLocalISO(new Date(taskType.start_date));
 
-            // Logic to determine Start DateTime based on Task Type
-            if (taskType.task_name === 'Fixed Time Task' || taskType.task_name === 'Meeting') {
-                if (taskType.start_date && taskType.start_time) {
-                    // Combine date and time
-                    const dateStr = new Date(taskType.start_date).toISOString().split('T')[0];
-                    const timeStr = taskType.start_time; // format HH:mm:ss
-                    startDateTime = new Date(`${dateStr}T${timeStr}`);
-                } else if (taskType.start_date) {
-                    startDateTime = new Date(taskType.start_date);
-                }
-            } else if (taskType.start_date) {
-                // Other types with date
-                startDateTime = new Date(taskType.start_date);
+            if (taskDateStr === todayStr && (assignment.status === 'accepted' || assignment.status === 'completed')) {
+                allTasksToday.push(formattedTask);
             }
 
-            // If start time is in the future, include it. If null, include it (safe default).
-            if (startDateTime && startDateTime > now) {
-                return true;
+            // pending_tasks shows only pending tasks for the CURRENT ACTION DAY (based on 16:30 shift)
+            if (taskDateStr === focusDayStr && assignment.status === 'pending') {
+                pendingTasks.push(formattedTask);
             }
-            if (!startDateTime) return true; // Keep tasks without start time just in case
-
-            return false;
         });
 
-        // 5. Fetch "Scheduled Today" Tasks (Assignments created today AND Accepted/Completed)
-        const todayApprovedAssignments = await TaskAssign.findAll({
-            where: {
-                user_id: userId,
-                status: { [Op.in]: ['accepted', 'completed'] }, // Only show if approved/accepted/completed
-                created_at: {
-                    [Op.gte]: today,
-                    [Op.lt]: tomorrow
-                }
-            },
-            include: [{
-                model: Task,
-                where: { is_deleted: false },
-                include: [{ model: TaskType }]
-            }]
-        });
-
-        const totalTasksToday = todayApprovedAssignments.length;
-        const pendingCount = pendingAssignments.length;
-
-        // 6. Format Approved/Today Tasks
-        const allTasksDetails = todayApprovedAssignments.map(assignment => ({
-            assignment_id: assignment.id,
-            task_id: assignment.Task.task_id,
-            title: assignment.Task.title,
-            description: assignment.Task.description,
-            category: assignment.Task.category,
-            priority: assignment.Task.priority,
-            score: assignment.Task.score,
-            penalty_per_hour: assignment.Task.penalty_per_hour,
-            is_approved: assignment.Task.is_approved,
-            status: assignment.status,
-            task_type: assignment.Task.TaskTypes && assignment.Task.TaskTypes[0]
-                ? {
-                    name: assignment.Task.TaskTypes[0].task_name,
-                    start_date: assignment.Task.TaskTypes[0].start_date,
-                    end_date: assignment.Task.TaskTypes[0].end_date,
-                    start_time: assignment.Task.TaskTypes[0].start_time,
-                    end_time: assignment.Task.TaskTypes[0].end_time
-                }
-                : null,
-            assigned_at: assignment.created_at
-        }));
-
-        // 7. Format Pending Tasks
-        const pendingTaskDetails = pendingAssignments.map(assignment => ({
-            assignment_id: assignment.id,
-            task_id: assignment.Task.task_id,
-            title: assignment.Task.title,
-            description: assignment.Task.description,
-            category: assignment.Task.category,
-            priority: assignment.Task.priority,
-            score: assignment.Task.score,
-            penalty_per_hour: assignment.Task.penalty_per_hour,
-            is_approved: assignment.Task.is_approved,
-            status: assignment.status,
-            task_type: assignment.Task.TaskTypes && assignment.Task.TaskTypes[0]
-                ? {
-                    name: assignment.Task.TaskTypes[0].task_name,
-                    start_date: assignment.Task.TaskTypes[0].start_date,
-                    end_date: assignment.Task.TaskTypes[0].end_date,
-                    start_time: assignment.Task.TaskTypes[0].start_time,
-                    end_time: assignment.Task.TaskTypes[0].end_time,
-                    venue_id: assignment.Task.TaskTypes[0].venue_id
-                }
-                : null,
-            assigned_at: assignment.created_at
-        }));
-
-        // 8. Construct response
-        const response = {
+        // 6. Response construction
+        res.json({
             faculty_info: {
                 id: faculty.id,
                 name: faculty.name,
                 email: faculty.email,
                 reg_no: faculty.reg_no,
-                department: faculty.Department ? faculty.Department.name : 'N/A',
+                department: faculty.Department?.name || 'N/A',
                 type: faculty.type
             },
             daily_stats: {
-                date: new Date(new Date().getTime() - (new Date().getTimezoneOffset() * 60000)).toISOString().split('T')[0],
-                total_tasks_assigned_today: totalTasksToday,
-                pending_tasks_count: pendingCount,
-                mentee_students_count: menteeCount
+                date: todayStr,
+                total_tasks_assigned_today: allTasksToday.length,
+                pending_tasks_count: pendingTasks.length,
+                mentee_students_count: menteeCount,
+                focus_day: focusDayStr,
+                visibility_window: isEvening ? "Tomorrow Preview (After 4:30 PM)" : "Today Focus"
             },
-            all_tasks_today: allTasksDetails,
-            pending_tasks: pendingTaskDetails
-        };
+            all_tasks_today: allTasksToday,
+            pending_tasks: pendingTasks
+        });
 
-        res.json(response);
     } catch (error) {
+        console.error('Error in getFacultyDailyStats:', error);
         res.status(500).json({ message: error.message });
     }
 };
@@ -757,6 +743,21 @@ const getFullProfile = async (id, role) => {
                 where: { user_id: id },
                 include: [{ model: AuthAccount, attributes: ['email'] }]
             });
+
+            if (userDetails) {
+                const userId = userDetails.user_id;
+
+                const counts = await Promise.all([
+                    TaskAssign.count({ where: { user_id: userId } }),
+                    TaskAssign.count({ where: { user_id: userId, status: { [Op.in]: ['pending', 'accepted'] } } }),
+                    TaskAssign.count({ where: { user_id: userId, status: 'completed' } })
+                ]);
+
+                userDetails = userDetails.toJSON();
+                userDetails.total_tasks = counts[0];
+                userDetails.pending_tasks = counts[1];
+                userDetails.completed_tasks = counts[2];
+            }
             break;
         case 'role-user':
             userDetails = await RoleUser.findOne({
@@ -869,6 +870,100 @@ exports.getUserDetails = async (req, res) => {
     }
 };
 
+// NEW: Comprehensive User Activity API
+exports.getUserActivity = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { Task, TaskType } = require('../models');
+        const { Op } = require('sequelize');
+
+        const user = await User.findByPk(id);
+        if (!user) {
+            return res.status(404).json({ message: 'User not found' });
+        }
+
+        const profile = await getFullProfile(id, user.role);
+
+        // Helper: Get YYYY-MM-DD in local time
+        const getLocalDateString = (d) => {
+            const dateObj = new Date(d);
+            const year = dateObj.getFullYear();
+            const month = String(dateObj.getMonth() + 1).padStart(2, '0');
+            const day = String(dateObj.getDate()).padStart(2, '0');
+            return `${year}-${month}-${day}`;
+        };
+
+        const todayStr = getLocalDateString(new Date());
+
+        // 1. Fetch Directives (Assigned to user)
+        const directives = await TaskAssign.findAll({
+            where: { user_id: id },
+            include: [{
+                model: Task,
+                where: { origin_type: 'directive', is_deleted: false },
+                include: [{
+                    model: TaskType,
+                    where: {
+                        [Op.or]: [
+                            { start_date: todayStr },
+                            { [Op.and]: [{ start_date: { [Op.lte]: todayStr } }, { end_date: { [Op.gte]: todayStr } }] }
+                        ]
+                    }
+                }]
+            }]
+        });
+
+        // 2. Fetch Self-Logs (Created by user)
+        const selfLogs = await Task.findAll({
+            where: { creator_id: id, origin_type: 'self-log', is_deleted: false },
+            include: [{
+                model: TaskType,
+                where: {
+                    [Op.or]: [
+                        { start_date: todayStr },
+                        { [Op.and]: [{ start_date: { [Op.lte]: todayStr } }, { end_date: { [Op.gte]: todayStr } }] }
+                    ]
+                }
+            }]
+        });
+
+        res.json({
+            user_id: user.user_id,
+            role: user.role,
+            profile: profile,
+            today: {
+                date: todayStr,
+                directives: directives.map(d => ({
+                    task_id: d.Task.task_id,
+                    title: d.Task.title,
+                    status: d.status,
+                    category: d.Task.category,
+                    priority: d.Task.priority,
+                    time: d.Task.TaskTypes?.[0] ? {
+                        start_time: d.Task.TaskTypes[0].start_time,
+                        end_time: d.Task.TaskTypes[0].end_time
+                    } : null
+                })),
+                self_logs: selfLogs.map(s => ({
+                    task_id: s.task_id,
+                    title: s.title,
+                    status: 'Active',
+                    category: s.category,
+                    priority: s.priority,
+                    time: s.TaskTypes?.[0] ? {
+                        start_time: s.TaskTypes[0].start_time,
+                        end_time: s.TaskTypes[0].end_time
+                    } : null
+                }))
+            }
+        });
+
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+
 exports.getProfile = async (req, res) => {
     try {
         const id = req.userId; // Set by verifyToken middleware
@@ -898,6 +993,9 @@ exports.getProfile = async (req, res) => {
 
 exports.getManagementStaff = async (req, res) => {
     try {
+        const { limit, offset, page } = getPagination(req.query);
+
+        // Fetch everything first because we need careful merging and filtering
         const facultyStaff = await Faculty.findAll({
             include: [{ model: Department, attributes: ['name'] }]
         });
@@ -954,11 +1052,13 @@ exports.getManagementStaff = async (req, res) => {
             }
         });
 
-        res.json({
-            faculty: formattedFaculty,
-            incharges: Array.from(inchargeMap.values()),
-            total_management_staff: formattedFaculty.length + inchargeMap.size
-        });
+        const combinedList = [...formattedFaculty, ...Array.from(inchargeMap.values())];
+
+        // Manual pagination
+        const totalItems = combinedList.length;
+        const paginatedItems = combinedList.slice(offset, offset + limit);
+
+        res.json(getPagingData({ count: totalItems, rows: paginatedItems }, page, limit));
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -966,6 +1066,8 @@ exports.getManagementStaff = async (req, res) => {
 
 exports.getAllHODs = async (req, res) => {
     try {
+        const { limit, offset, page } = getPagination(req.query);
+
         const hodAssignments = await RoleAssignment.findAll({
             where: { '$Role.user_role$': 'HOD' },
             include: [
@@ -995,7 +1097,6 @@ exports.getAllHODs = async (req, res) => {
                     role: ra.Role?.user_role
                 });
             } else {
-                // If they have multiple assignments, append the department names
                 const existing = hodMap.get(userId);
                 if (ra.Department?.name && !existing.department.includes(ra.Department.name)) {
                     existing.department = `${existing.department}, ${ra.Department.name}`;
@@ -1003,7 +1104,11 @@ exports.getAllHODs = async (req, res) => {
             }
         });
 
-        res.json(Array.from(hodMap.values()));
+        const usersList = Array.from(hodMap.values());
+        const totalItems = usersList.length;
+        const paginatedItems = usersList.slice(offset, offset + limit);
+
+        res.json(getPagingData({ count: totalItems, rows: paginatedItems }, page, limit));
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -1011,6 +1116,8 @@ exports.getAllHODs = async (req, res) => {
 
 exports.getAllIncharges = async (req, res) => {
     try {
+        const { limit, offset, page } = getPagination(req.query);
+
         const inchargeAssignments = await RoleAssignment.findAll({
             where: {
                 [Op.or]: [
@@ -1059,7 +1166,11 @@ exports.getAllIncharges = async (req, res) => {
             }
         });
 
-        res.json(Array.from(inchargeMap.values()));
+        const usersList = Array.from(inchargeMap.values());
+        const totalItems = usersList.length;
+        const paginatedItems = usersList.slice(offset, offset + limit);
+
+        res.json(getPagingData({ count: totalItems, rows: paginatedItems }, page, limit));
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -1073,30 +1184,36 @@ exports.getUnifiedUsers = async (req, res) => {
             return res.status(400).json({ message: 'Role is required' });
         }
 
-        let users = [];
+        let responseData = {};
 
         if (role === 'student') {
             const whereClause = {};
             if (department_id) whereClause.department_id = department_id;
 
-            users = await Student.findAll({
+            const users = await Student.findAll({
                 where: whereClause,
                 attributes: ['user_id', 'name', 'email', 'reg_no', 'score', 'total_score', 'penalty', 'department_id'],
-                include: [{ model: Department, attributes: ['name'] }]
+                include: [{ model: Department, attributes: ['name'] }],
+                order: [['name', 'ASC']]
             });
+            responseData = users;
         } else if (role === 'faculty') {
             const whereClause = {};
             if (department_id) whereClause.department_id = department_id;
 
-            users = await Faculty.findAll({
+            const users = await Faculty.findAll({
                 where: whereClause,
                 attributes: ['user_id', 'name', 'email', 'reg_no', 'score', 'total_score', 'penalty', 'department_id', 'type'],
-                include: [{ model: Department, attributes: ['name'] }]
+                include: [{ model: Department, attributes: ['name'] }],
+                order: [['name', 'ASC']]
             });
+            responseData = users;
         } else if (role === 'staff') {
-            users = await Staff.findAll({
-                attributes: ['user_id', 'name', 'email', 'designation', 'score', 'total_score', 'penalty']
+            const users = await Staff.findAll({
+                attributes: ['user_id', 'name', 'email', 'designation', 'score', 'total_score', 'penalty'],
+                order: [['name', 'ASC']]
             });
+            responseData = users;
         } else if (role === 'hod') {
             const hodAssignments = await RoleAssignment.findAll({
                 where: {
@@ -1114,7 +1231,7 @@ exports.getUnifiedUsers = async (req, res) => {
                 ]
             });
 
-            users = hodAssignments.map(ra => {
+            const usersList = hodAssignments.map(ra => {
                 const profile = ra.User?.RoleUser;
                 return {
                     user_id: ra.user_id,
@@ -1127,8 +1244,9 @@ exports.getUnifiedUsers = async (req, res) => {
                     role: 'HOD'
                 };
             });
+
+            responseData = usersList;
         } else if (role === 'incharge') {
-            // Logic for incharges (assuming they are RoleUsers)
             const inchargeAssignments = await RoleAssignment.findAll({
                 where: {
                     [Op.or]: [
@@ -1148,7 +1266,6 @@ exports.getUnifiedUsers = async (req, res) => {
                 ]
             });
 
-            // Map to unique users with scores
             const userMap = new Map();
             inchargeAssignments.forEach(ra => {
                 if (ra.Role?.user_role === 'HOD' && !ra.venue_id) return;
@@ -1170,12 +1287,12 @@ exports.getUnifiedUsers = async (req, res) => {
                     });
                 }
             });
-            users = Array.from(userMap.values());
+            responseData = Array.from(userMap.values());
         } else {
             return res.status(400).json({ message: 'Invalid role specified' });
         }
 
-        res.json(users);
+        res.json(responseData);
 
     } catch (error) {
         res.status(500).json({ message: error.message });
@@ -1260,3 +1377,36 @@ exports.getAllUsersByDepartment = async (req, res) => {
 };
 
 module.exports = exports;
+exports.updateStudentFaculty = async (req, res) => {
+    try {
+        const { id } = req.params; // student user_id
+        const { faculty_id } = req.body;
+
+        if (!faculty_id) {
+            return res.status(400).json({ message: 'faculty_id is required' });
+        }
+
+        const student = await Student.findOne({ where: { user_id: id } });
+        if (!student) {
+            return res.status(404).json({ message: 'Student not found' });
+        }
+
+        const faculty = await Faculty.findByPk(faculty_id);
+        if (!faculty) {
+            return res.status(404).json({ message: 'Faculty not found' });
+        }
+
+        await student.update({ faculty_id });
+
+        res.json({
+            message: 'Student faculty updated successfully',
+            student: {
+                user_id: student.user_id,
+                name: student.name,
+                faculty_id: student.faculty_id
+            }
+        });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};

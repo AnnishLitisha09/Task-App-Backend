@@ -1,10 +1,12 @@
 const { Department, Venue, RoleAssignment, User, RoleUser, Role, Resource } = require('../models');
+const { getPagination, getPagingData } = require('../utils/pagination');
 const fs = require('fs');
 const path = require('path');
 
 exports.getAllDepartments = async (req, res) => {
     try {
-        const departments = await Department.findAll({
+        const { limit, offset, page } = getPagination(req.query);
+        const { count, rows: departments } = await Department.findAndCountAll({
             include: [{
                 model: RoleAssignment,
                 include: [
@@ -20,7 +22,10 @@ exports.getAllDepartments = async (req, res) => {
                     }
                 ],
                 required: false
-            }]
+            }],
+            limit,
+            offset,
+            order: [['name', 'ASC']]
         });
 
         const formatted = departments.map(dept => {
@@ -37,7 +42,7 @@ exports.getAllDepartments = async (req, res) => {
             };
         });
 
-        res.json(formatted);
+        res.json(getPagingData({ count, rows: formatted }, page, limit));
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -158,7 +163,8 @@ exports.deleteDepartment = async (req, res) => {
 
 exports.getUnassignedHODs = async (req, res) => {
     try {
-        // Fetch all users with profile 'role-user' who don't have an 'HOD' role assignment
+        const { limit, offset, page } = getPagination(req.query);
+        // Fetch all users with profile 'role-user'
         const unassigned = await RoleUser.findAll({
             include: [{
                 model: User,
@@ -177,11 +183,14 @@ exports.getUnassignedHODs = async (req, res) => {
             return !hasHodRole;
         });
 
-        res.json(filtered.map(ru => ({
+        const formatted = filtered.map(ru => ({
             user_id: ru.user_id,
             name: ru.name,
             email: ru.email
-        })));
+        }));
+
+        const paginated = formatted.slice(offset, offset + limit);
+        res.json(getPagingData({ count: formatted.length, rows: paginated }, page, limit));
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -189,7 +198,8 @@ exports.getUnassignedHODs = async (req, res) => {
 
 exports.getAllVenues = async (req, res) => {
     try {
-        const venues = await Venue.findAll({
+        const { limit, offset, page } = getPagination(req.query);
+        const { count, rows: venues } = await Venue.findAndCountAll({
             include: [
                 {
                     model: RoleAssignment,
@@ -212,6 +222,8 @@ exports.getAllVenues = async (req, res) => {
                     ]
                 }
             ],
+            limit,
+            offset,
             order: [['venue_id', 'ASC']]
         });
 
@@ -246,7 +258,7 @@ exports.getAllVenues = async (req, res) => {
             return venueData;
         });
 
-        res.json(formattedVenues);
+        res.json(getPagingData({ count, rows: formattedVenues }, page, limit));
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -456,10 +468,14 @@ exports.deleteVenue = async (req, res) => {
 // Get all resources
 exports.getAllResources = async (req, res) => {
     try {
-        const resources = await Resource.findAll({
-            where: { deleted_at: null }
+        const { limit, offset, page } = getPagination(req.query);
+        const resources = await Resource.findAndCountAll({
+            where: { deleted_at: null },
+            limit,
+            offset,
+            order: [['resource_id', 'ASC']]
         });
-        res.json(resources);
+        res.json(getPagingData(resources, page, limit));
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -633,12 +649,15 @@ exports.getDepartmentAnalytics = async (req, res) => {
 };
 
 // Resource CRUD
-exports.getAllResources = async (req, res) => {
+exports.getAllResources = async (req, res) => { // Duplicate function in original file
     try {
-        const resources = await Resource.findAll({
-            order: [['resource_id', 'ASC']]
+        const { limit, offset, page } = getPagination(req.query);
+        const resources = await Resource.findAndCountAll({
+            order: [['resource_id', 'ASC']],
+            limit,
+            offset
         });
-        res.json(resources);
+        res.json(getPagingData(resources, page, limit));
     } catch (error) {
         res.status(500).json({ message: error.message });
     }

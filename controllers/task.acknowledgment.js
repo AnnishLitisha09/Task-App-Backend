@@ -278,4 +278,39 @@ exports.getUnacknowledgedUsersReport = async (req, res) => {
     }
 };
 
+// General daily acknowledgement (Morning Awareness)
+exports.acknowledgeGeneral = async (req, res) => {
+    try {
+        const userId = req.userId;
+        const today = new Date().toISOString().split('T')[0];
+
+        // Create or update general acknowledgment record (task_id is NULL)
+        const [ack, created] = await TaskAcknowledgment.findOrCreate({
+            where: {
+                task_id: null,
+                user_id: userId,
+                acknowledge_date: today
+            },
+            defaults: {
+                acknowledged_at: new Date()
+            }
+        });
+
+        if (!created && !ack.acknowledged_at) {
+            await ack.update({ acknowledged_at: new Date() });
+        }
+
+        res.json({
+            success: true,
+            message: 'Daily awareness acknowledged successfully',
+            acknowledged_at: ack.acknowledged_at,
+            date: today
+        });
+
+    } catch (error) {
+        console.error('Error in acknowledgeGeneral:', error);
+        res.status(500).json({ message: error.message });
+    }
+};
+
 module.exports = exports;

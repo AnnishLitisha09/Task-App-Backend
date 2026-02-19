@@ -1,4 +1,4 @@
-const { Task, TaskAssign, TaskClosure, TaskPackageClosure, User } = require('../models');
+const { Task, TaskAssign, TaskClosure, TaskPackageClosure, User, TaskLog } = require('../models');
 
 // Close Task
 exports.closeTask = async (req, res) => {
@@ -48,6 +48,21 @@ exports.closeTask = async (req, res) => {
                 reason: reason || null,
                 submitted_time: new Date()
             }, { transaction: t });
+
+            await TaskLog.create({
+                task_id: taskId,
+                user_id: userId,
+                action: is_completed ? 'complete' : 'reject_on_close',
+                details: `Task closed with status: ${is_completed ? 'completed' : 'rejected'}`
+            }, { transaction: t });
+        } else {
+            // Still log that the task itself was updated
+            await TaskLog.create({
+                task_id: taskId,
+                user_id: userId,
+                action: 'close',
+                details: `Task marked as ${is_completed ? 'Inactive' : 'Active'}`
+            }, { transaction: t });
         }
 
         await t.commit();
@@ -55,6 +70,16 @@ exports.closeTask = async (req, res) => {
 
     } catch (error) {
         await t.rollback();
+        res.status(500).json({ message: error.message });
+    }
+};
+
+// Get all closure types
+exports.getClosureTypes = async (req, res) => {
+    try {
+        const closures = await TaskClosure.findAll();
+        res.json(closures);
+    } catch (error) {
         res.status(500).json({ message: error.message });
     }
 };

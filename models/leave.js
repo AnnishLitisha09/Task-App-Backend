@@ -43,6 +43,16 @@ module.exports = (sequelize, DataTypes) => {
       allowNull: false
     },
 
+    from_time: {
+      type: DataTypes.TIME,
+      allowNull: true
+    },
+
+    to_time: {
+      type: DataTypes.TIME,
+      allowNull: true
+    },
+
     reason: {
       type: DataTypes.TEXT,
       allowNull: true

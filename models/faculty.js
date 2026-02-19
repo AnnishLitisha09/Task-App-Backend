@@ -6,6 +6,7 @@ module.exports = (sequelize, DataTypes) => {
     static associate(models) {
       Faculty.belongsTo(models.User, { foreignKey: 'user_id' });
       Faculty.belongsTo(models.Department, { foreignKey: 'department_id' });
+      Faculty.belongsTo(models.AuthAccount, { foreignKey: 'user_id' });
       // Faculty can have many tasks assigned (if needed)
       Faculty.hasMany(models.Task, { foreignKey: 'faculty_id' });
     }

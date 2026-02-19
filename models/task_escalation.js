@@ -36,6 +36,15 @@ module.exports = (sequelize, DataTypes) => {
             type: DataTypes.ENUM('pending', 'reviewed', 'resolved'),
             defaultValue: 'pending'
         },
+        is_read: {
+            type: DataTypes.BOOLEAN,
+            defaultValue: false,
+            allowNull: false
+        },
+        msg: {
+            type: DataTypes.TEXT,
+            allowNull: true
+        },
         created_at: {
             type: DataTypes.DATE,
             defaultValue: DataTypes.NOW

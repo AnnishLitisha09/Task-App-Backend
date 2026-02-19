@@ -4,9 +4,11 @@ const { Model } = require('sequelize');
 module.exports = (sequelize, DataTypes) => {
   class AuthAccount extends Model {
     static associate(models) {
-      AuthAccount.belongsTo(models.User, {
-        foreignKey: 'user_id'
-      });
+      AuthAccount.belongsTo(models.User, { foreignKey: 'user_id' });
+      AuthAccount.hasOne(models.Student, { foreignKey: 'user_id', sourceKey: 'user_id' });
+      AuthAccount.hasOne(models.Faculty, { foreignKey: 'user_id', sourceKey: 'user_id' });
+      AuthAccount.hasOne(models.Staff, { foreignKey: 'user_id', sourceKey: 'user_id' });
+      AuthAccount.hasOne(models.RoleUser, { foreignKey: 'user_id', sourceKey: 'user_id' });
     }
   }
 

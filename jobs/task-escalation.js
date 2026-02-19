@@ -1,5 +1,5 @@
 const cron = require('node-cron');
-const { Task, TaskAssign, User, Student, Faculty, RoleUser } = require('../models');
+const { Task, TaskAssign, User, Student, Faculty, RoleUser, Notification, TaskType } = require('../models');
 const { Op } = require('sequelize');
 
 /**
@@ -62,5 +62,71 @@ exports.runTaskEscalation = async () => {
     } catch (error) {
         console.error('[CRON ERROR] runTaskEscalation:', error.message);
         return { error: error.message };
+    }
+};
+/**
+ * Check Task Acceptance Status (30 minutes before start)
+ * Logic:
+ * 1. Find tasks starting in the next 30-45 minutes.
+ * 2. Check for pending assignments.
+ * 3. Notify creator with summary.
+ */
+exports.checkTaskAcceptance = async () => {
+    try {
+        const now = new Date();
+        const thirtyMinsLater = new Date(now.getTime() + 30 * 60000);
+        const fortyFiveMinsLater = new Date(now.getTime() + 45 * 60000);
+
+        console.log(`[CRON] Checking acceptance for tasks starting between ${thirtyMinsLater.toLocaleTimeString()} and ${fortyFiveMinsLater.toLocaleTimeString()}`);
+
+        const taskTypes = await TaskType.findAll({
+            where: {
+                start_date: now.toISOString().split('T')[0],
+                start_time: {
+                    [Op.between]: [
+                        thirtyMinsLater.toTimeString().split(' ')[0],
+                        fortyFiveMinsLater.toTimeString().split(' ')[0]
+                    ]
+                }
+            },
+            include: [{
+                model: Task,
+                where: { is_deleted: false },
+                include: [{ model: TaskAssign }]
+            }]
+        });
+
+        for (const tt of taskTypes) {
+            const task = tt.Task;
+            if (!task) continue;
+
+            const assignments = task.TaskAssigns || [];
+            const pendingCount = assignments.filter(a => a.status === 'pending').length;
+            const acceptedCount = assignments.filter(a => a.status === 'accepted' || a.status === 'completed').length;
+
+            if (pendingCount > 0) {
+                // Send notification to creator
+                await Notification.create({
+                    user_id: task.creator_id,
+                    title: 'Task Acceptance Alert',
+                    msg: `URGENT: Your task "${task.title}" starts in 30 minutes. ${acceptedCount} accepted, ${pendingCount} still pending!`,
+                    type: 'task_escalation'
+                });
+
+                // Also create formal escalation if not already done
+                if (!task.is_escalate) {
+                    await task.update({ is_escalate: true });
+                    await TaskEscalation.create({
+                        task_id: task.task_id,
+                        reason: `System: ${pendingCount} users have not accepted the task 30 minutes before start.`,
+                        creator_id: task.creator_id,
+                        rejected_user_id: task.creator_id, // Assigned to creator as alert
+                        status: 'pending'
+                    });
+                }
+            }
+        }
+    } catch (error) {
+        console.error('[CRON ERROR] checkTaskAcceptance:', error.message);
     }
 };

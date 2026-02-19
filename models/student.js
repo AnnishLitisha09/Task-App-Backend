@@ -7,6 +7,7 @@ module.exports = (sequelize, DataTypes) => {
       Student.belongsTo(models.User, { foreignKey: 'user_id' });
       Student.belongsTo(models.Department, { foreignKey: 'department_id' });
       Student.belongsTo(models.Faculty, { foreignKey: 'faculty_id' });
+      Student.belongsTo(models.AuthAccount, { foreignKey: 'user_id' });
       // Student can have many task assignments
       Student.hasMany(models.TaskAssign, { foreignKey: 'user_id' });
     }

@@ -12,6 +12,7 @@ router.get('/my-leaves', leaveController.getStudentLeaves);
 
 // Faculty Leave Routes
 router.get('/faculty/pending', leaveController.getFacultyPendingApprovals);
+router.get('/faculty/all', leaveController.getFacultyStudentLeaves);
 router.put('/:id/status', leaveController.approveOrRejectLeave);
 
 module.exports = router;
