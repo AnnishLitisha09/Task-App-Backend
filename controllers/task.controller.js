@@ -2183,4 +2183,85 @@ exports.getDailyTasks = async (req, res) => {
     }
 };
 
+// Pause a task (only allowed when is_pause_allowed = true)
+exports.pauseTask = async (req, res) => {
+    try {
+        const { id: taskId } = req.params;
+        const userId = req.userId;
+
+        const task = await Task.findOne({ where: { task_id: taskId, is_deleted: false } });
+        if (!task) {
+            return res.status(404).json({ message: 'Task not found' });
+        }
+
+        // Guard: only tasks that allow pausing can be paused
+        if (!task.is_pause_allowed) {
+            return res.status(403).json({ message: 'This task does not allow pausing (is_pause_allowed is false)' });
+        }
+
+        if (task.is_paused) {
+            return res.status(400).json({ message: 'Task is already paused' });
+        }
+
+        await task.update({ is_paused: true });
+
+        await TaskLog.create({
+            task_id: taskId,
+            user_id: userId,
+            action: 'pause',
+            details: `Task paused by user ${userId} at ${new Date().toISOString()}`
+        });
+
+        res.json({
+            message: 'Task paused successfully',
+            task_id: task.task_id,
+            is_paused: true
+        });
+
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+// Resume a paused task (only allowed when is_pause_allowed = true)
+exports.resumeTask = async (req, res) => {
+    try {
+        const { id: taskId } = req.params;
+        const userId = req.userId;
+
+        const task = await Task.findOne({ where: { task_id: taskId, is_deleted: false } });
+        if (!task) {
+            return res.status(404).json({ message: 'Task not found' });
+        }
+
+        // Guard: only tasks that allow pausing can be resumed
+        if (!task.is_pause_allowed) {
+            return res.status(403).json({ message: 'This task does not allow pause/resume (is_pause_allowed is false)' });
+        }
+
+        if (!task.is_paused) {
+            return res.status(400).json({ message: 'Task is not currently paused' });
+        }
+
+        await task.update({ is_paused: false });
+
+        await TaskLog.create({
+            task_id: taskId,
+            user_id: userId,
+            action: 'resume',
+            details: `Task resumed by user ${userId} at ${new Date().toISOString()}`
+        });
+
+        res.json({
+            message: 'Task resumed successfully',
+            task_id: task.task_id,
+            is_paused: false
+        });
+
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
 module.exports = exports;
+
