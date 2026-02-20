@@ -1,19 +1,15 @@
 const { Notification } = require('../models');
-const { getPagination, getPagingData } = require('../utils/pagination');
+
 
 // Fetch user notifications
 exports.getNotifications = async (req, res) => {
     try {
         const userId = req.userId;
-        const { limit, offset, page } = getPagination(req.query);
-
-        const notifications = await Notification.findAndCountAll({
+        const notifications = await Notification.findAll({
             where: { user_id: userId },
-            order: [['created_at', 'DESC']],
-            limit,
-            offset
+            order: [['created_at', 'DESC']]
         });
-        res.json(getPagingData(notifications, page, limit));
+        res.json({ total: notifications.length, notifications });
     } catch (error) {
         res.status(500).json({ message: error.message });
     }

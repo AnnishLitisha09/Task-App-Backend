@@ -1,5 +1,5 @@
 const { Leave, User, Student, Faculty, Department } = require('../models');
-const { getPagination, getPagingData } = require('../utils/pagination');
+
 
 // --- Student Actions ---
 
@@ -62,15 +62,11 @@ exports.deleteLeave = async (req, res) => {
 exports.getStudentLeaves = async (req, res) => {
     try {
         const userId = req.userId;
-        const { limit, offset, page } = getPagination(req.query);
-
-        const leaves = await Leave.findAndCountAll({
+        const leaves = await Leave.findAll({
             where: { user_id: userId },
-            order: [['created_at', 'DESC']],
-            limit,
-            offset
+            order: [['created_at', 'DESC']]
         });
-        res.json(getPagingData(leaves, page, limit));
+        res.json({ total: leaves.length, leaves });
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -81,49 +77,27 @@ exports.getStudentLeaves = async (req, res) => {
 // Fetch leave approvals for a specific faculty
 exports.getFacultyPendingApprovals = async (req, res) => {
     try {
-        const userId = req.userId; // Faculty's user_id
+        const userId = req.userId;
         const userRole = req.userRole;
-        const { limit, offset, page } = getPagination(req.query);
+        if (userRole !== 'faculty') return res.status(403).json({ message: 'Access denied' });
 
-        if (userRole !== 'faculty') {
-            return res.status(403).json({ message: 'Access denied' });
-        }
-
-        // Get the faculty profile to get faculty_id (PK of Faculty table)
         const facultyProfile = await Faculty.findOne({ where: { user_id: userId } });
-        if (!facultyProfile) {
-            return res.status(404).json({ message: 'Faculty profile not found' });
-        }
+        if (!facultyProfile) return res.status(404).json({ message: 'Faculty profile not found' });
 
-        // Find students assigned to this faculty
-        const assignedStudents = await Student.findAll({
-            where: { faculty_id: facultyProfile.id },
-            attributes: ['user_id']
-        });
-
+        const assignedStudents = await Student.findAll({ where: { faculty_id: facultyProfile.id }, attributes: ['user_id'] });
         const studentUserIds = assignedStudents.map(s => s.user_id);
 
-        // Fetch leaves for these students
-        const leaves = await Leave.findAndCountAll({
-            where: {
-                user_id: studentUserIds,
-                status: 'pending'
-            },
+        const leaves = await Leave.findAll({
+            where: { user_id: studentUserIds, status: 'pending' },
             include: [{
                 model: User,
                 attributes: ['user_id', 'role'],
-                include: [{
-                    model: Student,
-                    attributes: ['name', 'reg_no', 'department_id'],
-                    include: [{ model: Department, attributes: ['name'] }]
-                }]
+                include: [{ model: Student, attributes: ['name', 'reg_no', 'department_id'], include: [{ model: Department, attributes: ['name'] }] }]
             }],
-            limit,
-            offset,
             order: [['created_at', 'DESC']]
         });
 
-        res.json(getPagingData(leaves, page, limit));
+        res.json({ total: leaves.length, leaves });
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -134,41 +108,25 @@ exports.getFacultyStudentLeaves = async (req, res) => {
     try {
         const userId = req.userId;
         const userRole = req.userRole;
-        const { limit, offset, page } = getPagination(req.query);
-
-        if (userRole !== 'faculty') {
-            return res.status(403).json({ message: 'Access denied' });
-        }
+        if (userRole !== 'faculty') return res.status(403).json({ message: 'Access denied' });
 
         const facultyProfile = await Faculty.findOne({ where: { user_id: userId } });
-        if (!facultyProfile) {
-            return res.status(404).json({ message: 'Faculty profile not found' });
-        }
+        if (!facultyProfile) return res.status(404).json({ message: 'Faculty profile not found' });
 
-        const assignedStudents = await Student.findAll({
-            where: { faculty_id: facultyProfile.id },
-            attributes: ['user_id']
-        });
-
+        const assignedStudents = await Student.findAll({ where: { faculty_id: facultyProfile.id }, attributes: ['user_id'] });
         const studentUserIds = assignedStudents.map(s => s.user_id);
 
-        const leaves = await Leave.findAndCountAll({
+        const leaves = await Leave.findAll({
             where: { user_id: studentUserIds },
             include: [{
                 model: User,
                 attributes: ['user_id', 'role'],
-                include: [{
-                    model: Student,
-                    attributes: ['name', 'reg_no', 'department_id'],
-                    include: [{ model: Department, attributes: ['name'] }]
-                }]
+                include: [{ model: Student, attributes: ['name', 'reg_no', 'department_id'], include: [{ model: Department, attributes: ['name'] }] }]
             }],
-            limit,
-            offset,
             order: [['created_at', 'DESC']]
         });
 
-        res.json(getPagingData(leaves, page, limit));
+        res.json({ total: leaves.length, leaves });
     } catch (error) {
         res.status(500).json({ message: error.message });
     }

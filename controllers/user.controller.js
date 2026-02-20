@@ -2,7 +2,7 @@ const { User, Student, Faculty, Staff, RoleUser, Department, RoleAssignment, Rol
 const xlsx = require('xlsx');
 const bcrypt = require('bcryptjs');
 const { Op } = require('sequelize');
-const { getPagination, getPagingData } = require('../utils/pagination');
+
 
 // Helper to create base user
 const createBaseUser = async (role, transaction) => {
@@ -378,14 +378,11 @@ exports.assignRole = async (req, res) => {
 exports.getStudentsByDepartment = async (req, res) => {
     try {
         const { deptId } = req.params;
-        const { limit, offset, page } = getPagination(req.query);
-        const students = await Student.findAndCountAll({
+        const students = await Student.findAll({
             where: { department_id: deptId },
-            limit,
-            offset,
             order: [['name', 'ASC']]
         });
-        res.json(getPagingData(students, page, limit));
+        res.json({ total: students.length, students });
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -394,14 +391,17 @@ exports.getStudentsByDepartment = async (req, res) => {
 exports.getFacultyByDepartment = async (req, res) => {
     try {
         const { deptId } = req.params;
-        const { limit, offset, page } = getPagination(req.query);
-        const faculty = await Faculty.findAndCountAll({
+        const faculty = await Faculty.findAll({
             where: { department_id: deptId },
-            limit,
-            offset,
             order: [['name', 'ASC']]
         });
-        res.json(getPagingData(faculty, page, limit));
+        res.json({
+            totalItems: faculty.length,
+            items: faculty,
+            totalPages: 1,
+            currentPage: 1,
+            limit: faculty.length || 10
+        });
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -410,22 +410,21 @@ exports.getFacultyByDepartment = async (req, res) => {
 exports.getStudentsByFaculty = async (req, res) => {
     try {
         const userId = req.userId;
-        const { limit, offset, page } = getPagination(req.query);
-
         const faculty = await Faculty.findOne({ where: { user_id: userId } });
-        if (!faculty) {
-            return res.status(404).json({ message: 'Faculty profile not found' });
-        }
+        if (!faculty) return res.status(404).json({ message: 'Faculty profile not found' });
 
-        const students = await Student.findAndCountAll({
+        const students = await Student.findAll({
             where: { faculty_id: faculty.id },
             include: [{ model: Department, attributes: ['name'] }],
-            limit,
-            offset,
             order: [['name', 'ASC']]
         });
-
-        res.json(getPagingData(students, page, limit));
+        res.json({
+            totalItems: students.length,
+            items: students,
+            totalPages: 1,
+            currentPage: 1,
+            limit: students.length || 10
+        });
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -1105,10 +1104,13 @@ exports.getAllHODs = async (req, res) => {
         });
 
         const usersList = Array.from(hodMap.values());
-        const totalItems = usersList.length;
-        const paginatedItems = usersList.slice(offset, offset + limit);
-
-        res.json(getPagingData({ count: totalItems, rows: paginatedItems }, page, limit));
+        res.json({
+            totalItems: usersList.length,
+            items: usersList,
+            totalPages: 1,
+            currentPage: 1,
+            limit: usersList.length || 10
+        });
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -1167,10 +1169,13 @@ exports.getAllIncharges = async (req, res) => {
         });
 
         const usersList = Array.from(inchargeMap.values());
-        const totalItems = usersList.length;
-        const paginatedItems = usersList.slice(offset, offset + limit);
-
-        res.json(getPagingData({ count: totalItems, rows: paginatedItems }, page, limit));
+        res.json({
+            totalItems: usersList.length,
+            items: usersList,
+            totalPages: 1,
+            currentPage: 1,
+            limit: usersList.length || 10
+        });
     } catch (error) {
         res.status(500).json({ message: error.message });
     }

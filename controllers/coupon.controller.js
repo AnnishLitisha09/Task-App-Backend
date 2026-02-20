@@ -1,5 +1,5 @@
 const { Coupon, Redeem, User, Student, Faculty, RoleUser, Staff } = require('../models');
-const { getPagination, getPagingData } = require('../utils/pagination');
+
 
 // --- Coupon CRUD ---
 
@@ -69,27 +69,18 @@ exports.deleteCoupon = async (req, res) => {
 
 exports.getAllCoupons = async (req, res) => {
     try {
-        const { limit, offset, page } = getPagination(req.query);
-        const coupons = await Coupon.findAndCountAll({
-            order: [['id', 'DESC']],
-            limit,
-            offset
-        });
-
+        const coupons = await Coupon.findAll({ order: [['id', 'DESC']] });
         const activeCount = await Coupon.count({ where: { status: 'active' } });
         const inactiveCount = await Coupon.count({ where: { status: 'inactive' } });
         const totalIssuedCount = await Redeem.count();
-
-        const pagingData = getPagingData(coupons, page, limit);
-
         res.json({
             success: true,
-            stats: {
-                active_coupons: activeCount,
-                inactive_coupons: inactiveCount,
-                total_issued: totalIssuedCount
-            },
-            ...pagingData
+            stats: { active_coupons: activeCount, inactive_coupons: inactiveCount, total_issued: totalIssuedCount },
+            totalItems: coupons.length,
+            items: coupons,
+            totalPages: 1,
+            currentPage: 1,
+            limit: coupons.length || 10
         });
     } catch (error) {
         res.status(500).json({ message: error.message });
@@ -170,15 +161,18 @@ exports.redeemCoupon = async (req, res) => {
 exports.getUserRedeemedCoupons = async (req, res) => {
     try {
         const userId = req.userId;
-        const { limit, offset, page } = getPagination(req.query);
-        const redemptions = await Redeem.findAndCountAll({
+        const redemptions = await Redeem.findAll({
             where: { user_id: userId },
             include: [{ model: Coupon }],
-            order: [['id', 'DESC']],
-            limit,
-            offset
+            order: [['id', 'DESC']]
         });
-        res.json(getPagingData(redemptions, page, limit));
+        res.json({
+            totalItems: redemptions.length,
+            items: redemptions,
+            totalPages: 1,
+            currentPage: 1,
+            limit: redemptions.length || 10
+        });
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -187,15 +181,18 @@ exports.getUserRedeemedCoupons = async (req, res) => {
 exports.getRedeemedCouponsByUserId = async (req, res) => {
     try {
         const { userId } = req.params;
-        const { limit, offset, page } = getPagination(req.query);
-        const redemptions = await Redeem.findAndCountAll({
+        const redemptions = await Redeem.findAll({
             where: { user_id: userId },
             include: [{ model: Coupon }],
-            order: [['id', 'DESC']],
-            limit,
-            offset
+            order: [['id', 'DESC']]
         });
-        res.json(getPagingData(redemptions, page, limit));
+        res.json({
+            totalItems: redemptions.length,
+            items: redemptions,
+            totalPages: 1,
+            currentPage: 1,
+            limit: redemptions.length || 10
+        });
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -204,8 +201,7 @@ exports.getRedeemedCouponsByUserId = async (req, res) => {
 exports.getUsersByRedeemedCoupon = async (req, res) => {
     try {
         const { couponId } = req.params;
-        const { limit, offset, page } = getPagination(req.query);
-        const redemptions = await Redeem.findAndCountAll({
+        const redemptions = await Redeem.findAll({
             where: { coupon_id: couponId },
             include: [{
                 model: User,
@@ -217,19 +213,12 @@ exports.getUsersByRedeemedCoupon = async (req, res) => {
                     { model: Staff, attributes: ['name', 'email'] }
                 ]
             }],
-            limit,
-            offset,
             order: [['id', 'DESC']]
         });
 
-        const users = redemptions.rows.map(r => {
+        const users = redemptions.map(r => {
             const u = r.User;
-            let details = null;
-            if (u.Student) details = u.Student;
-            else if (u.Faculty) details = u.Faculty;
-            else if (u.RoleUser) details = u.RoleUser;
-            else if (u.Staff) details = u.Staff;
-
+            let details = u.Student || u.Faculty || u.RoleUser || u.Staff || null;
             return {
                 user_id: u.user_id,
                 role: u.role,
@@ -238,11 +227,13 @@ exports.getUsersByRedeemedCoupon = async (req, res) => {
             };
         });
 
-        const pagingData = getPagingData({ count: redemptions.count, rows: users }, page, limit);
-
         res.json({
             coupon_id: couponId,
-            ...pagingData
+            totalItems: users.length,
+            items: users,
+            totalPages: 1,
+            currentPage: 1,
+            limit: users.length || 10
         });
     } catch (error) {
         res.status(500).json({ message: error.message });

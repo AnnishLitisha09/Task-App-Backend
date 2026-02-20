@@ -1,12 +1,11 @@
 const { Department, Venue, RoleAssignment, User, RoleUser, Role, Resource } = require('../models');
-const { getPagination, getPagingData } = require('../utils/pagination');
+
 const fs = require('fs');
 const path = require('path');
 
 exports.getAllDepartments = async (req, res) => {
     try {
-        const { limit, offset, page } = getPagination(req.query);
-        const { count, rows: departments } = await Department.findAndCountAll({
+        const departments = await Department.findAll({
             include: [{
                 model: RoleAssignment,
                 include: [
@@ -23,8 +22,6 @@ exports.getAllDepartments = async (req, res) => {
                 ],
                 required: false
             }],
-            limit,
-            offset,
             order: [['name', 'ASC']]
         });
 
@@ -42,7 +39,7 @@ exports.getAllDepartments = async (req, res) => {
             };
         });
 
-        res.json(getPagingData({ count, rows: formatted }, page, limit));
+        res.json({ total: formatted.length, departments: formatted });
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -163,8 +160,6 @@ exports.deleteDepartment = async (req, res) => {
 
 exports.getUnassignedHODs = async (req, res) => {
     try {
-        const { limit, offset, page } = getPagination(req.query);
-        // Fetch all users with profile 'role-user'
         const unassigned = await RoleUser.findAll({
             include: [{
                 model: User,
@@ -177,20 +172,11 @@ exports.getUnassignedHODs = async (req, res) => {
             }]
         });
 
-        // Filter for those who don't have HOD role assignment
-        const filtered = unassigned.filter(ru => {
-            const hasHodRole = ru.User?.RoleAssignments?.some(ra => ra.Role?.user_role === 'HOD');
-            return !hasHodRole;
-        });
+        const formatted = unassigned
+            .filter(ru => !ru.User?.RoleAssignments?.some(ra => ra.Role?.user_role === 'HOD'))
+            .map(ru => ({ user_id: ru.user_id, name: ru.name, email: ru.email }));
 
-        const formatted = filtered.map(ru => ({
-            user_id: ru.user_id,
-            name: ru.name,
-            email: ru.email
-        }));
-
-        const paginated = formatted.slice(offset, offset + limit);
-        res.json(getPagingData({ count: formatted.length, rows: paginated }, page, limit));
+        res.json({ total: formatted.length, users: formatted });
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -198,36 +184,24 @@ exports.getUnassignedHODs = async (req, res) => {
 
 exports.getAllVenues = async (req, res) => {
     try {
-        const { limit, offset, page } = getPagination(req.query);
-        const { count, rows: venues } = await Venue.findAndCountAll({
+        const venues = await Venue.findAll({
             include: [
                 {
                     model: RoleAssignment,
-                    required: false, // LEFT JOIN - allows venues without incharge
+                    required: false,
                     include: [
                         {
                             model: User,
                             attributes: ['user_id', 'role', 'status'],
-                            include: [
-                                {
-                                    model: RoleUser,
-                                    attributes: ['name', 'email', 'score', 'penalty']
-                                }
-                            ]
+                            include: [{ model: RoleUser, attributes: ['name', 'email', 'score', 'penalty'] }]
                         },
-                        {
-                            model: Role,
-                            attributes: ['user_role']
-                        }
+                        { model: Role, attributes: ['user_role'] }
                     ]
                 }
             ],
-            limit,
-            offset,
             order: [['venue_id', 'ASC']]
         });
 
-        // Format response to include incharge details
         const formattedVenues = venues.map(venue => {
             const venueData = {
                 venue_id: venue.venue_id,
@@ -239,10 +213,8 @@ exports.getAllVenues = async (req, res) => {
                 created_at: venue.created_at,
                 incharge: null
             };
-
-            // Check if there's an assigned incharge
             if (venue.RoleAssignments && venue.RoleAssignments.length > 0) {
-                const assignment = venue.RoleAssignments[0]; // Get first assignment
+                const assignment = venue.RoleAssignments[0];
                 if (assignment.User && assignment.User.RoleUser) {
                     venueData.incharge = {
                         user_id: assignment.User.user_id,
@@ -254,11 +226,10 @@ exports.getAllVenues = async (req, res) => {
                     };
                 }
             }
-
             return venueData;
         });
 
-        res.json(getPagingData({ count, rows: formattedVenues }, page, limit));
+        res.json({ total: formattedVenues.length, venues: formattedVenues });
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -468,14 +439,11 @@ exports.deleteVenue = async (req, res) => {
 // Get all resources
 exports.getAllResources = async (req, res) => {
     try {
-        const { limit, offset, page } = getPagination(req.query);
-        const resources = await Resource.findAndCountAll({
+        const resources = await Resource.findAll({
             where: { deleted_at: null },
-            limit,
-            offset,
             order: [['resource_id', 'ASC']]
         });
-        res.json(getPagingData(resources, page, limit));
+        res.json({ total: resources.length, resources });
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -649,15 +617,12 @@ exports.getDepartmentAnalytics = async (req, res) => {
 };
 
 // Resource CRUD
-exports.getAllResources = async (req, res) => { // Duplicate function in original file
+exports.getAllResources = async (req, res) => {
     try {
-        const { limit, offset, page } = getPagination(req.query);
-        const resources = await Resource.findAndCountAll({
-            order: [['resource_id', 'ASC']],
-            limit,
-            offset
+        const resources = await Resource.findAll({
+            order: [['resource_id', 'ASC']]
         });
-        res.json(getPagingData(resources, page, limit));
+        res.json({ total: resources.length, resources });
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
