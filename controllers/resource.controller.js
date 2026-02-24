@@ -1,5 +1,4 @@
-const { Department, Venue, RoleAssignment, User, RoleUser, Role, Resource } = require('../models');
-
+const { Department, Venue, RoleAssignment, User, RoleUser, Role, Resource, Faculty, Staff, Scope } = require('../models');
 const fs = require('fs');
 const path = require('path');
 
@@ -21,8 +20,7 @@ exports.getAllDepartments = async (req, res) => {
                     }
                 ],
                 required: false
-            }],
-            order: [['name', 'ASC']]
+            }]
         });
 
         const formatted = departments.map(dept => {
@@ -39,7 +37,7 @@ exports.getAllDepartments = async (req, res) => {
             };
         });
 
-        res.json({ total: formatted.length, departments: formatted });
+        res.json(formatted);
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -160,6 +158,7 @@ exports.deleteDepartment = async (req, res) => {
 
 exports.getUnassignedHODs = async (req, res) => {
     try {
+        // Fetch all users with profile 'role-user' who don't have an 'HOD' role assignment
         const unassigned = await RoleUser.findAll({
             include: [{
                 model: User,
@@ -172,11 +171,17 @@ exports.getUnassignedHODs = async (req, res) => {
             }]
         });
 
-        const formatted = unassigned
-            .filter(ru => !ru.User?.RoleAssignments?.some(ra => ra.Role?.user_role === 'HOD'))
-            .map(ru => ({ user_id: ru.user_id, name: ru.name, email: ru.email }));
+        // Filter for those who don't have HOD role assignment
+        const filtered = unassigned.filter(ru => {
+            const hasHodRole = ru.User?.RoleAssignments?.some(ra => ra.Role?.user_role === 'HOD');
+            return !hasHodRole;
+        });
 
-        res.json({ total: formatted.length, users: formatted });
+        res.json(filtered.map(ru => ({
+            user_id: ru.user_id,
+            name: ru.name,
+            email: ru.email
+        })));
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -188,20 +193,29 @@ exports.getAllVenues = async (req, res) => {
             include: [
                 {
                     model: RoleAssignment,
-                    required: false,
+                    required: false, // LEFT JOIN - allows venues without incharge
                     include: [
                         {
                             model: User,
                             attributes: ['user_id', 'role', 'status'],
-                            include: [{ model: RoleUser, attributes: ['name', 'email', 'score', 'penalty'] }]
+                            include: [
+                                {
+                                    model: RoleUser,
+                                    attributes: ['name', 'email', 'score', 'penalty']
+                                }
+                            ]
                         },
-                        { model: Role, attributes: ['user_role'] }
+                        {
+                            model: Role,
+                            attributes: ['user_role']
+                        }
                     ]
                 }
             ],
             order: [['venue_id', 'ASC']]
         });
 
+        // Format response to include incharge details
         const formattedVenues = venues.map(venue => {
             const venueData = {
                 venue_id: venue.venue_id,
@@ -213,8 +227,10 @@ exports.getAllVenues = async (req, res) => {
                 created_at: venue.created_at,
                 incharge: null
             };
+
+            // Check if there's an assigned incharge
             if (venue.RoleAssignments && venue.RoleAssignments.length > 0) {
-                const assignment = venue.RoleAssignments[0];
+                const assignment = venue.RoleAssignments[0]; // Get first assignment
                 if (assignment.User && assignment.User.RoleUser) {
                     venueData.incharge = {
                         user_id: assignment.User.user_id,
@@ -226,10 +242,11 @@ exports.getAllVenues = async (req, res) => {
                     };
                 }
             }
+
             return venueData;
         });
 
-        res.json({ total: formattedVenues.length, venues: formattedVenues });
+        res.json(formattedVenues);
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -240,10 +257,6 @@ exports.getVenueIncharge = async (req, res) => {
     try {
         const { venueId } = req.params;
 
-        // Find role assignment for this venue
-        // Assuming role for incharge is something specific or we just fetch who is assigned
-        // The user said: "if like incharge this venue, based on venue id it should fetch the role assigned user"
-
         const assignment = await RoleAssignment.findOne({
             where: { venue_id: venueId },
             include: [
@@ -251,11 +264,9 @@ exports.getVenueIncharge = async (req, res) => {
                     model: User,
                     attributes: ['user_id', 'role', 'status'],
                     include: [
-                        {
-                            model: RoleUser, // If the user is a 'role-user' type
-                            attributes: ['name', 'email']
-                        },
-                        // Also could be Faculty or Staff, need to handle that if generic
+                        { model: RoleUser, attributes: ['name', 'email', 'score', 'penalty'] },
+                        { model: Faculty, attributes: ['name', 'email', 'score', 'penalty'] },
+                        { model: Staff, attributes: ['name', 'email', 'score', 'penalty'] }
                     ]
                 },
                 {
@@ -269,20 +280,21 @@ exports.getVenueIncharge = async (req, res) => {
             return res.status(404).json({ message: 'No incharge found for this venue' });
         }
 
-        // Flatten response slightly for easier consumption
-        let userDetails = null;
+        let profile = null;
         if (assignment.User) {
-            // Check RoleUser first as likely target
-            if (assignment.User.RoleUser) {
-                userDetails = assignment.User.RoleUser;
-            } else {
-                // Try fetching manually if not eager loaded or different type
-            }
+            profile = assignment.User.RoleUser || assignment.User.Faculty || assignment.User.Staff;
         }
 
         res.json({
             role: assignment.Role ? assignment.Role.user_role : 'Unknown',
-            user: userDetails || assignment.User
+            category: assignment.User ? assignment.User.role : 'Unknown',
+            user: profile ? {
+                user_id: assignment.User.user_id,
+                name: profile.name,
+                email: profile.email,
+                score: profile.score,
+                penalty: profile.penalty
+            } : assignment.User
         });
 
     } catch (error) {
@@ -436,11 +448,15 @@ exports.deleteVenue = async (req, res) => {
 
 // --- Resource CRUD ---
 
-// Get all resources
+// Get all resources with Venue info
 exports.getAllResources = async (req, res) => {
     try {
         const resources = await Resource.findAll({
             where: { deleted_at: null },
+            include: [{
+                model: Venue,
+                attributes: ['venue_id', 'name', 'location']
+            }],
             order: [['resource_id', 'ASC']]
         });
         res.json({ total: resources.length, resources });
@@ -449,33 +465,44 @@ exports.getAllResources = async (req, res) => {
     }
 };
 
-// Add Resource
+// Add Resource with Venue Mapping
 exports.addResource = async (req, res) => {
     try {
-        const { name } = req.body;
+        const { name, description, venue_id, quantity } = req.body;
         if (!name) {
             return res.status(400).json({ message: 'Resource name is required' });
         }
 
-        const resource = await Resource.create({ name });
+        const resource = await Resource.create({
+            name,
+            description,
+            venue_id: venue_id || null,
+            quantity: quantity || 1
+        });
         res.status(201).json({ message: 'Resource created successfully', resource });
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
 };
 
-// Update Resource
+// Update Resource with Venue Mapping
 exports.updateResource = async (req, res) => {
     try {
         const { id } = req.params;
-        const { name } = req.body;
+        const { name, description, venue_id, quantity } = req.body;
 
         const resource = await Resource.findByPk(id);
         if (!resource) {
             return res.status(404).json({ message: 'Resource not found' });
         }
 
-        await resource.update({ name });
+        await resource.update({
+            name: name || resource.name,
+            description: description !== undefined ? description : resource.description,
+            venue_id: venue_id !== undefined ? venue_id : resource.venue_id,
+            quantity: quantity !== undefined ? quantity : resource.quantity
+        });
+
         res.json({ message: 'Resource updated successfully', resource });
     } catch (error) {
         res.status(500).json({ message: error.message });
@@ -506,17 +533,45 @@ exports.assignVenueIncharge = async (req, res) => {
         const { user_id, role_name, department_id } = req.body;
 
         if (!user_id || !role_name) {
+            await t.rollback();
             return res.status(400).json({ message: 'User ID and Role Name are required' });
         }
 
         const venue = await Venue.findByPk(id);
-        if (!venue) return res.status(404).json({ message: 'Venue not found' });
+        if (!venue) {
+            await t.rollback();
+            return res.status(404).json({ message: 'Venue not found' });
+        }
 
-        const user = await User.findByPk(user_id);
-        if (!user) return res.status(404).json({ message: 'User found' });
+        const user = await User.findByPk(user_id, {
+            include: [{ model: Faculty }, { model: Staff }, { model: RoleUser }]
+        });
+        if (!user) {
+            await t.rollback();
+            return res.status(404).json({ message: 'User not found' });
+        }
 
-        const role = await Role.findOne({ where: { user_role: role_name } });
-        if (!role) return res.status(404).json({ message: `Role '${role_name}' not found` });
+        const role = await Role.findOne({
+            where: { user_role: role_name },
+            include: [{ model: Scope }]
+        });
+        if (!role) {
+            await t.rollback();
+            return res.status(404).json({ message: `Role '${role_name}' not found` });
+        }
+
+        // --- NEW: Sync RoleUser Profile ---
+        // Dashboards rely on RoleUser. If user is Faculty/Staff but doesn't have RoleUser, create it.
+        if (!user.RoleUser) {
+            const profile = user.Faculty || user.Staff;
+            await RoleUser.create({
+                user_id: user.user_id,
+                name: profile ? profile.name : "Incharge User",
+                email: profile ? profile.email : `user_${user.user_id}@taskapp.com`,
+                created_at: new Date(),
+                updated_at: new Date()
+            }, { transaction: t });
+        }
 
         // 1. Remove any existing assignments for this venue
         await RoleAssignment.destroy({ where: { venue_id: id }, transaction: t });
@@ -525,14 +580,19 @@ exports.assignVenueIncharge = async (req, res) => {
         await RoleAssignment.create({
             user_id,
             role_id: role.role_id,
-            venue_id: user_id && role_name ? id : null, // Ensure ID is used correctly
-            department_id: department_id || null, // Default to null for incharges
+            venue_id: id,
+            department_id: department_id || null,
             created_at: new Date(),
             updated_at: new Date()
         }, { transaction: t });
 
         await t.commit();
-        res.json({ message: 'Venue incharge assigned successfully' });
+        res.json({
+            message: 'Venue incharge assigned successfully',
+            assigned_user: user.user_id,
+            role: role_name,
+            scope: role.Scope?.scope || 'Infrastructure'
+        });
 
     } catch (error) {
         await t.rollback();
@@ -616,50 +676,38 @@ exports.getDepartmentAnalytics = async (req, res) => {
     }
 };
 
-// Resource CRUD
-exports.getAllResources = async (req, res) => {
+
+// --- Venue Usage Analytics ---
+exports.getVenueUsageReport = async (req, res) => {
     try {
-        const resources = await Resource.findAll({
-            order: [['resource_id', 'ASC']]
-        });
-        res.json({ total: resources.length, resources });
-    } catch (error) {
-        res.status(500).json({ message: error.message });
-    }
-};
-
-exports.addResource = async (req, res) => {
-    try {
-        const { name, description } = req.body;
-        if (!name) return res.status(400).json({ message: 'Resource name is required' });
-
-        const resource = await Resource.create({ name, description });
-        res.status(201).json({ message: 'Resource created successfully', resource });
-    } catch (error) {
-        res.status(500).json({ message: error.message });
-    }
-};
-
-exports.updateResource = async (req, res) => {
-    try {
-        const { id } = req.params;
-        const { name, description } = req.body;
-
-        const resource = await Resource.findByPk(id);
-        if (!resource) return res.status(404).json({ message: 'Resource not found' });
-
-        await resource.update({
-            name: name || resource.name,
-            description: description !== undefined ? description : resource.description
+        const { id } = req.params; // Venue ID
+        const venue = await Venue.findByPk(id, {
+            include: [
+                { model: Resource },
+                {
+                    model: Task,
+                    limit: 10,
+                    order: [['created_at', 'DESC']],
+                    include: [{ model: TaskType }]
+                }
+            ]
         });
 
-        res.json({ message: 'Resource updated successfully', resource });
+        if (!venue) return res.status(404).json({ message: 'Venue not found' });
+
+        res.json({
+            venue_name: venue.name,
+            location: venue.location,
+            total_resources: venue.Resources ? venue.Resources.length : 0,
+            resources: venue.Resources || [],
+            recent_tasks: venue.Tasks ? venue.Tasks.map(t => ({
+                task_id: t.task_id,
+                title: t.title,
+                category: t.category,
+                time: t.TaskTypes?.[0] || null
+            })) : []
+        });
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
 };
-
-// Note: deleteResource is already implemented above, ensuring it handles Resources correctly.
-// If not already present or if redundant, this will consolidate it.
-// Actually, let's make sure only one deleteResource exists for Resources if possible.
-// The existing one was around line 401 or 502 as found earlier.

@@ -12,6 +12,12 @@ const { Op } = require('sequelize');
  */
 exports.runTaskEscalation = async () => {
     try {
+        // --- NEW: Sunday Skip ---
+        if (new Date().getDay() === 0) {
+            console.log('[CRON] Skipping task escalation - It is Sunday (Holiday).');
+            return { escalated: 0 };
+        }
+
         const yesterday = new Date();
         yesterday.setDate(yesterday.getDate() - 1);
         const yesterdayStr = yesterday.toISOString().split('T')[0];
@@ -73,6 +79,12 @@ exports.runTaskEscalation = async () => {
  */
 exports.checkTaskAcceptance = async () => {
     try {
+        // --- NEW: Sunday Skip ---
+        if (new Date().getDay() === 0) {
+            console.log('[CRON] Skipping task acceptance check - It is Sunday (Holiday).');
+            return;
+        }
+
         const now = new Date();
         const thirtyMinsLater = new Date(now.getTime() + 30 * 60000);
         const fortyFiveMinsLater = new Date(now.getTime() + 45 * 60000);

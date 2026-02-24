@@ -8,6 +8,8 @@ module.exports = (sequelize, DataTypes) => {
       Venue.hasMany(models.RoleAssignment, { foreignKey: 'venue_id' });
       // Venue can have tasks assigned
       Venue.hasMany(models.Task, { foreignKey: 'venue_id' });
+      // Venue has many resources
+      Venue.hasMany(models.Resource, { foreignKey: 'venue_id' });
     }
   }
 

@@ -218,10 +218,23 @@ exports.rejectTask = async (req, res) => {
 
         // --- NEW: Immediate Escalation for Permission Tasks ---
         const isPermissionTask = task.title.startsWith('Permission:') || task.parent_task_id != null;
+        const { Op } = require('sequelize');
+
+        // Helper: Find if this task was transferred from someone using TaskLog
+        const lastTransferLog = await TaskLog.findOne({
+            where: {
+                task_id: taskId,
+                action: { [Op.in]: ['transfer', 'reject_and_transfer'] }
+            },
+            order: [['created_at', 'DESC']]
+        });
+
+        const transferrerId = lastTransferLog ? lastTransferLog.user_id : null;
 
         if (isPermissionTask) {
             await task.update({ is_escalate: true });
 
+            // 1. Escalate to Creator
             await TaskEscalation.create({
                 task_id: taskId,
                 reason: `IMMEDIATE: Permission Rejected - ${reason ? reason.trim() : 'No reason provided'}`,
@@ -232,6 +245,19 @@ exports.rejectTask = async (req, res) => {
                 is_read: false
             });
 
+            // 2. Escalate to Transferrer (if exists)
+            if (transferrerId && transferrerId != task.creator_id) {
+                await TaskEscalation.create({
+                    task_id: taskId,
+                    reason: `Transfer Rejected: ${reason ? reason.trim() : 'No reason provided'}`,
+                    msg: `User ${userId} rejected the permission task you transferred to them.`,
+                    creator_id: transferrerId,
+                    rejected_user_id: userId,
+                    status: 'pending',
+                    is_read: false
+                });
+            }
+
             // Specific notification for escalation
             await Notification.create({
                 user_id: task.creator_id,
@@ -239,9 +265,20 @@ exports.rejectTask = async (req, res) => {
                 msg: `A critical permission task "${task.title}" was rejected! Immediate action required.`,
                 type: 'task_escalation'
             });
+
+            if (transferrerId && transferrerId != task.creator_id) {
+                await Notification.create({
+                    user_id: transferrerId,
+                    title: 'URGENT: Transferred Permission Denied',
+                    msg: `The permission task "${task.title}" you transferred was rejected by the new assignee.`,
+                    type: 'task_escalation'
+                });
+            }
         } else {
-            // General escalation for non-permission tasks (existing logic)
+            // General escalation for non-permission tasks
             await task.update({ is_escalate: true });
+
+            // 1. Escalate to Creator
             await TaskEscalation.create({
                 task_id: taskId,
                 reason: reason ? reason.trim() : 'No reason provided',
@@ -251,6 +288,26 @@ exports.rejectTask = async (req, res) => {
                 status: 'pending',
                 is_read: false
             });
+
+            // 2. Escalate to Transferrer (if exists)
+            if (transferrerId && transferrerId != task.creator_id) {
+                await TaskEscalation.create({
+                    task_id: taskId,
+                    reason: `Transfer Rejected: ${reason ? reason.trim() : 'No reason provided'}`,
+                    msg: `User ${userId} rejected the task you transferred to them.`,
+                    creator_id: transferrerId,
+                    rejected_user_id: userId,
+                    status: 'pending',
+                    is_read: false
+                });
+
+                await Notification.create({
+                    user_id: transferrerId,
+                    title: 'Transfer Rejected',
+                    msg: `User ${userId} rejected the task "${task.title}" you transferred to them.`,
+                    type: 'task_escalation'
+                });
+            }
         }
 
         res.json({
@@ -466,9 +523,21 @@ exports.updateEscalationReadStatus = async (req, res) => {
         const escalation = await TaskEscalation.findByPk(id);
         if (!escalation) return res.status(404).json({ message: 'Escalation not found' });
 
-        await escalation.update({ is_read: true });
+        // Guard: Only involved users or task creator can mark as read/resolved
+        if (escalation.creator_id != userId && escalation.rejected_user_id != userId) {
+            return res.status(403).json({ message: 'You are not authorized to resolve this escalation' });
+        }
 
-        res.json({ message: 'Escalation marked as read' });
+        await escalation.update({
+            is_read: true,
+            status: 'resolved'
+        });
+
+        res.json({
+            message: 'Escalation marked as read and resolved',
+            escalation_id: id,
+            status: 'resolved'
+        });
     } catch (error) {
         res.status(500).json({ message: error.message });
     }

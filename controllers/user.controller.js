@@ -69,7 +69,7 @@ exports.createStudent = async (req, res) => {
 exports.createFaculty = async (req, res) => {
     const t = await User.sequelize.transaction();
     try {
-        const { reg_no, name, email, department_id, type } = req.body;
+        const { reg_no, name, email, department_id, type, roleName, venue_id } = req.body;
 
         const existing = await Faculty.findOne({
             where: { [Op.or]: [{ reg_no }, { email }] }
@@ -89,8 +89,21 @@ exports.createFaculty = async (req, res) => {
             updated_at: new Date()
         }, { transaction: t });
 
-        // ✅ FIXED
         await createAuthAccount(user.user_id, email, name, t);
+
+        // Unified Role Assignment (Optional)
+        if (roleName) {
+            const role = await Role.findOne({ where: { user_role: roleName } });
+            if (!role) throw new Error(`Role '${roleName}' not found`);
+
+            await RoleAssignment.create({
+                user_id: user.user_id,
+                role_id: role.role_id,
+                venue_id: venue_id || null,
+                department_id: (roleName === 'HOD' ? department_id : null),
+                created_at: new Date()
+            }, { transaction: t });
+        }
 
         await t.commit();
         res.status(201).json({
@@ -107,7 +120,7 @@ exports.createFaculty = async (req, res) => {
 exports.createStaff = async (req, res) => {
     const t = await User.sequelize.transaction();
     try {
-        const { name, email, designation } = req.body;
+        const { name, email, designation, roleName, venue_id } = req.body;
 
         const existing = await Staff.findOne({ where: { email } });
         if (existing) return res.status(400).json({ message: 'Staff already exists' });
@@ -124,6 +137,19 @@ exports.createStaff = async (req, res) => {
         }, { transaction: t });
 
         await createAuthAccount(user.user_id, email, name, t);
+
+        // Unified Role Assignment (Optional)
+        if (roleName) {
+            const role = await Role.findOne({ where: { user_role: roleName } });
+            if (!role) throw new Error(`Role '${roleName}' not found`);
+
+            await RoleAssignment.create({
+                user_id: user.user_id,
+                role_id: role.role_id,
+                venue_id: venue_id || null,
+                created_at: new Date()
+            }, { transaction: t });
+        }
 
         await t.commit();
         res.status(201).json({ message: 'Staff created successfully', user_id: user.user_id });
@@ -172,6 +198,17 @@ exports.createRoleUser = async (req, res) => {
                     where: {
                         role_id: role.role_id,
                         department_id: department_id
+                    },
+                    transaction: t
+                });
+            }
+
+            // INCHARGE Logic: Enforce single incharge per venue
+            if (roleName === 'INCHARGE' && venue_id) {
+                await RoleAssignment.destroy({
+                    where: {
+                        role_id: role.role_id,
+                        venue_id: venue_id
                     },
                     transaction: t
                 });
@@ -500,7 +537,7 @@ exports.getFacultyDailyStats = async (req, res) => {
 
         // 3. Setup Date logic (Local time)
         const now = new Date();
-        const istOffset = 330 * 60 * 1000; // Offset for IST (UTC+5:30) if server is in UTC
+        const istOffset = 330 * 60 * 1000; // Offset for IST (UTC+5:30)
         const localNow = new Date(now.getTime() + (now.getTimezoneOffset() * 60000) + istOffset);
 
         const today = new Date(localNow);
@@ -515,12 +552,10 @@ exports.getFacultyDailyStats = async (req, res) => {
         // Visibility Rule: Show tomorrow's tasks after 4:30 PM (16:30)
         const isEvening = localNow.getHours() > 16 || (localNow.getHours() === 16 && localNow.getMinutes() >= 30);
 
-        // Date range for fetching:
-        // Always include Today.
-        // Include Tomorrow only if after 4:30 PM.
+        // Fetch tasks for Today and optionally Tomorrow
         const dateLimit = isEvening ? dayAfterTomorrow : tomorrow;
 
-        // 4. Fetch Tasks (Filter by TaskType.start_date)
+        // 4. Fetch Tasks
         const assignments = await TaskAssign.findAll({
             where: { user_id: userId },
             include: [{
@@ -546,8 +581,9 @@ exports.getFacultyDailyStats = async (req, res) => {
         // 5. Categorize Tasks
         const allTasksToday = [];
         const pendingTasks = [];
+        const pendingProofTasks = [];
 
-        // Helper to format date as YYYY-MM-DD in local time
+        // Helper to format date
         const toLocalISO = (d) => {
             const year = d.getFullYear();
             const month = String(d.getMonth() + 1).padStart(2, '0');
@@ -561,6 +597,7 @@ exports.getFacultyDailyStats = async (req, res) => {
         assignments.forEach(assignment => {
             const task = assignment.Task;
             const taskType = task.TaskTypes[0];
+            const taskDateStr = toLocalISO(new Date(taskType.start_date));
 
             const formattedTask = {
                 assignment_id: assignment.id,
@@ -572,7 +609,9 @@ exports.getFacultyDailyStats = async (req, res) => {
                 score: task.score,
                 penalty_per_hour: task.penalty_per_hour,
                 is_approved: task.is_approved,
+                is_document: task.is_document,
                 status: assignment.status,
+                time: `${taskType.start_time} - ${taskType.end_time}`,
                 task_type: {
                     name: taskType.task_name,
                     start_date: taskType.start_date,
@@ -584,15 +623,24 @@ exports.getFacultyDailyStats = async (req, res) => {
                 assigned_at: assignment.created_at
             };
 
-            const taskDateStr = toLocalISO(new Date(taskType.start_date));
-
+            // Category A: Scheduled for Today (Accepted/Completed)
             if (taskDateStr === todayStr && (assignment.status === 'accepted' || assignment.status === 'completed')) {
                 allTasksToday.push(formattedTask);
             }
 
-            // pending_tasks shows only pending tasks for the CURRENT ACTION DAY (based on 16:30 shift)
-            if (taskDateStr === focusDayStr && assignment.status === 'pending') {
-                pendingTasks.push(formattedTask);
+            // Category B: Pending for Approval (Pending tasks in active window)
+            if (assignment.status === 'pending') {
+                if (taskDateStr === todayStr || (isEvening && taskDateStr === focusDayStr)) {
+                    pendingTasks.push(formattedTask);
+                }
+            }
+
+            // Category C: Pending Proof (Started, accepted, no proof, requires doc)
+            if (task.is_document && assignment.status === 'accepted' && (!assignment.proof || assignment.proof === '')) {
+                const startDateTime = new Date(`${taskDateStr}T${taskType.start_time}`);
+                if (startDateTime <= localNow) {
+                    pendingProofTasks.push(formattedTask);
+                }
             }
         });
 
@@ -610,12 +658,14 @@ exports.getFacultyDailyStats = async (req, res) => {
                 date: todayStr,
                 total_tasks_assigned_today: allTasksToday.length,
                 pending_tasks_count: pendingTasks.length,
+                pending_proof_count: pendingProofTasks.length,
                 mentee_students_count: menteeCount,
                 focus_day: focusDayStr,
                 visibility_window: isEvening ? "Tomorrow Preview (After 4:30 PM)" : "Today Focus"
             },
             all_tasks_today: allTasksToday,
-            pending_tasks: pendingTasks
+            pending_tasks: pendingTasks,
+            pending_proof_tasks: pendingProofTasks
         });
 
     } catch (error) {
@@ -883,16 +933,36 @@ exports.getUserActivity = async (req, res) => {
 
         const profile = await getFullProfile(id, user.role);
 
-        // Helper: Get YYYY-MM-DD in local time
-        const getLocalDateString = (d) => {
-            const dateObj = new Date(d);
-            const year = dateObj.getFullYear();
-            const month = String(dateObj.getMonth() + 1).padStart(2, '0');
-            const day = String(dateObj.getDate()).padStart(2, '0');
+        // Date Logic (IST)
+        let { date } = req.query; // Optional date from query
+        const now = new Date();
+        const istOffset = 330 * 60 * 1000;
+        const localNow = new Date(now.getTime() + (now.getTimezoneOffset() * 60000) + istOffset);
+
+        let targetDate;
+        if (date) {
+            targetDate = new Date(date);
+            // If date is provided as YYYY-MM-DD, it might be interpreted as UTC midnight.
+            // We want it to stay consistent with our IST-based "day".
+        } else {
+            targetDate = localNow;
+        }
+
+        const todayStart = new Date(targetDate);
+        todayStart.setHours(0, 0, 0, 0);
+
+        const todayEnd = new Date(todayStart);
+        todayEnd.setHours(23, 59, 59, 999);
+
+        // Helper: Format YYYY-MM-DD
+        const toLocalISO = (d) => {
+            const year = d.getFullYear();
+            const month = String(d.getMonth() + 1).padStart(2, '0');
+            const day = String(d.getDate()).padStart(2, '0');
             return `${year}-${month}-${day}`;
         };
 
-        const todayStr = getLocalDateString(new Date());
+        const todayStr = toLocalISO(todayStart);
 
         // 1. Fetch Directives (Assigned to user)
         const directives = await TaskAssign.findAll({
@@ -902,14 +972,28 @@ exports.getUserActivity = async (req, res) => {
                 where: { origin_type: 'directive', is_deleted: false },
                 include: [{
                     model: TaskType,
+                    required: true,
                     where: {
                         [Op.or]: [
-                            { start_date: todayStr },
-                            { [Op.and]: [{ start_date: { [Op.lte]: todayStr } }, { end_date: { [Op.gte]: todayStr } }] }
+                            // Starts today
+                            {
+                                start_date: {
+                                    [Op.gte]: todayStart,
+                                    [Op.lte]: todayEnd
+                                }
+                            },
+                            // Or covers today (Multi-day)
+                            {
+                                [Op.and]: [
+                                    { start_date: { [Op.lte]: todayEnd } },
+                                    { end_date: { [Op.gte]: todayStart } }
+                                ]
+                            }
                         ]
                     }
                 }]
-            }]
+            }],
+            order: [[Task, TaskType, 'start_time', 'ASC']]
         });
 
         // 2. Fetch Self-Logs (Created by user)
@@ -919,11 +1003,22 @@ exports.getUserActivity = async (req, res) => {
                 model: TaskType,
                 where: {
                     [Op.or]: [
-                        { start_date: todayStr },
-                        { [Op.and]: [{ start_date: { [Op.lte]: todayStr } }, { end_date: { [Op.gte]: todayStr } }] }
+                        {
+                            start_date: {
+                                [Op.gte]: todayStart,
+                                [Op.lte]: todayEnd
+                            }
+                        },
+                        {
+                            [Op.and]: [
+                                { start_date: { [Op.lte]: todayEnd } },
+                                { end_date: { [Op.gte]: todayStart } }
+                            ]
+                        }
                     ]
                 }
-            }]
+            }],
+            order: [[TaskType, 'start_time', 'ASC']]
         });
 
         res.json({
@@ -940,7 +1035,8 @@ exports.getUserActivity = async (req, res) => {
                     priority: d.Task.priority,
                     time: d.Task.TaskTypes?.[0] ? {
                         start_time: d.Task.TaskTypes[0].start_time,
-                        end_time: d.Task.TaskTypes[0].end_time
+                        end_time: d.Task.TaskTypes[0].end_time,
+                        recurrence: d.Task.TaskTypes[0].recurrence
                     } : null
                 })),
                 self_logs: selfLogs.map(s => ({
@@ -951,7 +1047,8 @@ exports.getUserActivity = async (req, res) => {
                     priority: s.priority,
                     time: s.TaskTypes?.[0] ? {
                         start_time: s.TaskTypes[0].start_time,
-                        end_time: s.TaskTypes[0].end_time
+                        end_time: s.TaskTypes[0].end_time,
+                        recurrence: s.TaskTypes[0].recurrence
                     } : null
                 }))
             }

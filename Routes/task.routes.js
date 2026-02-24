@@ -15,11 +15,16 @@ const upload = multer({ dest: 'uploads/' });
 const taskTitleController = require('../controllers/task.title');
 router.get('/titles', verifyToken, taskTitleController.getAllTaskTitles);
 router.post('/titles', verifyToken, taskTitleController.createTaskTitle);
+router.post('/titles/bulk', verifyToken, upload.single('file'), taskTitleController.bulkUploadTaskTitles);
 router.put('/titles/:id', verifyToken, taskTitleController.updateTaskTitle);
 router.delete('/titles/:id', verifyToken, taskTitleController.deleteTaskTitle);
 
-// Calendar
+// Venue Dashboard & Calendar
+const venueController = require('../controllers/venue.controller');
+router.get('/venue-dashboard', verifyToken, venueController.getVenueDashboard);
+router.get('/venue-history', verifyToken, venueController.getVenueHistory);
 router.get('/calendar', verifyToken, calendarController.getUserCalendar);
+router.get('/calendar/venue', verifyToken, calendarController.getVenueCalendar); // NEW: Venue Calendar
 
 // Task Creation
 router.post('/unified-create', verifyToken, upload.single('file'), taskController.createUnifiedTask);
@@ -54,6 +59,7 @@ router.get('/assigned-today', verifyToken, taskController.getTasksAssignedToday)
 router.get('/approved-upcoming', verifyToken, taskController.getApprovedUpcomingTasks); // NEW: Approved Upcoming
 router.get('/unapproved-tasks', verifyToken, taskController.getUnapprovedTasks); // NEW: Unapproved (Pending + Past/Current Start)
 router.get('/daily', verifyToken, taskController.getDailyTasks); // NEW: Grouped Daily Tasks
+router.get('/daily-report', verifyToken, taskController.getDailyTaskReport); // NEW: Specialized Daily Report
 router.get('/schedule/monthly', verifyToken, taskController.getMonthlySchedule); // NEW: Monthly Schedule
 router.get('/schedule/today', verifyToken, taskController.getTodaysApprovedSchedule); // NEW: Today's Approved Schedule
 
@@ -68,8 +74,9 @@ router.get('/closure-types', verifyToken, taskClosure.getClosureTypes);
 router.post('/:id/close', verifyToken, taskClosure.closeTask);
 
 // Escalation Support
+router.get('/escalations/me', verifyToken, taskController.getMyEscalations); // NEW: Fetch my escalations
 router.get('/escalated/creator', verifyToken, taskController.getEscalatedTasksForCreator);
-router.get('/rejections/me', verifyToken, taskController.getRejectionEscalationsForCreator); // NEW: Rejection Escalations
+router.get('/rejections/me', verifyToken, taskController.getRejectionEscalationsForCreator);
 router.post('/:id/escalate', verifyToken, taskController.manualEscalateTask);
 router.get('/:id/escalation-report', verifyToken, taskController.getTaskEscalationReport);
 

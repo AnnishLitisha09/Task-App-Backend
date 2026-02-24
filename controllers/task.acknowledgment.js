@@ -138,31 +138,79 @@ exports.getAcknowledgmentHistory = async (req, res) => {
 exports.checkMorningAcknowledgment = async () => {
     try {
         const today = new Date().toISOString().split('T')[0];
+        const { Leave } = require('../models');
 
-        // Find all unacknowledged tasks for today
-        const unacknowledged = await TaskAcknowledgment.findAll({
-            where: {
-                acknowledge_date: today,
-                acknowledged_at: null
-            },
-            include: [
-                { model: Task },
-                { model: User, attributes: ['user_id', 'role'] }
-            ]
-        });
-
-        console.log(`[CRON] Found ${unacknowledged.length} unacknowledged tasks for ${today}`);
-
-        for (const ack of unacknowledged) {
-            // Set task escalation flag
-            await ack.Task.update({ is_escalate: true });
-
-            // TODO: Send notification to task creator
-            console.log(`[CRON] Escalated task ${ack.task_id} - User ${ack.user_id} did not acknowledge by 08:30 AM`);
-            // await sendEscalationNotification(ack.Task.creator_id, ack.user_id, ack.Task);
+        // --- NEW: Sunday Skip ---
+        if (new Date().getDay() === 0) {
+            console.log('[CRON] Skipping morning acknowledgment check - It is Sunday (Holiday).');
+            return { count: 0 };
         }
 
-        return { count: unacknowledged.length };
+        // 1. Find all users with active assignments for today
+        const activeAssignments = await TaskAssign.findAll({
+            where: {
+                status: { [Op.in]: ['pending', 'accepted'] }
+            },
+            attributes: ['user_id', 'task_id'],
+            include: [{
+                model: Task,
+                attributes: ['task_id', 'title'],
+                required: true
+                // Note: In a production system, you'd filter TaskType start_date here
+            }]
+        });
+
+        if (activeAssignments.length === 0) return { count: 0 };
+
+        const userIdsWithTasks = [...new Set(activeAssignments.map(a => a.user_id))];
+
+        // 2. Identify users on approved leave for today (Exempt)
+        const approvedLeaves = await Leave.findAll({
+            where: {
+                status: 'approved',
+                from_date: { [Op.lte]: today },
+                to_date: { [Op.gte]: today }
+            }
+        });
+        const userIdsOnLeave = new Set(approvedLeaves.map(l => l.user_id));
+
+        // 3. Get all general acknowledgments for today
+        const todaysGeneralAcks = await TaskAcknowledgment.findAll({
+            where: {
+                task_id: null,
+                acknowledge_date: today,
+                acknowledged_at: { [Op.ne]: null }
+            }
+        });
+        const acknowledgedUserIds = new Set(todaysGeneralAcks.map(ack => ack.user_id));
+
+        let escalationCount = 0;
+
+        // 4. Check each user with tasks
+        for (const userId of userIdsWithTasks) {
+            // Skip if on leave
+            if (userIdsOnLeave.has(userId)) continue;
+
+            // Skip if already acknowledged general awareness
+            if (acknowledgedUserIds.has(userId)) continue;
+
+            // Escalate all tasks for this user
+            const userTasks = activeAssignments.filter(a => a.user_id === userId);
+            for (const assign of userTasks) {
+                await Task.update({ is_escalate: true }, { where: { task_id: assign.task_id } });
+
+                await TaskLog.create({
+                    task_id: assign.task_id,
+                    user_id: userId,
+                    action: 'escalate',
+                    details: 'Task escalated: User did not acknowledge daily awareness by 08:30 AM.'
+                });
+                escalationCount++;
+            }
+        }
+
+        console.log(`[CRON] Morning acknowledgment check completed. Escalated ${escalationCount} tasks.`);
+        return { count: escalationCount };
 
     } catch (error) {
         console.error('[CRON ERROR] checkMorningAcknowledgment:', error.message);
@@ -302,7 +350,7 @@ exports.acknowledgeGeneral = async (req, res) => {
 
         res.json({
             success: true,
-            message: 'Daily awareness acknowledged successfully',
+            message: 'Daily morning awareness acknowledged. This confirms you are aware of your tasks for today.',
             acknowledged_at: ack.acknowledged_at,
             date: today
         });

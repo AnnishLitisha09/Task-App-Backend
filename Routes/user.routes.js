@@ -24,8 +24,9 @@ router.get('/:id/activity', userController.getUserActivity); // NEW: Unified Pro
 
 // Fetch Lists (Accessible to authenticated users)
 router.get('/students/:deptId', userController.getStudentsByDepartment);
-router.get('/faculty/students', userController.getStudentsByFaculty); // Added for faculty use
-router.get('/faculty/profile', userController.getFacultyDetailsWithStudents); // NEW: Full faculty dashboard details
+router.get('/faculty/students', userController.getStudentsByFaculty); // Returns paginated students
+router.get('/faculty/mentees', userController.getFacultyDetailsWithStudents); // NEW: Faculty details + Students
+router.get('/faculty/profile', userController.getFacultyDetailsWithStudents); // Alias for dashboard details
 router.get('/faculty/stats/daily', userController.getFacultyDailyStats); // NEW: Daily statistics for faculty
 router.get('/faculty/tasks/by-approval', userController.getFacultyTasksByApprovalStatus); // NEW: Filter tasks by approval status
 router.get('/faculty/:deptId', userController.getFacultyByDepartment);
