@@ -23,6 +23,9 @@ router.delete('/titles/:id', verifyToken, taskTitleController.deleteTaskTitle);
 const venueController = require('../controllers/venue.controller');
 router.get('/venue-dashboard', verifyToken, venueController.getVenueDashboard);
 router.get('/venue-history', verifyToken, venueController.getVenueHistory);
+router.get('/venue-details', verifyToken, venueController.getManagedVenuesDetails); // Detailed all-in-one
+router.get('/venues/my-list', verifyToken, venueController.getMyVenuesList);        // Simplified list
+router.get('/venue/:id/details', verifyToken, venueController.getVenueDetails);     // Single venue deep-dive
 router.get('/calendar', verifyToken, calendarController.getUserCalendar);
 router.get('/calendar/venue', verifyToken, calendarController.getVenueCalendar); // NEW: Venue Calendar
 
@@ -84,6 +87,8 @@ router.get('/:id/escalation-report', verifyToken, taskController.getTaskEscalati
 router.put('/:id/pause', verifyToken, taskController.pauseTask);
 router.put('/:id/resume', verifyToken, taskController.resumeTask);
 
-router.get('/:id', verifyToken, taskController.getTaskById); // Put parameterized routes last
+router.get('/:id', verifyToken, taskController.getTaskDetail);
+router.get('/:id/analysis', verifyToken, taskController.getTaskAnalysis); // NEW: Task Lifecycle Logs
+// Put parameterized routes last
 
 module.exports = router;

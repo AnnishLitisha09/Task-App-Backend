@@ -696,26 +696,9 @@ exports.createUnifiedTask = async (req, res) => {
             }
         }
 
-        // --- NEW: Venue Incharge Logic ---
-        if (venue_id) {
-            const incharges = await RoleAssignment.findAll({
-                where: { venue_id },
-                include: [{
-                    model: Role,
-                    where: { user_role: { [Op.like]: '%INCHARGE%' } }
-                }]
-            });
-            incharges.forEach(ra => {
-                if (ra.user_id && !finalAssigneeIds.includes(ra.user_id * 1)) {
-                    finalAssigneeIds.push(ra.user_id * 1);
-                }
-            });
-        }
-
-        // --- NEW: Approver Assignment ---
-        if (approver_id && !finalAssigneeIds.includes(approver_id * 1)) {
-            finalAssigneeIds.push(approver_id * 1);
-        }
+        // --- NOTE: Venue Incharges and Approvers are NOT added to regular assignees ---
+        // They will receive separate "Permission Tasks" further below.
+        // Only explicit assignee_ids, group assignments, and faculty_id are regular assignees.
 
         if (req.file) {
             try {
@@ -837,69 +820,33 @@ exports.createUnifiedTask = async (req, res) => {
                 }
             }
 
-            // 4. Handle Special Permission Tasks (Venue, Approver, Faculty)
-            const specialRoles = [];
+            // 4. Assign the task to the Venue Incharge directly (no separate sub-task)
+            // The incharge simply sees the task and accepts/rejects it on behalf of the venue.
             if (venue_id) {
                 const inchargers = await RoleAssignment.findAll({
                     where: { venue_id },
                     include: [{ model: Role, where: { user_role: { [Op.like]: '%INCHARGE%' } } }]
                 });
-                inchargers.forEach(ra => specialRoles.push({ user_id: ra.user_id, role: 'Venue Incharge', msg: 'Venue Permission Required' }));
-            }
-            if (approver_id) specialRoles.push({ user_id: approver_id, role: 'Approver', msg: 'Permission for Approval Required' });
-            if (is_faculty && faculty_id) {
-                const faculty = await Faculty.findByPk(faculty_id);
-                if (faculty) specialRoles.push({ user_id: faculty.user_id, role: 'Faculty Owner', msg: 'Faculty Ownership Permission' });
-            }
 
-            for (const sr of specialRoles) {
-                if (!sr.user_id) continue;
+                for (const ra of inchargers) {
+                    if (!ra.user_id) continue;
+                    // Only assign if not already assigned (avoid duplicates)
+                    const alreadyAssigned = finalAssigneeIds.includes(ra.user_id * 1);
+                    if (!alreadyAssigned) {
+                        await TaskAssign.create({
+                            task_id: task.task_id,
+                            user_id: ra.user_id,
+                            status: 'pending'
+                        }, { transaction: t });
 
-                // Create separate Permission Task
-                const pTask = await Task.create({
-                    title: `Permission: ${sr.role} - ${title}`,
-                    description: `${sr.msg} for task: ${title}. ${description || ''}`,
-                    category: 'Admin',
-                    priority: 'high',
-                    is_package: false,
-                    is_pause_allowed: false,
-                    score: 0,
-                    penalty_per_hour: 0,
-                    is_document: false, // No proof needed
-                    is_mandatory: false,
-                    is_approved: false,
-                    creator_id: userId,
-                    parent_task_id: task.task_id,
-                    origin_type: 'directive',
-                    status: 'Active'
-                }, { transaction: t });
-
-                // Create TaskType for Permission Task
-                await TaskType.create({
-                    task_id: pTask.task_id,
-                    task_name: 'Permission Request',
-                    start_date: oDate,
-                    end_date: oDate,
-                    start_time: task_type_data.start_time || null,
-                    end_time: task_type_data.end_time || null,
-                    recurrence: 'none'
-                }, { transaction: t });
-
-                // Assign to special role user
-                await TaskAssign.create({
-                    task_id: pTask.task_id,
-                    user_id: sr.user_id,
-                    status: 'pending',
-                    reason: sr.msg
-                }, { transaction: t });
-
-                // Notify Special Role User
-                await Notification.create({
-                    user_id: sr.user_id,
-                    title: 'New Permission Task',
-                    msg: `You have a new permission task for: ${title}`,
-                    type: 'task_created'
-                }, { transaction: t });
+                        await Notification.create({
+                            user_id: ra.user_id,
+                            title: 'Venue Booking Requires Your Approval',
+                            msg: `A new booking "${title}" has been requested for your venue. Please accept or reject it.`,
+                            type: 'task_created'
+                        }, { transaction: t });
+                    }
+                }
             }
 
             // 5. Notify Creator on Success
@@ -2649,6 +2596,162 @@ exports.getMyEscalations = async (req, res) => {
         });
     } catch (error) {
         console.error(`[Escalation] Error: ${error.message}`);
+        res.status(500).json({ message: error.message });
+    }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/tasks/:id/analysis
+// Comprehensive task lifecycle analysis: Logs, transfers, and role-wise stats
+// ─────────────────────────────────────────────────────────────────────────────
+exports.getTaskAnalysis = async (req, res) => {
+    try {
+        const { id: taskId } = req.params;
+        const userId = req.userId;
+        const { TaskLog, TaskAssign, User, Student, Faculty, Staff, RoleUser, TaskType } = require('../models');
+
+        // 1. Fetch Task Info
+        const task = await Task.findByPk(taskId, {
+            include: [
+                { model: TaskType },
+                {
+                    model: User, as: 'Creator',
+                    include: [
+                        { model: Student, attributes: ['name'] },
+                        { model: Faculty, attributes: ['name'] },
+                        { model: Staff, attributes: ['name'] },
+                        { model: RoleUser, attributes: ['name'] }
+                    ]
+                }
+            ]
+        });
+
+        if (!task) return res.status(404).json({ message: 'Task not found' });
+
+        // 2. Fetch All Assignments
+        const assignments = await TaskAssign.findAll({
+            where: { task_id: taskId },
+            include: [{
+                model: User,
+                include: [
+                    { model: Student, attributes: ['name'] },
+                    { model: Faculty, attributes: ['name'] },
+                    { model: Staff, attributes: ['name'] },
+                    { model: RoleUser, attributes: ['name'] }
+                ]
+            }]
+        });
+
+        // 3. Fetch All Logs
+        const logs = await TaskLog.findAll({
+            where: { task_id: taskId },
+            include: [{
+                model: User,
+                include: [
+                    { model: Student, attributes: ['name'] },
+                    { model: Faculty, attributes: ['name'] },
+                    { model: Staff, attributes: ['name'] },
+                    { model: RoleUser, attributes: ['name'] }
+                ]
+            }],
+            order: [['created_at', 'ASC']]
+        });
+
+        // --- Helper for name resolution ---
+        const getProfileName = (u) => {
+            if (!u) return 'System';
+            const p = u.Student || u.Faculty || u.Staff || u.RoleUser;
+            return p ? p.name : (u.role === 'admin' ? 'Administrator' : `User #${u.user_id}`);
+        };
+
+        // 4. Calculate Stats by Role
+        const stats = {
+            total_assignments: assignments.length,
+            roles: {}
+        };
+
+        assignments.forEach(a => {
+            const role = a.User?.role || 'unknown';
+            if (!stats.roles[role]) {
+                stats.roles[role] = { total: 0, pending: 0, accepted: 0, completed: 0, rejected: 0 };
+            }
+            stats.roles[role].total++;
+            if (stats.roles[role][a.status] !== undefined) {
+                stats.roles[role][a.status]++;
+            }
+        });
+
+        // 5. Format Timeline/Logs
+        const timeline = logs.map(l => {
+            let actionText = l.action;
+            let detailItems = [];
+
+            if (l.action === 'reject_and_transfer') {
+                actionText = 'transfer';
+            }
+
+            const formattedLog = {
+                time: l.created_at,
+                action: actionText,
+                performer: getProfileName(l.User),
+                performer_role: l.User?.role,
+                details: l.details
+            };
+
+            // Attempt to resolve "To Whom" in re-transfers
+            if (l.action === 'reject_and_transfer') {
+                const targetAssign = assignments.find(a =>
+                    a.reason && (a.reason.includes(`Transferred from ${l.user_id}`) || a.reason.includes(`from ${l.user_id}`))
+                );
+                if (targetAssign) {
+                    formattedLog.transferred_to = getProfileName(targetAssign.User);
+                    formattedLog.transfer_reason = l.details;
+                    formattedLog.summary = `${formattedLog.performer} transferred task to ${formattedLog.transferred_to}`;
+                } else {
+                    formattedLog.summary = `${formattedLog.performer} rejected and requested transfer`;
+                }
+            } else if (l.action === 'accept' || l.action === 'accepted') {
+                formattedLog.summary = `${formattedLog.performer} accepted the task`;
+            } else if (l.action === 'pause') {
+                formattedLog.summary = `${formattedLog.performer} paused the task`;
+            } else if (l.action === 'resume') {
+                formattedLog.summary = `${formattedLog.performer} resumed the task`;
+            } else if (l.action === 'submit_proof') {
+                formattedLog.summary = `${formattedLog.performer} submitted proof/completed task`;
+            } else {
+                formattedLog.summary = `${formattedLog.performer} performed ${actionText}`;
+            }
+
+            return formattedLog;
+        });
+
+        // Add "Task Created" if not in logs
+        if (!timeline.find(log => log.action === 'create' || log.action === 'created')) {
+            timeline.unshift({
+                time: task.created_at,
+                action: 'created',
+                performer: getProfileName(task.Creator),
+                performer_role: task.Creator?.role,
+                summary: `Task created by ${getProfileName(task.Creator)}`
+            });
+        }
+
+        res.json({
+            task: {
+                id: task.task_id,
+                title: task.title,
+                category: task.category,
+                priority: task.priority,
+                is_approved: task.is_approved,
+                is_paused: task.is_paused,
+                created_at: task.created_at
+            },
+            statistics: stats,
+            timeline: timeline
+        });
+
+    } catch (error) {
+        console.error("TASK ANALYSIS ERROR:", error);
         res.status(500).json({ message: error.message });
     }
 };

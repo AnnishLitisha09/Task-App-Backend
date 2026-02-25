@@ -1,0 +1,10 @@
+{
+  "user": {
+    "user_id": 14,
+    "role": "admin",
+    "status": "active",
+    "created_at": "2026-02-10T08:06:24.000Z",
+    "deleted_at": null
+  },
+  "profiles": {}
+}

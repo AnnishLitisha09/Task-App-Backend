@@ -1,0 +1,44 @@
+[
+  {
+    "user_id": 1,
+    "role": "admin",
+    "email": "N/A",
+    "name": "N/A",
+    "profile_type": "None"
+  },
+  {
+    "user_id": 2,
+    "role": "admin",
+    "email": "N/A",
+    "name": "N/A",
+    "profile_type": "None"
+  },
+  {
+    "user_id": 3,
+    "role": "admin",
+    "email": "admin@college.edu",
+    "name": "N/A",
+    "profile_type": "None"
+  },
+  {
+    "user_id": 4,
+    "role": "admin",
+    "email": "admin1@college.edu",
+    "name": "N/A",
+    "profile_type": "None"
+  },
+  {
+    "user_id": 14,
+    "role": "admin",
+    "email": "jannishlitisha2005@gmail.com",
+    "name": "N/A",
+    "profile_type": "None"
+  },
+  {
+    "user_id": 18,
+    "role": "admin",
+    "email": "annishlitisha5@gmail.com",
+    "name": "N/A",
+    "profile_type": "None"
+  }
+]

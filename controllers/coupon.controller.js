@@ -76,11 +76,8 @@ exports.getAllCoupons = async (req, res) => {
         res.json({
             success: true,
             stats: { active_coupons: activeCount, inactive_coupons: inactiveCount, total_issued: totalIssuedCount },
-            totalItems: coupons.length,
-            items: coupons,
-            totalPages: 1,
-            currentPage: 1,
-            limit: coupons.length || 10
+            total: coupons.length,
+            items: coupons
         });
     } catch (error) {
         res.status(500).json({ message: error.message });
