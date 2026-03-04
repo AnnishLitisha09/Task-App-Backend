@@ -10,6 +10,10 @@ module.exports = (sequelize, DataTypes) => {
       Venue.hasMany(models.Task, { foreignKey: 'venue_id' });
       // Venue has many resources
       Venue.hasMany(models.Resource, { foreignKey: 'venue_id' });
+      // Venue has many maintenance logs
+      Venue.hasMany(models.MaintenanceLog, { foreignKey: 'venue_id' });
+      // Venue has many resource usage logs
+      Venue.hasMany(models.ResourceUsageLog, { foreignKey: 'venue_id' });
     }
   }
 
@@ -32,6 +36,10 @@ module.exports = (sequelize, DataTypes) => {
     location: {
       type: DataTypes.STRING(100),
       allowNull: true
+    },
+    status: {
+      type: DataTypes.ENUM('open', 'under maintenance', 'temporarily closed', 'renovation', 'full day booked'),
+      defaultValue: 'open'
     },
     description: {                  // <-- new column
       type: DataTypes.TEXT,

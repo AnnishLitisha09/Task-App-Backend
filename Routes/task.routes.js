@@ -8,6 +8,7 @@ const taskClosure = require('../controllers/task.closure');
 const taskAcceptance = require('../controllers/task.acceptance');
 const taskAcknowledgment = require('../controllers/task.acknowledgment');
 const calendarController = require('../controllers/calendar.controller');
+const taskOTPController = require('../controllers/task.otp.controller');
 
 // Multer configuration for Excel upload
 const upload = multer({ dest: 'uploads/' });
@@ -41,6 +42,7 @@ router.post('/:id/assign/bulk', verifyToken, upload.single('file'), taskAssignme
 router.post('/:id/accept', verifyToken, taskAcceptance.acceptTask);
 router.post('/:id/reject', verifyToken, taskAcceptance.rejectTask);
 router.post('/:id/transfer', verifyToken, taskAcceptance.transferTask);
+router.post('/:id/cancel-approval', verifyToken, taskAcceptance.cancelApproval);
 router.post('/:id/resolve-swap', verifyToken, taskAcceptance.resolveConflictWithSwap);
 router.put('/escalations/:id/read', verifyToken, taskAcceptance.updateEscalationReadStatus);
 
@@ -71,6 +73,10 @@ router.get('/:id/detail', verifyToken, taskController.getTaskDetail); // NEW: Ge
 
 // Task Completion & Proof
 router.post('/:id/submit-proof', verifyToken, taskController.submitTaskProof);
+router.post('/otp/generate', verifyToken, taskOTPController.generateOTP);
+router.get('/otp/active', verifyToken, taskOTPController.getGeneratedOTPs);
+router.post('/otp/verify', verifyToken, taskOTPController.verifyOTP);
+router.get('/otp/creator/assignments', verifyToken, taskOTPController.getCreatorTaskAssignments);
 
 // Task Closure
 router.get('/closure-types', verifyToken, taskClosure.getClosureTypes);

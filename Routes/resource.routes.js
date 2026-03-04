@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const resourceController = require('../controllers/resource.controller');
+const maintenanceController = require('../controllers/maintenance.controller');
 const { verifyToken, isAdmin } = require('../middlewares/auth.middleware');
 const multer = require('multer');
 const path = require('path');
@@ -35,6 +36,20 @@ const upload = multer({
 // Public or Authenticated? Assuming Authenticated for now.
 router.use(verifyToken);
 
+// Maintenance Logs
+router.post('/maintenance/logs', maintenanceController.addMaintenanceLog);
+router.put('/maintenance/logs/:id', maintenanceController.updateMaintenanceLog);
+router.delete('/maintenance/logs/:id', maintenanceController.deleteMaintenanceLog);
+router.get('/maintenance/logs', maintenanceController.getMaintenanceLogs);
+
+// Resource Usage (QR + OTP)
+router.post('/usage/start', maintenanceController.startResourceUsage);
+router.post('/usage/verify-start', maintenanceController.verifyStartOtp);
+router.post('/usage/end', maintenanceController.endResourceUsage);
+router.post('/usage/verify-end', maintenanceController.verifyEndOtp);
+router.get('/usage/logs', maintenanceController.getUsageLogs);
+
+// Departments
 router.get('/departments', resourceController.getAllDepartments);
 router.get('/departments/:id/analytics', resourceController.getDepartmentAnalytics);
 router.post('/departments', isAdmin, resourceController.addDepartment);
@@ -51,10 +66,13 @@ router.put('/venues/:id', isAdmin, upload.single('image'), resourceController.up
 router.delete('/venues/:id', isAdmin, resourceController.deleteVenue);
 router.get('/venue/:venueId/incharge', resourceController.getVenueIncharge);
 router.put('/venues/:id/incharge', isAdmin, resourceController.assignVenueIncharge);
+router.get('/venues/:id/extended-details', maintenanceController.getVenueExtendedDetails);
+router.get('/venues/:id/history', maintenanceController.getVenueStatusHistory);
+router.get('/venues/:id/resource-analytics', maintenanceController.getVenueResourceAnalytics);
 
 // Resources
 router.get('/', resourceController.getAllResources);
-router.post('/', isAdmin, resourceController.addResource);
+router.post('/', resourceController.addResource);
 router.put('/:id', isAdmin, resourceController.updateResource);
 router.delete('/:id', isAdmin, resourceController.deleteResource);
 

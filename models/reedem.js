@@ -20,17 +20,14 @@ module.exports = (sequelize, DataTypes) => {
       primaryKey: true,
       autoIncrement: true
     },
-
     user_id: {
       type: DataTypes.BIGINT.UNSIGNED,
       allowNull: false
     },
-
     coupon_id: {
       type: DataTypes.BIGINT.UNSIGNED,
       allowNull: false
     }
-
   }, {
     sequelize,
     modelName: 'Redeem',

@@ -1,4 +1,4 @@
-const { Venue, RoleAssignment, User, Student, Faculty, Staff, RoleUser, Task, TaskType, TaskAssign } = require('../models');
+const { Venue, RoleAssignment, Role, User, Student, Faculty, Staff, RoleUser, Task, TaskType, TaskAssign } = require('../models');
 const { Op, literal } = require('sequelize');
 
 // Helper: format YYYY-MM-DD safely
@@ -15,14 +15,30 @@ async function fetchCreatorNames(userIds) {
             { model: Student, attributes: ['name'], required: false },
             { model: Faculty, attributes: ['name'], required: false },
             { model: Staff, attributes: ['name'], required: false },
-            { model: RoleUser, attributes: ['name'], required: false }
+            { model: RoleUser, attributes: ['name'], required: false },
+            {
+                model: RoleAssignment,
+                required: false,
+                include: [{ model: Role, attributes: ['user_role'] }]
+            }
         ]
     });
 
     const map = {};
     creators.forEach(c => {
         const profile = c.Student || c.Faculty || c.Staff || c.RoleUser;
-        const roleLabel = c.role ? (c.role.charAt(0).toUpperCase() + c.role.slice(1).toLowerCase()) : 'User';
+        let roleLabel = c.role ? (c.role.charAt(0).toUpperCase() + c.role.slice(1).toLowerCase()) : 'User';
+
+        // If it's a role-user, prioritize the specific roles assigned
+        if (c.role === 'role-user' && c.RoleAssignments && c.RoleAssignments.length > 0) {
+            const specificRoles = c.RoleAssignments
+                .map(ra => ra.Role?.user_role)
+                .filter(Boolean);
+            if (specificRoles.length > 0) {
+                // Join multiple roles if they exist, e.g. "HOD, Principal"
+                roleLabel = [...new Set(specificRoles)].join(', ');
+            }
+        }
 
         if (profile) {
             map[c.user_id] = `${profile.name} (${roleLabel})`;

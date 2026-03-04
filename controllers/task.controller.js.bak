@@ -217,17 +217,6 @@ exports.getTaskById = async (req, res) => {
                 {
                     model: TaskAssign,
                     include: [{ model: User, attributes: ['user_id', 'role'] }]
-                },
-                {
-                    model: Task,
-                    as: 'Children',
-                    include: [
-                        { model: TaskType },
-                        {
-                            model: TaskAssign,
-                            include: [{ model: User, attributes: ['user_id', 'role'] }]
-                        }
-                    ]
                 }
             ]
         });
@@ -603,7 +592,6 @@ exports.createUnifiedTask = async (req, res) => {
         const { Op } = require('sequelize');
 
         if (!canCreateTask(userRole)) {
-            await t.rollback();
             return res.status(403).json({ message: 'You do not have permission to create tasks' });
         }
 
@@ -658,8 +646,6 @@ exports.createUnifiedTask = async (req, res) => {
             const now = new Date();
             const endDateStr = task_type_data?.end_date || task_type_data?.start_date;
             if (endDateStr) {
-                // Parse date carefully to avoid UTC shift issues
-                // Using yyyy-MM-dd format with current local time components
                 const deadline = new Date(endDateStr);
                 const endTimeStr = task_type_data?.end_time || '23:59:59';
                 const [hours, minutes] = endTimeStr.split(':');
@@ -667,12 +653,7 @@ exports.createUnifiedTask = async (req, res) => {
                 const m = parseInt(minutes);
                 if (!isNaN(h) && !isNaN(m)) {
                     deadline.setHours(h, m, 0, 0);
-
-                    // Add a 5-minute buffer to accommodate slight clock drifts or slow page submissions
-                    const bufferNow = new Date(now.getTime() - (5 * 60 * 1000));
-
-                    if (deadline < bufferNow) {
-                        await t.rollback();
+                    if (deadline < now) {
                         return res.status(400).json({ message: 'Directive tasks must have a future deadline. For past activities, use Self-Log.' });
                     }
                 }
@@ -694,7 +675,6 @@ exports.createUnifiedTask = async (req, res) => {
 
         if (typeof is_approved === 'string') is_approved = is_approved === 'true';
         if (typeof is_mandatory === 'string') is_mandatory = is_mandatory === 'true';
-        if (typeof is_package === 'string') is_package = is_package === 'true';
 
         // --- NEW: Handle Master Task Title ---
         if (task_title_id) {
@@ -705,12 +685,10 @@ exports.createUnifiedTask = async (req, res) => {
         }
 
         if (!title || !category || !priority || !task_type_data || !task_type_data.task_name) {
-            await t.rollback();
             return res.status(400).json({ message: 'Missing required task or type fields' });
         }
 
         if (is_approved && !approver_id) {
-            await t.rollback();
             return res.status(400).json({ message: 'Approver ID is required when task needs approval' });
         }
 
@@ -720,7 +698,7 @@ exports.createUnifiedTask = async (req, res) => {
         let finalAssigneeIds = [];
         if (assignee_ids) {
             const ids = Array.isArray(assignee_ids) ? assignee_ids : [assignee_ids];
-            ids.forEach(id => { if (id && !finalAssigneeIds.includes(id * 1)) finalAssigneeIds.push(id * 1); });
+            ids.forEach(id => { if (id && !finalAssigneeIds.includes(id)) finalAssigneeIds.push(id * 1); });
         }
 
         if (assign_to_groups && Array.isArray(assign_to_groups)) {
@@ -762,6 +740,10 @@ exports.createUnifiedTask = async (req, res) => {
             }
         }
 
+        // --- NOTE: Venue Incharges and Approvers are NOT added to regular assignees ---
+        // They will receive separate "Permission Tasks" further below.
+        // Only explicit assignee_ids, group assignments, and faculty_id are regular assignees.
+
         if (req.file) {
             try {
                 const workbook = XLSX.readFile(req.file.path);
@@ -786,8 +768,7 @@ exports.createUnifiedTask = async (req, res) => {
             } catch (e) { console.error('Excel processing error:', e); }
         }
 
-        // --- NEW: Add Sub-task Assignees to Parent if it's a Package ---
-        if (is_package && sub_tasks && Array.isArray(sub_tasks)) {
+        if (sub_tasks && Array.isArray(sub_tasks)) {
             for (const sub of sub_tasks) {
                 if (sub.assignee_id) {
                     const sid = parseInt(sub.assignee_id);
@@ -803,11 +784,10 @@ exports.createUnifiedTask = async (req, res) => {
         }
 
         // --- BATCH FETCH ASSIGNEE ROLES ---
-        const allInvolvedIds = [...finalAssigneeIds];
         const roleMap = {};
-        if (allInvolvedIds.length > 0) {
+        if (finalAssigneeIds.length > 0) {
             const assigneeProfiles = await User.findAll({
-                where: { user_id: { [Op.in]: allInvolvedIds } },
+                where: { user_id: { [Op.in]: finalAssigneeIds } },
                 attributes: ['user_id', 'role']
             });
             assigneeProfiles.forEach(u => { roleMap[u.user_id] = u.role; });
@@ -934,9 +914,9 @@ exports.createUnifiedTask = async (req, res) => {
 
                     await TaskType.create({
                         task_id: childTask.task_id,
-                        task_name: sub.task_name || 'Fixed Time Task',
-                        start_date: sub.start_date || oDate,
-                        end_date: sub.end_date || oDate,
+                        task_name: task_type_data.task_name || 'Fixed Time Task',
+                        start_date: oDate,
+                        end_date: oDate,
                         start_time: sub.start_time || task_type_data.start_time || null,
                         end_time: sub.end_time || task_type_data.end_time || null,
                         venue_id: sub.venue_id || venue_id || null,
@@ -945,26 +925,14 @@ exports.createUnifiedTask = async (req, res) => {
 
                     // Assign sub-task to specific people
                     const subAssigneeIds = [];
-                    if (sub.assignee_id) {
-                        const sid = parseInt(sub.assignee_id);
-                        if (!isNaN(sid)) subAssigneeIds.push(sid);
-                    }
+                    if (sub.assignee_id) subAssigneeIds.push(sub.assignee_id * 1);
                     if (sub.assignee_ids && Array.isArray(sub.assignee_ids)) {
-                        sub.assignee_ids.forEach(sid => {
-                            const numericId = parseInt(sid);
-                            if (!isNaN(numericId) && !subAssigneeIds.includes(numericId)) subAssigneeIds.push(numericId);
-                        });
+                        sub.assignee_ids.forEach(sid => { if (!subAssigneeIds.includes(sid * 1)) subAssigneeIds.push(sid * 1); });
                     }
 
                     if (subAssigneeIds.length > 0) {
                         const childAssignments = [];
                         for (const sid of subAssigneeIds) {
-                            const allowedChild = await canAssignTo(userId, sid);
-                            if (!allowedChild) {
-                                console.warn(`Assignment to user ${sid} for sub-task ${sub.title} skipped due to permissions.`);
-                                continue;
-                            }
-
                             const isChildStaff = roleMap[sid] === 'staff';
                             const childAutoAccept = sub.is_mandatory || isChildStaff;
 
@@ -982,10 +950,7 @@ exports.createUnifiedTask = async (req, res) => {
                                 type: 'task_created'
                             }, { transaction: t });
                         }
-
-                        if (childAssignments.length > 0) {
-                            await TaskAssign.bulkCreate(childAssignments, { transaction: t, ignoreDuplicates: true });
-                        }
+                        await TaskAssign.bulkCreate(childAssignments, { transaction: t, ignoreDuplicates: true });
                     }
                 }
             }
@@ -1101,12 +1066,6 @@ exports.createUnifiedTask = async (req, res) => {
     } catch (error) {
         await t.rollback();
         console.error('Error in createUnifiedTask:', error);
-
-        // Return 400 for validation errors or explicit check failures
-        if (error.message.includes('requires') || error.message.includes('fields') || error.message.includes('deadline')) {
-            return res.status(400).json({ message: error.message });
-        }
-
         res.status(500).json({ message: error.message });
     }
 };
@@ -2028,28 +1987,6 @@ exports.getTaskDetail = async (req, res) => {
                 {
                     model: TaskTitle,
                     required: false
-                },
-                {
-                    model: Task,
-                    as: 'Children',
-                    include: [
-                        { model: TaskType },
-                        {
-                            model: TaskAssign,
-                            include: [
-                                {
-                                    model: User,
-                                    attributes: ['user_id', 'role'],
-                                    include: [
-                                        { model: Student, attributes: ['name', 'email'], required: false },
-                                        { model: Faculty, attributes: ['name', 'email'], required: false },
-                                        { model: Staff, attributes: ['name', 'email'], required: false },
-                                        { model: RoleUser, attributes: ['name', 'email'], required: false }
-                                    ]
-                                }
-                            ]
-                        }
-                    ]
                 }
             ]
         });

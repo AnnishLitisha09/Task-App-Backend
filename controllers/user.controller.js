@@ -120,7 +120,7 @@ exports.createFaculty = async (req, res) => {
 exports.createStaff = async (req, res) => {
     const t = await User.sequelize.transaction();
     try {
-        const { name, email, designation, roleName, venue_id } = req.body;
+        const { name, email, designation, roleName, venue_id, manager_id } = req.body;
 
         const existing = await Staff.findOne({ where: { email } });
         if (existing) return res.status(400).json({ message: 'Staff already exists' });
@@ -129,6 +129,7 @@ exports.createStaff = async (req, res) => {
 
         await Staff.create({
             user_id: user.user_id,
+            manager_id: manager_id || null,
             name,
             email,
             designation,
@@ -317,9 +318,16 @@ exports.bulkCreateUsers = async (req, res) => {
                     results.push({ email: row.email, status: 'created' });
 
                 } else if (type === 'staff') {
+                    let managerId = null;
+                    if (row.manager_email) {
+                        const manager = await Staff.findOne({ where: { email: row.manager_email } });
+                        if (manager) managerId = manager.user_id;
+                    }
+
                     const user = await createBaseUser('staff', t);
                     await Staff.create({
                         user_id: user.user_id,
+                        manager_id: managerId,
                         name: row.name,
                         email: row.email,
                         designation: row.designation,
@@ -623,8 +631,8 @@ exports.getFacultyDailyStats = async (req, res) => {
                 assigned_at: assignment.created_at
             };
 
-            // Category A: Scheduled for Today (Accepted/Completed)
-            if (taskDateStr === todayStr && (assignment.status === 'accepted' || assignment.status === 'completed')) {
+            // Category A: Scheduled for Today (Accepted/In Progress/Completed)
+            if (taskDateStr === todayStr && (['accepted', 'in_progress', 'completed'].includes(assignment.status))) {
                 allTasksToday.push(formattedTask);
             }
 

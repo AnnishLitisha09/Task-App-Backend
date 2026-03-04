@@ -6,6 +6,10 @@ module.exports = (sequelize, DataTypes) => {
     static associate(models) {
       Resource.hasMany(models.Task, { foreignKey: 'resource_id' });
       Resource.belongsTo(models.Venue, { foreignKey: 'venue_id' });
+      // Resource has many maintenance logs
+      Resource.hasMany(models.MaintenanceLog, { foreignKey: 'resource_id' });
+      // Resource has many usage logs
+      Resource.hasMany(models.ResourceUsageLog, { foreignKey: 'resource_id' });
     }
   }
 
@@ -31,6 +35,10 @@ module.exports = (sequelize, DataTypes) => {
       type: DataTypes.INTEGER,
       allowNull: true,
       defaultValue: 1
+    },
+    status: {
+      type: DataTypes.ENUM('available', 'under maintenance', 'damaged', 'broken'),
+      defaultValue: 'available'
     },
     description: {
       type: DataTypes.TEXT,

@@ -84,6 +84,58 @@ exports.getAllCoupons = async (req, res) => {
     }
 };
 
+exports.getAvailableCoupons = async (req, res) => {
+    try {
+        const userId = req.userId;
+        const userRole = req.userRole;
+        const { Op } = require('sequelize');
+
+        // 1. Fetch User Score
+        let profile = null;
+        if (userRole === 'student') {
+            profile = await Student.findOne({ where: { user_id: userId } });
+        } else if (userRole === 'faculty') {
+            profile = await Faculty.findOne({ where: { user_id: userId } });
+        } else if (userRole === 'role-user') {
+            profile = await RoleUser.findOne({ where: { user_id: userId } });
+        }
+
+        const score = profile ? parseFloat(profile.score || 0) : 0;
+
+        // 2. Fetch Already Redeemed Coupon IDs for this user
+        const alreadyRedeemed = await Redeem.findAll({
+            where: { user_id: userId },
+            attributes: ['coupon_id']
+        });
+        const redeemedIds = alreadyRedeemed.map(r => r.coupon_id);
+
+        // 3. Fetch Available Coupons (active, in stock, not expired, not already redeemed by this user)
+        const now = new Date();
+        const whereClause = {
+            status: 'active',
+            remaining_count: { [Op.gt]: 0 },
+            validity: { [Op.gte]: now }
+        };
+        if (redeemedIds.length > 0) {
+            whereClause.id = { [Op.notIn]: redeemedIds };
+        }
+
+        const coupons = await Coupon.findAll({
+            where: whereClause,
+            order: [['points', 'ASC']]
+        });
+
+        res.json({
+            success: true,
+            score: score,
+            count: coupons.length,
+            coupons: coupons
+        });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
 // --- Redemption Logic ---
 
 exports.redeemCoupon = async (req, res) => {
@@ -102,6 +154,16 @@ exports.redeemCoupon = async (req, res) => {
         if (coupon.status !== 'active' || coupon.remaining_count <= 0) {
             await t.rollback();
             return res.status(400).json({ message: 'Coupon is not available or out of stock' });
+        }
+
+        // Check if user has already redeemed this coupon
+        const existingRedeem = await Redeem.findOne({
+            where: { user_id: userId, coupon_id },
+            transaction: t
+        });
+        if (existingRedeem) {
+            await t.rollback();
+            return res.status(400).json({ message: 'You have already redeemed this coupon' });
         }
 
         // Check validity
@@ -158,40 +220,89 @@ exports.redeemCoupon = async (req, res) => {
 exports.getUserRedeemedCoupons = async (req, res) => {
     try {
         const userId = req.userId;
+        const userRole = req.userRole;
+
+        // 1. Fetch User Scores
+        let profile = null;
+        if (userRole === 'student') {
+            profile = await Student.findOne({ where: { user_id: userId } });
+        } else if (userRole === 'faculty') {
+            profile = await Faculty.findOne({ where: { user_id: userId } });
+        } else if (userRole === 'role-user') {
+            profile = await RoleUser.findOne({ where: { user_id: userId } });
+        } else if (userRole === 'staff') {
+            profile = await Staff.findOne({ where: { user_id: userId } });
+        }
+
+        // 2. Fetch Redemptions
         const redemptions = await Redeem.findAll({
             where: { user_id: userId },
             include: [{ model: Coupon }],
             order: [['id', 'DESC']]
         });
+
+        const formatted = redemptions.map(r => ({
+            redemption_id: r.id,
+            coupon_name: r.Coupon?.name,
+            points_deducted: r.Coupon?.points,
+            coupon_details: r.Coupon
+        }));
+
         res.json({
-            totalItems: redemptions.length,
-            items: redemptions,
-            totalPages: 1,
-            currentPage: 1,
-            limit: redemptions.length || 10
+            success: true,
+            user_scores: {
+                current_net_score: profile ? parseFloat(profile.score || 0) : 0,
+                cumulative_gross_total: profile ? parseFloat(profile.total_score || 0) : 0,
+                total_penalty: profile ? parseFloat(profile.penalty || 0) : 0
+            },
+            count: formatted.length,
+            items: formatted
         });
     } catch (error) {
-        res.status(500).json({ message: error.message });
+        res.status(500).json({ status: false, message: error.message });
     }
 };
 
 exports.getRedeemedCouponsByUserId = async (req, res) => {
     try {
         const { userId } = req.params;
+
+        // Fetch User (to determine role/profile)
+        const user = await User.findByPk(userId);
+        if (!user) return res.status(404).json({ message: 'User not found' });
+
+        let profile = null;
+        if (user.role === 'student') profile = await Student.findOne({ where: { user_id: userId } });
+        else if (user.role === 'faculty') profile = await Faculty.findOne({ where: { user_id: userId } });
+        else if (user.role === 'staff') profile = await Staff.findOne({ where: { user_id: userId } });
+        else if (user.role === 'role-user') profile = await RoleUser.findOne({ where: { user_id: userId } });
+
         const redemptions = await Redeem.findAll({
             where: { user_id: userId },
             include: [{ model: Coupon }],
             order: [['id', 'DESC']]
         });
+
+        const formatted = redemptions.map(r => ({
+            redemption_id: r.id,
+            coupon_name: r.Coupon?.name,
+            points_deducted: r.Coupon?.points,
+            coupon_details: r.Coupon
+        }));
+
         res.json({
-            totalItems: redemptions.length,
-            items: redemptions,
-            totalPages: 1,
-            currentPage: 1,
-            limit: redemptions.length || 10
+            success: true,
+            user_details: {
+                user_id: userId,
+                role: user.role,
+                current_net_score: profile ? parseFloat(profile.score || 0) : 0,
+                cumulative_gross_total: profile ? parseFloat(profile.total_score || 0) : 0
+            },
+            count: formatted.length,
+            items: formatted
         });
     } catch (error) {
-        res.status(500).json({ message: error.message });
+        res.status(500).json({ success: false, message: error.message });
     }
 };
 

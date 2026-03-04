@@ -12,6 +12,7 @@ router.put('/:id', isAdmin, couponController.updateCoupon);
 router.delete('/:id', isAdmin, couponController.deleteCoupon);
 
 // Redemption
+router.get('/available', couponController.getAvailableCoupons);
 router.post('/redeem', couponController.redeemCoupon);
 router.get('/redeemed', couponController.getUserRedeemedCoupons);
 router.get('/redeemed/:userId', isAdmin, couponController.getRedeemedCouponsByUserId);

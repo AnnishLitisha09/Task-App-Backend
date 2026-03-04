@@ -1,4 +1,5 @@
 const { Department, Venue, RoleAssignment, User, RoleUser, Role, Resource, Faculty, Staff, Scope } = require('../models');
+const { Op } = require('sequelize');
 const fs = require('fs');
 const path = require('path');
 
@@ -468,19 +469,62 @@ exports.getAllResources = async (req, res) => {
 // Add Resource with Venue Mapping
 exports.addResource = async (req, res) => {
     try {
-        const { name, description, venue_id, quantity } = req.body;
+        const { name, description, venue_id, quantity, status } = req.body;
+        const userId = req.userId;
+        const userRole = req.userRole?.toUpperCase();
+
         if (!name) {
             return res.status(400).json({ message: 'Resource name is required' });
+        }
+
+        let targetVenueId = venue_id;
+
+        // --- Role-Based Access and Auto-Assignment ---
+        if (userRole !== 'ADMIN') {
+            // Check if user is an incharge for ANY venue
+            const assignments = await RoleAssignment.findAll({
+                where: { user_id: userId, venue_id: { [Op.ne]: null } }
+            });
+
+            if (assignments.length === 0) {
+                return res.status(403).json({ message: 'You are not authorized to create resources (Venue Incharge only).' });
+            }
+
+            const managedVenueIds = assignments.map(a => a.venue_id);
+
+            if (targetVenueId) {
+                // If they provided a venue_id, check if they manage it
+                if (!managedVenueIds.includes(parseInt(targetVenueId))) {
+                    return res.status(403).json({ message: 'You can only create resources for venues you manage.' });
+                }
+            } else {
+                // Auto-assign if they manage exactly one venue
+                if (managedVenueIds.length === 1) {
+                    targetVenueId = managedVenueIds[0];
+                } else {
+                    return res.status(400).json({ message: 'Please specify a venue_id from the ones you manage.' });
+                }
+            }
+        } else {
+            // Admin can choose any venue_id, but we should validate it if provided
+            if (targetVenueId) {
+                const venue = await Venue.findByPk(targetVenueId);
+                if (!venue) {
+                    return res.status(404).json({ message: 'Venue not found' });
+                }
+            }
         }
 
         const resource = await Resource.create({
             name,
             description,
-            venue_id: venue_id || null,
-            quantity: quantity || 1
+            venue_id: targetVenueId || null,
+            quantity: quantity || 1,
+            status: status || 'available'
         });
         res.status(201).json({ message: 'Resource created successfully', resource });
     } catch (error) {
+        console.error('Error in addResource:', error);
         res.status(500).json({ message: error.message });
     }
 };

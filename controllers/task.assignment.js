@@ -54,11 +54,13 @@ const canAssignTo = async (assignerId, assigneeId) => {
     }
 
     // Faculty can assign to Incharge and Students
-    return ['role-user', 'student', 'faculty'].includes(assigneeRole);
+    if (assignerRole === 'faculty') {
+        return ['role-user', 'student', 'faculty', 'staff'].includes(assigneeRole);
+    }
 
-    // Incharge can assign to Staff
+    // Incharge / HOD (role-user) can assign to Staff
     if (assignerRole === 'role-user') {
-        return assigneeRole === 'staff';
+        return assigneeRole === 'staff' || assigneeRole === 'student' || assigneeRole === 'faculty';
     }
 
     return false;
@@ -89,11 +91,16 @@ exports.assignTaskToUser = async (req, res) => {
             return res.status(400).json({ message: 'Task already assigned to this user' });
         }
 
+        // Get role to check for auto-acceptance
+        const assignee = await User.findByPk(assigneeId);
+        const isStaff = assignee && assignee.role === 'staff';
+
         // Create assignment
         await TaskAssign.create({
             task_id: taskId,
             user_id: assigneeId,
-            status: 'pending'
+            status: isStaff ? 'accepted' : 'pending',
+            accepted_at: isStaff ? new Date() : null
         });
 
         res.json({ message: 'Task assigned successfully' });
@@ -285,10 +292,14 @@ exports.bulkAssignByExcel = async (req, res) => {
                     continue;
                 }
 
+                const assignee = await User.findByPk(userId);
+                const isStaff = assignee && assignee.role === 'staff';
+
                 assignments.push({
                     task_id: taskId,
                     user_id: userId,
-                    status: 'pending'
+                    status: isStaff ? 'accepted' : 'pending',
+                    accepted_at: isStaff ? new Date() : null
                 });
             } catch (err) {
                 errors.push({ email, error: err.message });

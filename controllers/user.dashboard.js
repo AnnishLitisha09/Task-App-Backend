@@ -1,4 +1,4 @@
-const { User, Student, Faculty, Staff, RoleUser, RoleAssignment, Role, Department, Task, TaskType, TaskAssign } = require('../models');
+﻿const { User, Student, Faculty, Staff, RoleUser, RoleAssignment, Role, Department, Task, TaskType, TaskAssign, TaskLog } = require('../models');
 
 // ... (existing getAllUsersWithDetails function) ...
 
@@ -259,10 +259,10 @@ exports.getAllUsersWithDetails = async (req, res) => {
     }
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // GET /api/users/dashboard/hod
 // HOD Dashboard: Department stats, faculty, schedule, and pending approvals
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 exports.getHodDashboard = async (req, res) => {
     try {
         const userId = req.userId;
@@ -304,23 +304,31 @@ exports.getHodDashboard = async (req, res) => {
         const dayAfterTomorrow = new Date(tomorrowDate);
         dayAfterTomorrow.setDate(dayAfterTomorrow.getDate() + 1);
 
-        const isEvening = localNow.getHours() > 16 || (localNow.getHours() === 16 && localNow.getMinutes() >= 30);
+        const isEvening = localNow.getHours() > 19 || (localNow.getHours() === 19 && localNow.getMinutes() >= 30);
         const pendingDateLimit = isEvening ? dayAfterTomorrow : tomorrowDate;
 
         // 2. Department Statistics
         const studentCount = await Student.count({ where: { department_id: deptId } });
         const facultyCount = await Faculty.count({ where: { department_id: deptId } });
 
-        // 3. Department Faculty List
+        // 3. Department Faculty and Student List
         const faculties = await Faculty.findAll({
             where: { department_id: deptId },
             attributes: ['user_id', 'name', 'email', 'type', 'reg_no'],
             include: [{ model: User, attributes: ['status'] }]
         });
 
-        const facultyUserIds = faculties.map(f => f.user_id);
+        const students = await Student.findAll({
+            where: { department_id: deptId },
+            attributes: ['user_id', 'name']
+        });
 
-        // 4. Pending Approvals for this HOD (Follows Today/Tomorrow rule)
+        const deptUserIds = [
+            ...faculties.map(f => f.user_id),
+            ...students.map(s => s.user_id)
+        ];
+
+        // 4. Pending Approvals for this HOD
         const pendingApprovals = await Task.findAll({
             where: {
                 approver_id: userId,
@@ -344,10 +352,14 @@ exports.getHodDashboard = async (req, res) => {
             order: [['created_at', 'DESC']]
         });
 
-        // Batch fetch names for creators of pending tasks
-        const creatorIds = [...new Set(pendingApprovals.map(t => t.creator_id))];
+        // Batch fetch names for creators
+        const creatorIds = [...new Set([
+            ...pendingApprovals.map(t => t.creator_id),
+            // We'll also need creator names for the schedule
+        ])];
+
         const creators = await User.findAll({
-            where: { user_id: creatorIds },
+            where: { user_id: { [Op.in]: creatorIds } },
             include: [
                 { model: Student, attributes: ['name'], required: false },
                 { model: Faculty, attributes: ['name'], required: false },
@@ -371,14 +383,13 @@ exports.getHodDashboard = async (req, res) => {
             timing: t.TaskTypes?.[0] ? `${t.TaskTypes[0].start_date} ${t.TaskTypes[0].start_time}` : 'N/A'
         }));
 
-        // 5. Today's Department Schedule
-        // Tasks created by department faculty OR assigned to department members today
+        // 5. Today's Department Schedule (Assigned to OR Created by Dept Members Today)
         const todaysTasks = await Task.findAll({
             where: {
                 is_deleted: false,
                 [Op.or]: [
-                    { creator_id: { [Op.in]: facultyUserIds } },
-                    literal(`EXISTS (SELECT 1 FROM task_assign ta WHERE ta.task_id = \`Task\`.\`task_id\` AND ta.user_id IN (SELECT user_id FROM faculties WHERE department_id = ${deptId} UNION SELECT user_id FROM students WHERE department_id = ${deptId}))`)
+                    { creator_id: { [Op.in]: deptUserIds } },
+                    literal(`EXISTS (SELECT 1 FROM task_assign ta WHERE ta.task_id = \`Task\`.\`task_id\` AND ta.user_id IN (${deptUserIds.join(',')}))`)
                 ]
             },
             include: [{
@@ -398,6 +409,25 @@ exports.getHodDashboard = async (req, res) => {
             }]
         });
 
+        // Ensure creator names for schedule
+        const schedCreatorIds = [...new Set(todaysTasks.map(t => t.creator_id))];
+        const missingSchedNames = schedCreatorIds.filter(id => !creatorMap[id]);
+        if (missingSchedNames.length > 0) {
+            const extraCreators = await User.findAll({
+                where: { user_id: { [Op.in]: missingSchedNames } },
+                include: [
+                    { model: Student, attributes: ['name'], required: false },
+                    { model: Faculty, attributes: ['name'], required: false },
+                    { model: Staff, attributes: ['name'], required: false },
+                    { model: RoleUser, attributes: ['name'], required: false }
+                ]
+            });
+            extraCreators.forEach(c => {
+                const p = c.Student || c.Faculty || c.Staff || c.RoleUser;
+                creatorMap[c.user_id] = p ? p.name : `User #${c.user_id}`;
+            });
+        }
+
         const schedule = todaysTasks.map(t => ({
             task_id: t.task_id,
             title: t.title,
@@ -405,7 +435,51 @@ exports.getHodDashboard = async (req, res) => {
             timing: t.TaskTypes?.[0] ? `${t.TaskTypes[0].start_time} - ${t.TaskTypes[0].end_time}` : 'N/A'
         }));
 
-        // 6. Response
+        // 6. Department Tasks History (All Tasks Created by Department Members)
+        const deptTasks = await Task.findAll({
+            where: {
+                is_deleted: false,
+                creator_id: { [Op.in]: deptUserIds }
+            },
+            include: [{
+                model: TaskType,
+                required: false,
+                attributes: ['start_date', 'start_time', 'end_time']
+            }],
+            order: [['created_at', 'DESC']],
+            limit: 100
+        });
+
+        // Ensure creator names for history
+        const historyCreatorIds = [...new Set(deptTasks.map(t => t.creator_id))];
+        const missingHistoryNames = historyCreatorIds.filter(id => !creatorMap[id]);
+        if (missingHistoryNames.length > 0) {
+            const extraRes = await User.findAll({
+                where: { user_id: { [Op.in]: missingHistoryNames } },
+                include: [
+                    { model: Student, attributes: ['name'], required: false },
+                    { model: Faculty, attributes: ['name'], required: false },
+                    { model: Staff, attributes: ['name'], required: false },
+                    { model: RoleUser, attributes: ['name'], required: false }
+                ]
+            });
+            extraRes.forEach(c => {
+                const p = c.Student || c.Faculty || c.Staff || c.RoleUser;
+                creatorMap[c.user_id] = p ? p.name : `User #${c.user_id}`;
+            });
+        }
+
+        const formattedDeptTasks = deptTasks.map(t => ({
+            task_id: t.task_id,
+            title: t.title,
+            category: t.category,
+            priority: t.priority,
+            creator_name: creatorMap[t.creator_id] || "Creator",
+            created_at: t.created_at,
+            timing: t.TaskTypes?.[0] ? `${t.TaskTypes[0].start_date} ${t.TaskTypes[0].start_time}` : 'N/A'
+        }));
+
+        // 7. Response
         res.json({
             success: true,
             department: {
@@ -418,7 +492,10 @@ exports.getHodDashboard = async (req, res) => {
             },
             pending_approvals_count: formattedPending.length,
             pending_approvals: formattedPending,
-            todays_schedule: schedule
+            todays_schedule_count: schedule.length,
+            todays_schedule: schedule,
+            department_tasks_count: formattedDeptTasks.length,
+            department_tasks: formattedDeptTasks
         });
 
     } catch (error) {
@@ -427,10 +504,107 @@ exports.getHodDashboard = async (req, res) => {
     }
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
+/**
+ * Dedicated API for HOD to fetch all tasks created in their department (Paginated)
+ * GET /api/users/dashboard/department-tasks
+ */
+exports.getDepartmentalTasks = async (req, res) => {
+    try {
+        const userId = req.userId;
+        const { Op } = require('sequelize');
+        const { limit, offset, page } = getPagination(req.query);
+
+        // 1. Identify HOD and their Department
+        const hodAssignment = await RoleAssignment.findOne({
+            where: { user_id: userId },
+            include: [
+                {
+                    model: Role,
+                    where: { user_role: 'HOD' }
+                },
+                { model: Department }
+            ]
+        });
+
+        if (!hodAssignment || !hodAssignment.Department) {
+            return res.status(403).json({
+                success: false,
+                message: "Access Denied: HOD role not found or no department assigned."
+            });
+        }
+
+        const deptId = hodAssignment.department_id;
+
+        // 2. Identify all Department Members (Faculty and Students)
+        const faculties = await Faculty.findAll({ where: { department_id: deptId }, attributes: ['user_id'] });
+        const students = await Student.findAll({ where: { department_id: deptId }, attributes: ['user_id'] });
+
+        const deptUserIds = [
+            ...faculties.map(f => f.user_id),
+            ...students.map(s => s.user_id)
+        ];
+
+        // 3. Fetch Tasks created by these users
+        const tasks = await Task.findAndCountAll({
+            where: {
+                is_deleted: false,
+                creator_id: { [Op.in]: deptUserIds }
+            },
+            include: [
+                { model: TaskType, required: false },
+                { model: User, as: 'Creator', attributes: ['user_id', 'role'] }
+            ],
+            order: [['created_at', 'DESC']],
+            limit,
+            offset
+        });
+
+        // 4. Batch fetch names
+        const creatorIds = [...new Set(tasks.rows.map(t => t.creator_id))];
+        const creators = await User.findAll({
+            where: { user_id: { [Op.in]: creatorIds } },
+            include: [
+                { model: Student, attributes: ['name'], required: false },
+                { model: Faculty, attributes: ['name'], required: false },
+                { model: Staff, attributes: ['name'], required: false },
+                { model: RoleUser, attributes: ['name'], required: false }
+            ]
+        });
+
+        const creatorMap = {};
+        creators.forEach(c => {
+            const p = c.Student || c.Faculty || c.Staff || c.RoleUser;
+            creatorMap[c.user_id] = p ? p.name : `User #${c.user_id}`;
+        });
+
+        const formatted = tasks.rows.map(t => ({
+            task_id: t.task_id,
+            title: t.title,
+            category: t.category,
+            priority: t.priority,
+            creator_name: creatorMap[t.creator_id] || "Creator",
+            created_at: t.created_at,
+            timing: t.TaskTypes?.[0] ? `${t.TaskTypes[0].start_date} ${t.TaskTypes[0].start_time}` : 'N/A'
+        }));
+
+        res.json({
+            success: true,
+            totalItems: tasks.count,
+            totalPages: Math.ceil(tasks.count / limit),
+            currentPage: page,
+            items: formatted
+        });
+
+    } catch (error) {
+        console.error("GET DEPARTMENTAL TASKS ERROR:", error);
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // GET /api/users/dashboard/hod/department-users
 // List all students and faculty in the HOD's department with counts
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 exports.getDepartmentUsers = async (req, res) => {
     try {
         const userId = req.userId;
@@ -508,14 +682,14 @@ exports.getDepartmentUsers = async (req, res) => {
     }
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // GET /api/users/dashboard/principal
 // Principal Dashboard: Institutional stats and high-level task metrics
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 exports.getPrincipalDashboard = async (req, res) => {
     try {
         const userId = req.userId;
-        const { Op } = require('sequelize');
+        const { Op, literal } = require('sequelize');
 
         const now = new Date();
         const istOffset = 330 * 60 * 1000;
@@ -528,7 +702,7 @@ exports.getPrincipalDashboard = async (req, res) => {
         const dayAfterTomorrow = new Date(tomorrowDate);
         dayAfterTomorrow.setDate(dayAfterTomorrow.getDate() + 1);
 
-        const isEvening = localNow.getHours() > 16 || (localNow.getHours() === 16 && localNow.getMinutes() >= 30);
+        const isEvening = localNow.getHours() > 19 || (localNow.getHours() === 19 && localNow.getMinutes() >= 30);
         const pendingDateLimit = isEvening ? dayAfterTomorrow : tomorrowDate;
 
         // 1. Verify Principal Role
@@ -552,9 +726,7 @@ exports.getPrincipalDashboard = async (req, res) => {
         const studentCount = await Student.count();
         const facultyCount = await Faculty.count();
 
-        // 3. Global Task Statistics
-        const globalApprovedTasks = await Task.count({ where: { is_approved: true, is_deleted: false } });
-        const globalPendingTasks = await Task.count({ where: { is_approved: false, is_deleted: false } });
+        // Global task stats removed by requirement
 
         // 4. Tasks Specifically Awaiting Principal's Approval (Today/Tomorrow rule)
         const pendingForMe = await Task.findAll({
@@ -607,6 +779,38 @@ exports.getPrincipalDashboard = async (req, res) => {
             timing: t.TaskTypes?.[0] ? `${t.TaskTypes[0].start_date} ${t.TaskTypes[0].start_time}` : 'N/A'
         }));
 
+        // 5. Today's Schedule for the Principal
+        const todaysAssignments = await TaskAssign.findAll({
+            where: { user_id: userId, status: { [Op.in]: ['accepted', 'pending', 'in_progress'] } },
+            include: [{
+                model: Task,
+                where: { is_deleted: false },
+                include: [{
+                    model: TaskType,
+                    required: true,
+                    where: {
+                        [Op.or]: [
+                            literal(`DATE(start_date) = '${todayDate.toISOString().split('T')[0]}'`),
+                            {
+                                [Op.and]: [
+                                    literal(`DATE(start_date) <= '${todayDate.toISOString().split('T')[0]}'`),
+                                    literal(`DATE(end_date) >= '${todayDate.toISOString().split('T')[0]}'`)
+                                ]
+                            }
+                        ]
+                    }
+                }]
+            }],
+            order: [[literal('\`Task->TaskTypes\`.\`start_time\`'), 'ASC']]
+        });
+
+        const schedule = todaysAssignments.map(a => ({
+            task_id: a.Task.task_id,
+            title: a.Task.title,
+            status: a.status,
+            timing: a.Task.TaskTypes?.[0] ? `${a.Task.TaskTypes[0].start_time} - ${a.Task.TaskTypes[0].end_time}` : 'N/A'
+        }));
+
         res.json({
             success: true,
             role: "Principal",
@@ -615,14 +819,11 @@ exports.getPrincipalDashboard = async (req, res) => {
                 total_students: studentCount,
                 total_faculty: facultyCount
             },
-            global_task_stats: {
-                total_approved_tasks: globalApprovedTasks,
-                total_pending_approval: globalPendingTasks
-            },
             personal_actions: {
                 pending_my_approval_count: formattedPending.length,
                 pending_my_approval_list: formattedPending
-            }
+            },
+            todays_schedule: schedule
         });
 
     } catch (error) {
@@ -631,10 +832,10 @@ exports.getPrincipalDashboard = async (req, res) => {
     }
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // GET /api/users/dashboard/student
 // Student Dashboard: Profile, Dept, Faculty, Schedule, and Pending
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 exports.getStudentDashboard = async (req, res) => {
     try {
         const userId = req.userId;
@@ -653,7 +854,7 @@ exports.getStudentDashboard = async (req, res) => {
         const dayAfterTomorrow = new Date(tomorrowDate);
         dayAfterTomorrow.setDate(dayAfterTomorrow.getDate() + 1);
 
-        const isEvening = localNow.getHours() > 16 || (localNow.getHours() === 16 && localNow.getMinutes() >= 30);
+        const isEvening = localNow.getHours() > 19 || (localNow.getHours() === 19 && localNow.getMinutes() >= 30);
         const pendingDateLimit = isEvening ? dayAfterTomorrow : tomorrowDate;
 
         // 1. Fetch Student Details with Dept and Faculty
@@ -669,37 +870,80 @@ exports.getStudentDashboard = async (req, res) => {
             return res.status(404).json({ success: false, message: "Student profile not found." });
         }
 
-        // 2. Fetch Today's Schedule (Only 'accepted' tasks)
-        const todaysAssignments = await TaskAssign.findAll({
-            where: { user_id: userId, status: 'accepted' },
+        // 2. Fetch All Active Assignments (Accepted/In Progress) - regardless of date for Overdue check
+        const activeAssignments = await TaskAssign.findAll({
+            where: { user_id: userId, status: { [Op.in]: ['accepted', 'in_progress'] } },
             include: [{
                 model: Task,
                 where: { is_deleted: false },
                 include: [{
                     model: TaskType,
-                    required: true,
-                    where: {
-                        [Op.or]: [
-                            literal(`DATE(start_date) = '${dateStr}'`),
-                            {
-                                [Op.and]: [
-                                    literal(`DATE(start_date) <= '${dateStr}'`),
-                                    literal(`DATE(end_date) >= '${dateStr}'`)
-                                ]
-                            }
-                        ]
-                    }
+                    required: true
                 }]
             }]
         });
 
-        const schedule = todaysAssignments.map(a => ({
-            task_id: a.Task.task_id,
-            title: a.Task.title,
-            category: a.Task.category,
-            priority: a.Task.priority,
-            timing: a.Task.TaskTypes?.[0] ? `${a.Task.TaskTypes[0].start_time} - ${a.Task.TaskTypes[0].end_time}` : 'N/A'
-        }));
+        const schedule = [];
+        const overdueTasks = [];
+
+        // Current time for comparison (HH:MM)
+        const localTimeStr = `${String(localNow.getHours()).padStart(2, '0')}:${String(localNow.getMinutes()).padStart(2, '0')}`;
+
+        activeAssignments.forEach(a => {
+            const task = a.Task;
+            const taskType = task.TaskTypes?.[0];
+            if (!taskType) return;
+
+            const taskEndStr = taskType.end_date ? new Date(taskType.end_date).toISOString().split('T')[0] : null;
+
+            const taskData = {
+                assignment_id: a.id,
+                assignment_status: a.status,
+                accepted_at: a.accepted_at,
+                task_id: task.task_id,
+                title: task.title,
+                description: task.description,
+                category: task.category,
+                priority: task.priority,
+                is_mandatory: task.is_mandatory,
+                is_package: task.is_package,
+                is_document: task.is_document,
+                origin_type: task.origin_type,
+                score: task.score,
+                penalty_per_hour: task.penalty_per_hour,
+                timing: {
+                    start_time: taskType.start_time,
+                    end_time: taskType.end_time,
+                    start_date: taskType.start_date,
+                    end_date: taskType.end_date
+                },
+                task_type: taskType.task_name,
+                date: taskEndStr || 'N/A'
+            };
+
+            // Overdue Logic: 
+            // 1. End Date is strictly in the past
+            // 2. End Date is today AND end time has passed
+            // AND No proof submitted
+            let isOverdue = false;
+            if (taskEndStr) {
+                if (taskEndStr < dateStr) {
+                    isOverdue = true;
+                } else if (taskEndStr === dateStr) {
+                    if (taskType.end_time && localTimeStr > taskType.end_time) {
+                        isOverdue = true;
+                    }
+                }
+            }
+
+            // Must have NO proof/closure to be truly "Overdue" as per user request
+            if (isOverdue && (!a.proof || a.proof === '')) {
+                overdueTasks.push(taskData);
+            } else if (taskEndStr === dateStr) {
+                // If it's today and NOT overdue yet (or has proof), put in schedule
+                schedule.push(taskData);
+            }
+        });
 
         // 3. Fetch Pending Tasks for Approval (Today/Tomorrow rule)
         const pendingAssignments = await TaskAssign.findAll({
@@ -721,12 +965,22 @@ exports.getStudentDashboard = async (req, res) => {
             }]
         });
 
-        const pending = pendingAssignments.map(a => ({
+        const pendingApprovals = pendingAssignments.map(a => ({
+            assignment_id: a.id,
             task_id: a.Task.task_id,
             title: a.Task.title,
+            description: a.Task.description,
             category: a.Task.category,
             priority: a.Task.priority,
-            date: a.Task.TaskTypes?.[0]?.start_date || 'N/A'
+            is_mandatory: a.Task.is_mandatory,
+            is_package: a.Task.is_package,
+            is_document: a.Task.is_document,
+            score: a.Task.score,
+            penalty_per_hour: a.Task.penalty_per_hour,
+            origin_type: a.Task.origin_type,
+            start_date: a.Task.TaskTypes?.[0]?.start_date || null,
+            start_time: a.Task.TaskTypes?.[0]?.start_time || null,
+            task_type: a.Task.TaskTypes?.[0]?.task_name || null
         }));
 
         // 4. Response
@@ -751,10 +1005,12 @@ exports.getStudentDashboard = async (req, res) => {
             } : null,
             counts: {
                 today_schedule_count: schedule.length,
-                pending_approval_count: pending.length
+                overdue_tasks_count: overdueTasks.length,
+                pending_approval_count: pendingApprovals.length
             },
             todays_schedule: schedule,
-            pending_for_approval: pending
+            overdue_tasks: overdueTasks,
+            pending_for_approval: pendingApprovals
         });
 
     } catch (error) {
@@ -762,4 +1018,175 @@ exports.getStudentDashboard = async (req, res) => {
         res.status(500).json({ success: false, message: error.message });
     }
 };
+
+/**
+ * Staff Dashboard: Statistics, Efficiency, Today's Schedule, and Recent Activity
+ * GET /api/users/dashboard/staff
+ */
+exports.getStaffDashboard = async (req, res) => {
+    try {
+        const userId = req.userId;
+        const { Op, literal } = require('sequelize');
+
+        // Today's date in IST
+        const now = new Date();
+        const istOffset = 330 * 60 * 1000;
+        const localNow = new Date(now.getTime() + (now.getTimezoneOffset() * 60000) + istOffset);
+        const dateStr = `${localNow.getFullYear()}-${String(localNow.getMonth() + 1).padStart(2, '0')}-${String(localNow.getDate()).padStart(2, '0')}`;
+
+        // 1. Fetch Staff Details
+        const staff = await Staff.findOne({ where: { user_id: userId } });
+        if (!staff) {
+            return res.status(404).json({ success: false, message: "Staff profile not found." });
+        }
+
+        // 2. Task Statistics & Efficiency
+        const totalAssignments = await TaskAssign.count({ where: { user_id: userId } });
+        const pendingTasks = await TaskAssign.count({ where: { user_id: userId, status: 'pending' } });
+        const completedTasks = await TaskAssign.count({ where: { user_id: userId, status: 'completed' } });
+
+        const efficiency = totalAssignments > 0 ? ((completedTasks / totalAssignments) * 100).toFixed(2) : "0.00";
+
+        // 3. Managed Employee Count (Staff specifically reporting to this user)
+        const managedEmployeeCount = await Staff.count({
+            where: { manager_id: userId }
+        });
+
+        // 4. Today's Schedule
+        const todaysAssignments = await TaskAssign.findAll({
+            where: { user_id: userId, status: { [Op.in]: ['accepted', 'pending', 'in_progress'] } },
+            include: [{
+                model: Task,
+                where: { is_deleted: false },
+                include: [{
+                    model: TaskType,
+                    required: true,
+                    where: {
+                        [Op.or]: [
+                            literal(`DATE(start_date) = '${dateStr}'`),
+                            {
+                                [Op.and]: [
+                                    literal(`DATE(start_date) <= '${dateStr}'`),
+                                    literal(`DATE(end_date) >= '${dateStr}'`)
+                                ]
+                            }
+                        ]
+                    }
+                }]
+            }],
+            order: [[literal('`Task->TaskTypes`.`start_time`'), 'ASC']]
+        });
+
+        const schedule = todaysAssignments.map(a => ({
+            task_id: a.Task.task_id,
+            title: a.Task.title,
+            status: a.status,
+            timing: a.Task.TaskTypes?.[0] ? `${a.Task.TaskTypes[0].start_time} - ${a.Task.TaskTypes[0].end_time}` : 'N/A'
+        }));
+
+        // 5. Recent Activity (Latest 3 logs)
+        const recentLogs = await TaskLog.findAll({
+            where: { user_id: userId },
+            include: [{ model: Task, attributes: ['title'] }],
+            limit: 3,
+            order: [['created_at', 'DESC']]
+        });
+
+        const activity = recentLogs.map(l => ({
+            log_id: l.id,
+            task_title: l.Task?.title || "Unknown Task",
+            action: l.action,
+            details: l.details,
+            time: l.created_at
+        }));
+
+        res.json({
+            success: true,
+            profile: {
+                name: staff.name,
+                email: staff.email,
+                designation: staff.designation
+            },
+            stats: {
+                total_tasks: totalAssignments,
+                pending_tasks: pendingTasks,
+                completed_tasks: completedTasks,
+                efficiency: `${efficiency}%`,
+                managed_employees_count: managedEmployeeCount
+            },
+            todays_schedule: schedule,
+            recent_activity: activity
+        });
+
+    } catch (error) {
+        console.error("STAFF DASHBOARD ERROR:", error);
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+/**
+ * Activity History API: Fetch activity for today and yesterday
+ * GET /api/users/dashboard/activity-history
+ */
+exports.getActivityHistory = async (req, res) => {
+    try {
+        const userId = req.userId;
+        const { Op } = require('sequelize');
+
+        // Setup time range (Today and Yesterday)
+        const now = new Date();
+        const todayStart = new Date(now);
+        todayStart.setHours(0, 0, 0, 0);
+
+        const yesterdayStart = new Date(todayStart);
+        yesterdayStart.setDate(yesterdayStart.getDate() - 1);
+
+        const logs = await TaskLog.findAll({
+            where: {
+                user_id: userId,
+                created_at: { [Op.gte]: yesterdayStart }
+            },
+            include: [{ model: Task, attributes: ['title'] }],
+            order: [['created_at', 'DESC']]
+        });
+
+        const history = {
+            today: [],
+            yesterday: []
+        };
+
+        logs.forEach(l => {
+            const entry = {
+                log_id: l.id,
+                task_title: l.Task?.title || "Unknown Task",
+                action: l.action,
+                details: l.details,
+                time: l.created_at
+            };
+
+            if (l.created_at >= todayStart) {
+                history.today.push(entry);
+            } else {
+                history.yesterday.push(entry);
+            }
+        });
+
+        res.json({
+            success: true,
+            user_id: userId,
+            timeframe: "Today & Yesterday",
+            counts: {
+                today: history.today.length,
+                yesterday: history.yesterday.length,
+                total: logs.length
+            },
+            history: history
+        });
+
+    } catch (error) {
+        console.error("ACTIVITY HISTORY ERROR:", error);
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
 

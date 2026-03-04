@@ -20,9 +20,12 @@ router.get('/profile', userController.getProfile); // Profile from token
 router.get('/me', userController.getProfile);      // Alias for profile from token
 router.get('/:id/details', userController.getUserDetails); // Admin viewing specific user
 router.get('/:id/activity', userController.getUserActivity); // NEW: Unified Profile + Daily Tasks
-router.get('/dashboard/hod', userDashboard.getHodDashboard); // NEW: HOD Dashboard
-router.get('/dashboard/hod/department-users', userDashboard.getDepartmentUsers); // NEW: List Dept Students & Faculty
-router.get('/dashboard/principal', userDashboard.getPrincipalDashboard); // NEW: Principal Dashboard
+router.get('/dashboard/Departmental', userDashboard.getHodDashboard); // Renamed from /dashboard/hod
+router.get('/dashboard/departmental-tasks', userDashboard.getDepartmentalTasks); // NEW: Paginated departmental tasks
+router.get('/dashboard/staff', userDashboard.getStaffDashboard); // NEW: Staff Dashboard
+router.get('/dashboard/activity-history', userDashboard.getActivityHistory); // NEW: Activity History (Today/Yesterday)
+router.get('/dashboard/hod/department-users', userDashboard.getDepartmentUsers);
+router.get('/dashboard/Institutional', userDashboard.getPrincipalDashboard); // Renamed from /dashboard/principal
 router.get('/dashboard/student', userDashboard.getStudentDashboard); // NEW: Student Dashboard
 
 

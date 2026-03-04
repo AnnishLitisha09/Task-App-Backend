@@ -59,27 +59,9 @@ exports.acceptTask = async (req, res) => {
             if (existingAssignments.length > 0) {
                 const conflict = existingAssignments[0].Task;
 
-                // --- NEW: Self-Escalation & Notification for Overlap ---
-                await TaskEscalation.create({
-                    task_id: taskId,
-                    reason: `System: Time conflict with '${conflict.title}'`,
-                    msg: `You are trying to assign two tasks at the same time: '${assignment.Task.title}' and '${conflict.title}'.`,
-                    creator_id: userId,
-                    rejected_user_id: userId,
-                    status: 'pending',
-                    is_read: false
-                });
-
-                await Notification.create({
-                    user_id: userId,
-                    title: 'Time Conflict Detected',
-                    msg: `Urgent: Task '${assignment.Task.title}' overlaps with '${conflict.title}'. Please review your schedule.`,
-                    type: 'task_escalation'
-                });
-
                 return res.status(412).json({
                     message: "Time Conflict Detected",
-                    details: `You already have an accepted task '${conflict.title}' during this time slot. Self-escalation triggered.`,
+                    details: `You already have an accepted task '${conflict.title}' during this time slot. Please cancel that task or choose another time.`,
                     conflict_task_id: conflict.task_id
                 });
             }
@@ -539,6 +521,78 @@ exports.updateEscalationReadStatus = async (req, res) => {
             status: 'resolved'
         });
     } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+// Cancel approved task (Move to rejected and escalate)
+exports.cancelApproval = async (req, res) => {
+    const t = await Task.sequelize.transaction();
+    try {
+        const { id: taskId } = req.params;
+        const { reason } = req.body;
+        const userId = req.userId;
+
+        // 1. Find assignment
+        const assignment = await TaskAssign.findOne({
+            where: { task_id: taskId, user_id: userId, status: 'accepted' },
+            include: [{ model: Task }]
+        });
+
+        if (!assignment) {
+            await t.rollback();
+            return res.status(404).json({ message: 'Accepted task assignment not found' });
+        }
+
+        const task = assignment.Task;
+
+        // 2. Update status to rejected
+        const cancelReason = reason ? `Approved cancellation: ${reason}` : 'Approval cancelled by user';
+        await assignment.update({
+            status: 'rejected',
+            reason: cancelReason,
+            rejected_at: new Date(),
+            submitted_time: new Date()
+        }, { transaction: t });
+
+        // 3. Trigger Escalation to Creator
+        await TaskEscalation.create({
+            task_id: taskId,
+            reason: 'Approval Cancelled',
+            msg: `User ${userId} cancelled their approval for task "${task.title}". Status moved to rejected.`,
+            creator_id: task.creator_id,
+            rejected_user_id: userId,
+            status: 'pending',
+            is_read: false
+        }, { transaction: t });
+
+        // 4. Notify Creator
+        await Notification.create({
+            user_id: task.creator_id,
+            title: 'Task Approval Cancelled',
+            msg: `Action required: User ${userId} has cancelled their approval for "${task.title}".`,
+            type: 'task_escalation'
+        }, { transaction: t });
+
+        // 5. Log Action
+        await TaskLog.create({
+            task_id: taskId,
+            user_id: userId,
+            action: 'cancel_approval',
+            details: cancelReason
+        }, { transaction: t });
+
+        await t.commit();
+
+        res.json({
+            message: 'Approval cancelled and task rejected successfully',
+            task_id: taskId,
+            status: 'rejected'
+        });
+
+    } catch (error) {
+        await t.rollback();
+        console.error('Error in cancelApproval:', error);
         res.status(500).json({ message: error.message });
     }
 };
