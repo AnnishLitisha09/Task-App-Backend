@@ -1,4 +1,4 @@
-const { Task, TaskAssign, TaskOTP, TaskLog, User, Student, Faculty, Staff, RoleUser } = require('../models');
+const { Task, TaskAssign, TaskOTP, TaskLog, User, Student, Faculty, Staff, RoleUser, TaskPackageClosure, TaskClosure } = require('../models');
 const { Op } = require('sequelize');
 
 /**
@@ -17,15 +17,32 @@ exports.generateOTP = async (req, res) => {
         // 1. Verify Assignment and Creator
         const assignment = await TaskAssign.findOne({
             where: { id: assignment_id },
-            include: [{ model: Task, attributes: ['creator_id'] }]
+            include: [{
+                model: Task,
+                attributes: ['task_id', 'creator_id', 'is_faculty', 'faculty_id'],
+                include: [{
+                    model: TaskPackageClosure,
+                    include: [{ model: TaskClosure, attributes: ['name'] }]
+                }]
+            }]
         });
 
         if (!assignment) {
             return res.status(404).json({ success: false, message: "Assignment not found." });
         }
 
-        if (assignment.Task.creator_id != userId) {
-            return res.status(403).json({ success: false, message: "Only the task creator can generate OTPs." });
+        const task = assignment.Task;
+        const isCreator = task.creator_id == userId;
+        const isAssignedFaculty = task.is_faculty && task.faculty_id == userId;
+
+        if (!isCreator && !isAssignedFaculty) {
+            return res.status(403).json({ success: false, message: "Only the task creator or assigned faculty can generate OTPs." });
+        }
+
+        // Verify that the task requires an OTP
+        const hasOtpClosure = task.TaskPackageClosures && task.TaskPackageClosures.some(c => c.TaskClosure && c.TaskClosure.name === 'otp');
+        if (!hasOtpClosure) {
+            return res.status(400).json({ success: false, message: "This task does not require an OTP closure method." });
         }
 
         // 2. Generate 6-digit OTP
@@ -74,7 +91,12 @@ exports.getGeneratedOTPs = async (req, res) => {
                 required: true,
                 include: [{
                     model: Task,
-                    where: { creator_id: userId },
+                    where: {
+                        [Op.or]: [
+                            { creator_id: userId },
+                            { is_faculty: true, faculty_id: userId }
+                        ]
+                    },
                     attributes: ['task_id', 'title']
                 }, {
                     model: User,
@@ -97,7 +119,7 @@ exports.getGeneratedOTPs = async (req, res) => {
         });
 
     } catch (error) {
-        console.error("GET OTBS ERROR:", error);
+        console.error("GET OTPS ERROR:", error);
         res.status(500).json({ success: false, message: error.message });
     }
 };
@@ -235,7 +257,13 @@ exports.getCreatorTaskAssignments = async (req, res) => {
         const { limit, offset, page } = { limit: 50, offset: 0, page: 1 }; // Default simple pagination
 
         const tasks = await Task.findAll({
-            where: { creator_id: userId, is_deleted: false },
+            where: {
+                [Op.or]: [
+                    { creator_id: userId },
+                    { is_faculty: true, faculty_id: userId }
+                ],
+                is_deleted: false
+            },
             include: [{
                 model: TaskAssign,
                 include: [

@@ -1,10 +1,11 @@
-const { Task, TaskAssign, TaskType, User, TaskEscalation, Notification, Faculty, TaskLog, Student, Staff, RoleUser } = require('../models');
+const { Task, TaskAssign, TaskType, User, TaskEscalation, Notification, Faculty, TaskLog, Student, Staff, RoleUser, TaskApprovalRequest } = require('../models');
 
 // Accept assigned task
 exports.acceptTask = async (req, res) => {
     try {
         const { id: taskId } = req.params;
         const userId = req.userId;
+        const { Op } = require('sequelize');
 
         // 1. Find assignment
         const assignment = await TaskAssign.findOne({
@@ -28,42 +29,78 @@ exports.acceptTask = async (req, res) => {
             return res.status(400).json({ message: 'Task schedule details not found' });
         }
 
-        // 2. Conflict Detection: Check for overlapping accepted/completed tasks
-        if (taskType.start_date && taskType.start_time && taskType.end_time) {
-            const { Op } = require('sequelize');
-
-            // Find all other accepted/completed tasks for this user on the same day
-            const existingAssignments = await TaskAssign.findAll({
+        // 1b. Check Bidding Task Limits
+        if (taskType.task_name === 'Bidding / Nomination Task' && taskType.max_acceptances) {
+            const acceptedCount = await TaskAssign.count({
                 where: {
-                    user_id: userId,
-                    task_id: { [Op.ne]: taskId },
-                    status: { [Op.in]: ['accepted', 'completed'] }
-                },
-                include: [{
-                    model: Task,
-                    required: true,
-                    include: [{
-                        model: TaskType,
-                        required: true,
-                        where: {
-                            start_date: taskType.start_date,
-                            [Op.and]: [
-                                { start_time: { [Op.lt]: taskType.end_time } },
-                                { end_time: { [Op.gt]: taskType.start_time } }
-                            ]
-                        }
-                    }]
-                }]
+                    task_id: taskId,
+                    status: { [Op.in]: ['accepted', 'completed', 'in_progress'] }
+                }
             });
 
-            if (existingAssignments.length > 0) {
-                const conflict = existingAssignments[0].Task;
-
-                return res.status(412).json({
-                    message: "Time Conflict Detected",
-                    details: `You already have an accepted task '${conflict.title}' during this time slot. Please cancel that task or choose another time.`,
-                    conflict_task_id: conflict.task_id
+            if (acceptedCount >= taskType.max_acceptances) {
+                return res.status(400).json({
+                    message: "Task Expired: Limit reached",
+                    details: "This bidding task has already reached its maximum number of acceptances."
                 });
+            }
+        }
+
+        // 2. Conflict Detection: Check for overlapping accepted/completed tasks
+        const isLongTask = taskType.task_name === 'Date-Only / Long Task' || taskType.task_name === 'Long Task';
+        const startDate = new Date(taskType.start_date).toISOString().split('T')[0];
+        const endDate = new Date(taskType.end_date || taskType.start_date).toISOString().split('T')[0];
+
+        // Find existing non-rejected assignments
+        const existingAssignments = await TaskAssign.findAll({
+            where: {
+                user_id: userId,
+                task_id: { [Op.ne]: taskId },
+                status: { [Op.in]: ['accepted', 'completed', 'in_progress'] }
+            },
+            include: [{
+                model: Task,
+                required: true,
+                include: [{
+                    model: TaskType,
+                    required: true
+                }]
+            }]
+        });
+
+        for (const existing of existingAssignments) {
+            const exTask = existing.Task;
+            const exType = exTask.TaskTypes?.[0];
+            if (!exType) continue;
+
+            const exIsLong = exType.task_name === 'Date-Only / Long Task' || exType.task_name === 'Long Task';
+            const exStart = new Date(exType.start_date).toISOString().split('T')[0];
+            const exEnd = new Date(exType.end_date || exType.start_date).toISOString().split('T')[0];
+
+            // Date range overlap check
+            const datesOverlap = (startDate <= exEnd && endDate >= exStart);
+
+            if (datesOverlap) {
+                if (isLongTask || exIsLong) {
+                    // If either is a long task, any date overlap is a conflict
+                    return res.status(412).json({
+                        message: "Time Conflict Detected",
+                        details: `Conflict with '${exTask.title}'. Long tasks occupy the entire day and cannot overlap with other tasks in their range (${exStart} to ${exEnd}).`,
+                        conflict_task_id: exTask.task_id
+                    });
+                } else {
+                    // Both are standard tasks. Check for time overlap on the same date.
+                    // (Actually standard tasks are usually single-day, so exStart === exEnd === startDate === endDate if datesOverlap is true)
+                    if (exStart === startDate && exType.start_time && exType.end_time && taskType.start_time && taskType.end_time) {
+                        if (exType.start_time < taskType.end_time && exType.end_time > taskType.start_time) {
+                            return res.status(412).json({
+                                message: "Time Conflict Detected",
+                                details: `Overlap with '${exTask.title}' on ${startDate} from ${exType.start_time} to ${exType.end_time}.`,
+                                conflict_task_id: exTask.task_id
+                            });
+                        }
+                    }
+                }
             }
         }
 
@@ -80,6 +117,42 @@ exports.acceptTask = async (req, res) => {
             action: 'accept',
             details: `Task accepted at ${new Date().toISOString()}`
         });
+
+        // If this task is part of a pending approval request and the current user is the approver,
+        // we should finalize the assignments for everyone else.
+        const approvalRequest = await TaskApprovalRequest.findOne({
+            where: {
+                status: 'pending',
+                approver_id: userId,
+                [Op.or]: [
+                    { task_id: taskId },
+                    { task_ids: { [Op.like]: `%${taskId}%` } }
+                ]
+            }
+        });
+
+        if (approvalRequest) {
+            let isMatch = approvalRequest.task_id == taskId;
+            if (!isMatch && approvalRequest.task_ids) {
+                try {
+                    const ids = Array.isArray(approvalRequest.task_ids) ? approvalRequest.task_ids : JSON.parse(approvalRequest.task_ids);
+                    if (ids.includes(taskId * 1) || ids.includes(taskId.toString())) isMatch = true;
+                } catch (e) {
+                    console.error('Error parsing approvalRequest.task_ids:', e);
+                }
+            }
+
+            if (isMatch) {
+                const taskController = require('./task.controller.js');
+                // Use a separate try/catch to ensure task acceptance succeeds even if finalization has minor issues
+                try {
+                    await taskController.finalizeTaskAssignments(approvalRequest);
+                    await approvalRequest.update({ status: 'approved' });
+                } catch (finalizeError) {
+                    console.error('Error in automatic approval finalization:', finalizeError);
+                }
+            }
+        }
 
         res.json({
             message: 'Task accepted successfully',
@@ -593,6 +666,95 @@ exports.cancelApproval = async (req, res) => {
     } catch (error) {
         await t.rollback();
         console.error('Error in cancelApproval:', error);
+        res.status(500).json({ message: error.message });
+    }
+};
+
+
+// ─── APPROVAL GATE ENDPOINTS ─────────────────────────────────────────────────
+
+// Get pending approval requests for the logged-in user (their inbox)
+exports.getPendingApprovalRequests = async (req, res) => {
+    try {
+        const userId = req.userId;
+        const requests = await TaskApprovalRequest.findAll({
+            where: { approver_id: userId, status: 'pending' },
+            order: [['created_at', 'DESC']]
+        });
+        res.json(requests);
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+// Approve a pending task request → creates the task and assigns it
+exports.approveRequest = async (req, res) => {
+    try {
+        const { requestId } = req.params;
+        const userId = req.userId;
+
+        const request = await TaskApprovalRequest.findByPk(requestId);
+        if (!request) return res.status(404).json({ message: 'Approval request not found' });
+        if (request.approver_id !== userId) return res.status(403).json({ message: 'You are not the approver for this request' });
+        if (request.status !== 'pending') return res.status(400).json({ message: `Request already ${request.status}` });
+
+        // Use the new finalize helper from task controller
+        const taskController = require('./task.controller.js');
+        await taskController.finalizeTaskAssignments(request);
+
+        // Mark request as approved
+        await request.update({ status: 'approved' });
+
+        // Notify creator
+        await Notification.create({
+            user_id: request.creator_id,
+            title: 'Task Approved!',
+            msg: `Your task request was approved and has been assigned.`,
+            type: 'task_approved'
+        });
+
+        res.json({ message: 'Task approved and assignments created successfully.' });
+
+    } catch (error) {
+        console.error('Error in approveRequest:', error);
+        res.status(500).json({ message: error.message });
+    }
+};
+
+// Reject a pending task request → discards silently, notifies creator only
+exports.rejectRequest = async (req, res) => {
+    try {
+        const { requestId } = req.params;
+        const { reason } = req.body;
+        const userId = req.userId;
+
+        const request = await TaskApprovalRequest.findByPk(requestId);
+        if (!request) return res.status(404).json({ message: 'Approval request not found' });
+        if (request.approver_id !== userId) return res.status(403).json({ message: 'You are not the approver for this request' });
+        if (request.status !== 'pending') return res.status(400).json({ message: `Request already ${request.status}` });
+
+        // Mark the task(s) as deleted
+        const { Task } = require('../models');
+        const taskIds = request.task_ids || [request.task_id];
+        if (taskIds.length > 0) {
+            await Task.update({ is_deleted: true, status: 'Inactive' }, { where: { task_id: taskIds } });
+        }
+
+        // Mark as rejected and store reason
+        await request.update({ status: 'rejected', reason: reason || 'No reason provided' });
+
+        // Notify creator only
+        await Notification.create({
+            user_id: request.creator_id,
+            title: 'Task Request Rejected',
+            msg: `Your task request was rejected by the approver. Reason: ${reason || 'No reason provided'}`,
+            type: 'task_rejected'
+        });
+
+        res.json({ message: 'Task request rejected and hidden. Creator has been notified.' });
+
+    } catch (error) {
+        console.error('Error in rejectRequest:', error);
         res.status(500).json({ message: error.message });
     }
 };

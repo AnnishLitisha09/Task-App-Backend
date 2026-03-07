@@ -1,144 +1,128 @@
 const cron = require('node-cron');
-const { Task, TaskAssign, User, Student, Faculty, RoleUser, Notification, TaskType } = require('../models');
+const { Task, TaskAssign, User, TaskType, TaskEscalation, Notification, TaskLog } = require('../models');
 const { Op } = require('sequelize');
+const { getSupervisor } = require('../utils/hierarchy');
 
 /**
- * Task Escalation Cron Job
- * Runs every day at midnight (00:00)
- * Logic:
- * 1. Find tasks whose end_date was yesterday.
- * 2. Identify users who haven't completed their assignment.
- * 3. Set task.is_escalate = true if there are pending assignments.
+ * Main Escalation Engine
+ * Checks for:
+ * 1. Unaccepted Tasks (Still pending after start time)
+ * 2. Overdue Tasks (Not completed 1 hour after end time)
  */
-exports.runTaskEscalation = async () => {
+const processAllEscalations = async () => {
     try {
-        // --- NEW: Sunday Skip ---
-        if (new Date().getDay() === 0) {
-            console.log('[CRON] Skipping task escalation - It is Sunday (Holiday).');
-            return { escalated: 0 };
-        }
-
-        const yesterday = new Date();
-        yesterday.setDate(yesterday.getDate() - 1);
-        const yesterdayStr = yesterday.toISOString().split('T')[0];
-
-        console.log(`[CRON] Running daily task escalation check for date: ${yesterdayStr}`);
-
-        // Find tasks that ended yesterday
-        // Note: We need to pull from TaskType via association or raw query if joined
-        // For simplicity, let's look for all Active tasks and filter by their TaskType end_date
-        const tasks = await Task.findAll({
-            where: { status: 'Active', is_deleted: false },
-            include: [{
-                model: require('../models').TaskType,
-                where: {
-                    end_date: {
-                        [Op.lt]: new Date() // Deadline has passed
-                    }
-                }
-            }]
-        });
-
-        let escalationCount = 0;
-
-        for (const task of tasks) {
-            // Find pending assignments for this task
-            const pendingAssignments = await TaskAssign.findAll({
-                where: {
-                    task_id: task.task_id,
-                    status: 'pending'
-                }
-            });
-
-            if (pendingAssignments.length > 0) {
-                // Escalate the task
-                await task.update({ is_escalate: true });
-                escalationCount++;
-
-                console.log(`[CRON] Task escalated: ${task.title} (ID: ${task.task_id}) - ${pendingAssignments.length} users pending.`);
-
-                // TODO: In a real system, you'd send an email/notification here
-                // to task.creator_id with the list of pending users.
-            }
-        }
-
-        console.log(`[CRON] Task escalation check completed. ${escalationCount} tasks escalated.`);
-        return { escalated: escalationCount };
-
-    } catch (error) {
-        console.error('[CRON ERROR] runTaskEscalation:', error.message);
-        return { error: error.message };
-    }
-};
-/**
- * Check Task Acceptance Status (30 minutes before start)
- * Logic:
- * 1. Find tasks starting in the next 30-45 minutes.
- * 2. Check for pending assignments.
- * 3. Notify creator with summary.
- */
-exports.checkTaskAcceptance = async () => {
-    try {
-        // --- NEW: Sunday Skip ---
-        if (new Date().getDay() === 0) {
-            console.log('[CRON] Skipping task acceptance check - It is Sunday (Holiday).');
-            return;
-        }
+        if (new Date().getDay() === 0) return; // Skip Sunday
 
         const now = new Date();
-        const thirtyMinsLater = new Date(now.getTime() + 30 * 60000);
-        const fortyFiveMinsLater = new Date(now.getTime() + 45 * 60000);
+        const istOffset = 330 * 60 * 1000;
+        const localNow = new Date(now.getTime() + (now.getTimezoneOffset() * 60000) + istOffset);
 
-        console.log(`[CRON] Checking acceptance for tasks starting between ${thirtyMinsLater.toLocaleTimeString()} and ${fortyFiveMinsLater.toLocaleTimeString()}`);
+        const todayStr = `${localNow.getFullYear()}-${String(localNow.getMonth() + 1).padStart(2, '0')}-${String(localNow.getDate()).padStart(2, '0')}`;
+        const localTimeStr = `${String(localNow.getHours()).padStart(2, '0')}:${String(localNow.getMinutes()).padStart(2, '0')}:00`;
 
-        const taskTypes = await TaskType.findAll({
-            where: {
-                start_date: now.toISOString().split('T')[0],
-                start_time: {
-                    [Op.between]: [
-                        thirtyMinsLater.toTimeString().split(' ')[0],
-                        fortyFiveMinsLater.toTimeString().split(' ')[0]
-                    ]
-                }
-            },
+        console.log(`[CRON] Escalation Engine Running at ${localTimeStr}`);
+
+        // Trigger 1: UNACCEPTED tasks (status 'pending' and start_time passed)
+        const unaccepted = await TaskAssign.findAll({
+            where: { status: 'pending' },
             include: [{
                 model: Task,
                 where: { is_deleted: false },
-                include: [{ model: TaskAssign }]
+                include: [{ model: TaskType }]
             }]
         });
 
-        for (const tt of taskTypes) {
-            const task = tt.Task;
-            if (!task) continue;
+        for (const a of unaccepted) {
+            const tt = a.Task?.TaskTypes?.[0];
+            if (!tt) continue;
 
-            const assignments = task.TaskAssigns || [];
-            const pendingCount = assignments.filter(a => a.status === 'pending').length;
-            const acceptedCount = assignments.filter(a => a.status === 'accepted' || a.status === 'completed').length;
+            const taskStartStr = new Date(tt.start_date).toISOString().split('T')[0];
+            const taskStartTime = tt.start_time;
 
-            if (pendingCount > 0) {
-                // Send notification to creator
-                await Notification.create({
-                    user_id: task.creator_id,
-                    title: 'Task Acceptance Alert',
-                    msg: `URGENT: Your task "${task.title}" starts in 30 minutes. ${acceptedCount} accepted, ${pendingCount} still pending!`,
-                    type: 'task_escalation'
-                });
-
-                // Also create formal escalation if not already done
-                if (!task.is_escalate) {
-                    await task.update({ is_escalate: true });
-                    await TaskEscalation.create({
-                        task_id: task.task_id,
-                        reason: `System: ${pendingCount} users have not accepted the task 30 minutes before start.`,
-                        creator_id: task.creator_id,
-                        rejected_user_id: task.creator_id, // Assigned to creator as alert
-                        status: 'pending'
-                    });
-                }
+            if (taskStartStr < todayStr || (taskStartStr === todayStr && localTimeStr > taskStartTime)) {
+                await escalateAssignment(a, 'Task Not Accepted by Start Time');
             }
         }
+
+        // Trigger 2: OVERDUE tasks (status 'accepted'/'in_progress', end_time + 1 hour passed)
+        const overdue = await TaskAssign.findAll({
+            where: { status: { [Op.in]: ['accepted', 'in_progress'] } },
+            include: [{
+                model: Task,
+                where: { is_deleted: false },
+                include: [{ model: TaskType }]
+            }]
+        });
+
+        for (const a of overdue) {
+            const tt = a.Task?.TaskTypes?.[0];
+            if (!tt) continue;
+
+            const isLongTask = tt.task_name === 'Date-Only / Long Task' || tt.task_name === 'Long Task';
+            const taskEndStr = new Date(tt.end_date || tt.start_date).toISOString().split('T')[0];
+            const taskEndTime = isLongTask ? '16:30:00' : tt.end_time;
+
+            if (!taskEndTime) continue;
+
+            const [h, m] = taskEndTime.split(':').map(Number);
+            const endMinutes = h * 60 + m + 60; // +1 hour delay buffer
+            const currentMinutes = localNow.getHours() * 60 + localNow.getMinutes();
+
+            if (taskEndStr < todayStr || (taskEndStr === todayStr && currentMinutes > endMinutes)) {
+                await escalateAssignment(a, 'Task Overdue (1 Hour Buffer Passed)');
+            }
+        }
+
     } catch (error) {
-        console.error('[CRON ERROR] checkTaskAcceptance:', error.message);
+        console.error('[CRON ERROR] Escalation Engine:', error);
     }
 };
+
+/**
+ * Internal helper to handle the escalation of a single assignment
+ */
+const escalateAssignment = async (assign, reason) => {
+    try {
+        const supervisorId = await getSupervisor(assign.user_id);
+        if (!supervisorId) return;
+
+        // 1. Move status to escalated
+        await assign.update({ status: 'escalated' });
+        await Task.update({ is_escalate: true }, { where: { task_id: assign.task_id } });
+
+        // 2. Log Action
+        await TaskLog.create({
+            task_id: assign.task_id,
+            user_id: assign.user_id,
+            action: 'escalation',
+            details: `System Escalated to User ${supervisorId}: ${reason}`
+        });
+
+        // 3. Create Formal Escalation Record
+        await TaskEscalation.create({
+            task_id: assign.task_id,
+            reason: reason,
+            msg: `Task "${assign.Task.title}" failed compliance: ${reason}.`,
+            creator_id: supervisorId, // To supervisor
+            rejected_user_id: assign.user_id, // From user
+            status: 'pending'
+        });
+
+        // 4. Notify Supervisor
+        await Notification.create({
+            user_id: supervisorId,
+            title: 'Task Escalation Alert',
+            msg: `URGENT: Task "${assign.Task.title}" assigned to User ${assign.user_id} has been escalated. Reason: ${reason}`,
+            type: 'task_escalation'
+        });
+
+        console.log(`[ESCALATION] Task ${assign.task_id} for User ${assign.user_id} escalated to Supervisor ${supervisorId}`);
+    } catch (err) {
+        console.error(`Error escalating assignment ${assign.id}:`, err);
+    }
+};
+
+// Schedule: Every 15 minutes
+cron.schedule('*/15 * * * *', processAllEscalations);
+
+module.exports = { processAllEscalations };

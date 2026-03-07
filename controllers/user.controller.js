@@ -524,9 +524,7 @@ exports.getFacultyDailyStats = async (req, res) => {
     try {
         const userId = req.userId;
         const { Op } = require('sequelize');
-        const TaskAssign = require('../models').TaskAssign;
-        const Task = require('../models').Task;
-        const TaskType = require('../models').TaskType;
+        const { TaskAssign, Task, TaskType, Department, Faculty, Student, TaskAcknowledgment } = require('../models');
 
         // 1. Get faculty profile
         const faculty = await Faculty.findOne({
@@ -545,23 +543,38 @@ exports.getFacultyDailyStats = async (req, res) => {
 
         // 3. Setup Date logic (Local time)
         const now = new Date();
-        const istOffset = 330 * 60 * 1000; // Offset for IST (UTC+5:30)
+        const istOffset = 330 * 60 * 1000;
         const localNow = new Date(now.getTime() + (now.getTimezoneOffset() * 60000) + istOffset);
 
         const today = new Date(localNow);
         today.setHours(0, 0, 0, 0);
-
         const tomorrow = new Date(today);
         tomorrow.setDate(tomorrow.getDate() + 1);
-
         const dayAfterTomorrow = new Date(tomorrow);
         dayAfterTomorrow.setDate(dayAfterTomorrow.getDate() + 1);
 
-        // Visibility Rule: Show tomorrow's tasks after 4:30 PM (16:30)
-        const isEvening = localNow.getHours() > 16 || (localNow.getHours() === 16 && localNow.getMinutes() >= 30);
+        // Helper to format date
+        const toLocalISO = (d) => {
+            const year = d.getFullYear();
+            const month = String(d.getMonth() + 1).padStart(2, '0');
+            const day = String(d.getDate()).padStart(2, '0');
+            return `${year}-${month}-${day}`;
+        };
 
-        // Fetch tasks for Today and optionally Tomorrow
-        const dateLimit = isEvening ? dayAfterTomorrow : tomorrow;
+        const todayStr = toLocalISO(today);
+
+        // Visibility Rule: Show tomorrow's tasks after 7:00 PM (19:00)
+        const isEvening = localNow.getHours() >= 19;
+        const effectiveTodayStr = isEvening ? toLocalISO(tomorrow) : todayStr;
+
+        // Acknowledge check for TODAY
+        const hasAcknowledgedToday = await TaskAcknowledgment.findOne({
+            where: { user_id: userId, task_id: null, acknowledge_date: todayStr }
+        });
+        const hour = localNow.getHours();
+        const minute = localNow.getMinutes();
+        const totalMinutes = hour * 60 + minute;
+        const needsAcknowledgement = !hasAcknowledgedToday && totalMinutes >= (6 * 60 + 30) && totalMinutes <= (8 * 60 + 45);
 
         // 4. Fetch Tasks
         const assignments = await TaskAssign.findAll({
@@ -571,13 +584,7 @@ exports.getFacultyDailyStats = async (req, res) => {
                 where: { is_deleted: false },
                 include: [{
                     model: TaskType,
-                    required: true,
-                    where: {
-                        start_date: {
-                            [Op.gte]: today,
-                            [Op.lt]: dateLimit
-                        }
-                    }
+                    required: true
                 }]
             }],
             order: [
@@ -590,90 +597,79 @@ exports.getFacultyDailyStats = async (req, res) => {
         const allTasksToday = [];
         const pendingTasks = [];
         const pendingProofTasks = [];
+        const escalatedTasks = [];
 
-        // Helper to format date
-        const toLocalISO = (d) => {
-            const year = d.getFullYear();
-            const month = String(d.getMonth() + 1).padStart(2, '0');
-            const day = String(d.getDate()).padStart(2, '0');
-            return `${year}-${month}-${day}`;
-        };
+        assignments.forEach(a => {
+            const task = a.Task;
+            const taskType = task.TaskTypes?.[0];
+            if (!taskType) return;
 
-        const todayStr = toLocalISO(today);
-        const focusDayStr = isEvening ? toLocalISO(tomorrow) : todayStr;
+            const isLongTask = taskType.task_name === 'Date-Only / Long Task' || taskType.task_name === 'Long Task';
+            const taskStartStr = toLocalISO(new Date(taskType.start_date));
+            const taskEndStr = toLocalISO(new Date(taskType.end_date || taskType.start_date));
 
-        assignments.forEach(assignment => {
-            const task = assignment.Task;
-            const taskType = task.TaskTypes[0];
-            const taskDateStr = toLocalISO(new Date(taskType.start_date));
-
-            const formattedTask = {
-                assignment_id: assignment.id,
+            const taskData = {
+                assignment_id: a.id,
                 task_id: task.task_id,
                 title: task.title,
-                description: task.description,
-                category: task.category,
-                priority: task.priority,
-                score: task.score,
-                penalty_per_hour: task.penalty_per_hour,
-                is_approved: task.is_approved,
-                is_document: task.is_document,
-                status: assignment.status,
-                time: `${taskType.start_time} - ${taskType.end_time}`,
-                task_type: {
-                    name: taskType.task_name,
+                status: a.status,
+                timing: {
+                    start_time: isLongTask ? '08:45:00' : taskType.start_time,
+                    end_time: isLongTask ? '16:30:00' : taskType.end_time,
                     start_date: taskType.start_date,
-                    end_date: taskType.end_date,
-                    start_time: taskType.start_time,
-                    end_time: taskType.end_time,
-                    venue_id: taskType.venue_id
+                    end_date: taskType.end_date
                 },
-                assigned_at: assignment.created_at
+                task_type: taskType.task_name,
+                assigned_at: a.created_at
             };
 
-            // Category A: Scheduled for Today (Accepted/In Progress/Completed)
-            if (taskDateStr === todayStr && (['accepted', 'in_progress', 'completed'].includes(assignment.status))) {
-                allTasksToday.push(formattedTask);
-            }
-
-            // Category B: Pending for Approval (Pending tasks in active window)
-            if (assignment.status === 'pending') {
-                if (taskDateStr === todayStr || (isEvening && taskDateStr === focusDayStr)) {
-                    pendingTasks.push(formattedTask);
+            if (a.status === 'escalated') {
+                escalatedTasks.push(taskData);
+            } else if (a.status === 'pending') {
+                // Pending for effective today or future
+                if (taskStartStr >= effectiveTodayStr) {
+                    pendingTasks.push(taskData);
                 }
-            }
+            } else if (['accepted', 'in_progress', 'completed'].includes(a.status)) {
+                // Schedule check for effective today
+                if (effectiveTodayStr >= taskStartStr && effectiveTodayStr <= taskEndStr) {
+                    allTasksToday.push(taskData);
+                }
 
-            // Category C: Pending Proof (Started, accepted, no proof, requires doc)
-            if (task.is_document && assignment.status === 'accepted' && (!assignment.proof || assignment.proof === '')) {
-                const startDateTime = new Date(`${taskDateStr}T${taskType.start_time}`);
-                if (startDateTime <= localNow) {
-                    pendingProofTasks.push(formattedTask);
+                // Proof check (based on ACTUAL today)
+                if (a.status !== 'completed' && task.is_document && (!a.proof || a.proof === '')) {
+                    const taskEndTime = isLongTask ? '16:30:00' : taskType.end_time;
+                    const localTimeStr = `${String(localNow.getHours()).padStart(2, '0')}:${String(localNow.getMinutes()).padStart(2, '0')}`;
+                    if (taskEndStr < todayStr || (taskEndStr === todayStr && localTimeStr > taskEndTime)) {
+                        pendingProofTasks.push(taskData);
+                    }
                 }
             }
         });
 
-        // 6. Response construction
         res.json({
-            faculty_info: {
+            success: true,
+            needs_acknowledgement: needsAcknowledgement,
+            effective_date: effectiveTodayStr,
+            is_tomorrow_preview: isEvening,
+            faculty_details: {
                 id: faculty.id,
                 name: faculty.name,
-                email: faculty.email,
-                reg_no: faculty.reg_no,
                 department: faculty.Department?.name || 'N/A',
-                type: faculty.type
+                type: faculty.type,
+                mentee_count: menteeCount,
+                penalty: faculty.penalty
             },
-            daily_stats: {
-                date: todayStr,
-                total_tasks_assigned_today: allTasksToday.length,
-                pending_tasks_count: pendingTasks.length,
+            counts: {
+                today_schedule_count: allTasksToday.length,
+                pending_approvals_count: pendingTasks.length,
                 pending_proof_count: pendingProofTasks.length,
-                mentee_students_count: menteeCount,
-                focus_day: focusDayStr,
-                visibility_window: isEvening ? "Tomorrow Preview (After 4:30 PM)" : "Today Focus"
+                escalated_tasks_count: escalatedTasks.length
             },
-            all_tasks_today: allTasksToday,
-            pending_tasks: pendingTasks,
-            pending_proof_tasks: pendingProofTasks
+            todays_schedule: allTasksToday,
+            pending_approvals: pendingTasks,
+            pending_proof: pendingProofTasks,
+            escalated_tasks: escalatedTasks
         });
 
     } catch (error) {

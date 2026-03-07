@@ -184,6 +184,10 @@ exports.checkMorningAcknowledgment = async () => {
         });
         const acknowledgedUserIds = new Set(todaysGeneralAcks.map(ack => ack.user_id));
 
+        const { getSupervisor } = require('../utils/hierarchy');
+        const TaskLog = require('../models').TaskLog;
+        const TaskEscalation = require('../models').TaskEscalation;
+
         let escalationCount = 0;
 
         // 4. Check each user with tasks
@@ -194,16 +198,39 @@ exports.checkMorningAcknowledgment = async () => {
             // Skip if already acknowledged general awareness
             if (acknowledgedUserIds.has(userId)) continue;
 
+            // Find supervisor for this user according to hierarchy
+            const supervisorId = await getSupervisor(userId);
+            if (!supervisorId) continue; // No one to escalate to? Skip or fallback to admin
+
             // Escalate all tasks for this user
             const userTasks = activeAssignments.filter(a => a.user_id === userId);
             for (const assign of userTasks) {
-                await Task.update({ is_escalate: true }, { where: { task_id: assign.task_id } });
+                // 1. Update assignment status and mark task escalated
+                await TaskAssign.update(
+                    { status: 'escalated' },
+                    { where: { id: assign.id } }
+                );
+                await Task.update(
+                    { is_escalate: true },
+                    { where: { task_id: assign.task_id } }
+                );
 
+                // 2. Create formal escalation record for the supervisor
+                await TaskEscalation.create({
+                    task_id: assign.task_id,
+                    reason: 'No Acknowledgement by 08:45 AM',
+                    msg: `User did not acknowledge daily morning awareness for task "${assign.Task.title}".`,
+                    creator_id: supervisorId, // "To" the supervisor
+                    rejected_user_id: userId, // "From" the failing user
+                    status: 'pending'
+                });
+
+                // 3. Log the action
                 await TaskLog.create({
                     task_id: assign.task_id,
                     user_id: userId,
-                    action: 'escalate',
-                    details: 'Task escalated: User did not acknowledge daily awareness by 08:30 AM.'
+                    action: 'escalation',
+                    details: `Task escalated to User ${supervisorId}: Missing daily acknowledgement by 08:45 AM.`
                 });
                 escalationCount++;
             }
@@ -330,7 +357,26 @@ exports.getUnacknowledgedUsersReport = async (req, res) => {
 exports.acknowledgeGeneral = async (req, res) => {
     try {
         const userId = req.userId;
-        const today = new Date().toISOString().split('T')[0];
+        const now = new Date();
+        const istOffset = 330 * 60 * 1000;
+        const localNow = new Date(now.getTime() + (now.getTimezoneOffset() * 60000) + istOffset);
+
+        const hour = localNow.getHours();
+        const minute = localNow.getMinutes();
+        const totalMinutes = hour * 60 + minute;
+
+        // Window: 06:30 (390 mins) to 08:45 (525 mins)
+        const startWindow = 6 * 60 + 30; // 390
+        const endWindow = 8 * 60 + 45;   // 525
+
+        if (totalMinutes < startWindow || totalMinutes > endWindow) {
+            return res.status(400).json({
+                success: false,
+                message: 'Acknowledgement is only allowed between 06:30 AM and 08:45 AM.'
+            });
+        }
+
+        const today = `${localNow.getFullYear()}-${String(localNow.getMonth() + 1).padStart(2, '0')}-${String(localNow.getDate()).padStart(2, '0')}`;
 
         // Create or update general acknowledgment record (task_id is NULL)
         const [ack, created] = await TaskAcknowledgment.findOrCreate({

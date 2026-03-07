@@ -76,6 +76,7 @@ exports.getUserCalendar = async (req, res) => {
                     if (profile) creatorName = profile.name;
                 }
 
+                const isLongTask = tt.task_name === 'Date-Only / Long Task' || tt.task_name === 'Long Task';
                 calendarTasks.push({
                     task_id: task.task_id,
                     task: task.title,
@@ -85,8 +86,8 @@ exports.getUserCalendar = async (req, res) => {
                     category: task.category,
                     start_date: tt.start_date,
                     end_date: tt.end_date,
-                    start_time: tt.start_time,
-                    end_time: tt.end_time
+                    start_time: isLongTask ? '08:45:00' : tt.start_time,
+                    end_time: isLongTask ? '16:30:00' : tt.end_time
                 });
             });
         });
@@ -174,6 +175,7 @@ exports.getVenueCalendar = async (req, res) => {
                     if (profile) creatorName = profile.name;
                 }
 
+                const isLongTask = tt.task_name === 'Date-Only / Long Task' || tt.task_name === 'Long Task';
                 calendarTasks.push({
                     task_id: task.task_id,
                     task: task.title,
@@ -183,8 +185,8 @@ exports.getVenueCalendar = async (req, res) => {
                     category: task.category,
                     start_date: tt.start_date,
                     end_date: tt.end_date,
-                    start_time: tt.start_time,
-                    end_time: tt.end_time,
+                    start_time: isLongTask ? '08:45:00' : tt.start_time,
+                    end_time: isLongTask ? '16:30:00' : tt.end_time,
                     venue_id: task.venue_id
                 });
             });

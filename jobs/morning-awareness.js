@@ -18,10 +18,10 @@ cron.schedule('5 0 * * *', async () => {
 // Note: This will be triggered by frontend when user logs in
 // or can be implemented as a push notification system
 
-// Job 2: 08:30 AM - Check for unacknowledged tasks and escalate
-cron.schedule('30 8 * * *', async () => {
+// Job 2: 08:45 AM - Check for unacknowledged tasks and escalate
+cron.schedule('45 8 * * *', async () => {
     if (new Date().getDay() === 0) return; // Skip Sunday
-    console.log('[CRON] Running morning acknowledgment check at 08:30 AM');
+    console.log('[CRON] Running morning acknowledgment check at 08:45 AM');
     const result = await checkMorningAcknowledgment();
     console.log(`[CRON] Escalated ${result.count || 0} unacknowledged tasks`);
 }, {

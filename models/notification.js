@@ -27,7 +27,7 @@ module.exports = (sequelize, DataTypes) => {
             allowNull: false
         },
         type: {
-            type: DataTypes.ENUM('task_created', 'task_rejected', 'task_escalation', 'task_transfer', 'general'),
+            type: DataTypes.ENUM('task_created', 'task_rejected', 'task_escalation', 'task_transfer', 'task_approval_request', 'task_approved', 'general'),
             defaultValue: 'general'
         },
         is_read: {

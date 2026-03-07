@@ -41,7 +41,7 @@ module.exports = (sequelize, DataTypes) => {
     parent_task_id: { type: DataTypes.BIGINT.UNSIGNED, allowNull: true },
     created_at: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
     is_deleted: { type: DataTypes.BOOLEAN, defaultValue: false },
-    status: { type: DataTypes.ENUM('Active', 'Inactive'), defaultValue: 'Active' },
+    status: { type: DataTypes.ENUM('Active', 'Inactive', 'Pending Approval'), defaultValue: 'Active' },
     is_mandatory: { type: DataTypes.BOOLEAN, defaultValue: false },
     resource_id: { type: DataTypes.BIGINT.UNSIGNED, allowNull: true },
     is_faculty: { type: DataTypes.BOOLEAN, defaultValue: false },

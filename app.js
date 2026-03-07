@@ -56,6 +56,7 @@ db.sequelize.authenticate()
     require('./jobs/morning-awareness');
     const { runTaskEscalation } = require('./jobs/task-escalation');
     const { handleRecurrence } = require('./jobs/task-recurrence');
+    const { runStart10MinReminderJob, runOtpProgressSummaryJob, runDocumentSummaryJob } = require('./jobs/task-notifications');
     const cron = require('node-cron');
 
     // Daily task escalation check at midnight
@@ -71,6 +72,31 @@ db.sequelize.authenticate()
     cron.schedule('5 0 * * *', async () => {
       console.log('[CRON] Starting daily task recurrence check...');
       await handleRecurrence();
+    }, {
+      scheduled: true,
+      timezone: "Asia/Kolkata"
+    });
+
+    // 10-Minute Pre-Task Reminder: Runs every minute
+    cron.schedule('* * * * *', async () => {
+      await runStart10MinReminderJob();
+    }, {
+      scheduled: true,
+      timezone: "Asia/Kolkata"
+    });
+
+    // OTP Progress Summary Check: Runs every minute, triggering internally for 15m after start/end
+    cron.schedule('* * * * *', async () => {
+      await runOtpProgressSummaryJob();
+    }, {
+      scheduled: true,
+      timezone: "Asia/Kolkata"
+    });
+
+    // Document Summary Job: Runs daily at 9:00 PM (21:00)
+    cron.schedule('0 21 * * *', async () => {
+      console.log('[CRON] Starting document summary check at 9 PM...');
+      await runDocumentSummaryJob();
     }, {
       scheduled: true,
       timezone: "Asia/Kolkata"

@@ -46,6 +46,11 @@ router.post('/:id/cancel-approval', verifyToken, taskAcceptance.cancelApproval);
 router.post('/:id/resolve-swap', verifyToken, taskAcceptance.resolveConflictWithSwap);
 router.put('/escalations/:id/read', verifyToken, taskAcceptance.updateEscalationReadStatus);
 
+// Approval Gate Routes
+router.get('/approval-requests/pending', verifyToken, taskAcceptance.getPendingApprovalRequests);
+router.post('/approval-requests/:requestId/approve', verifyToken, taskAcceptance.approveRequest);
+router.post('/approval-requests/:requestId/reject', verifyToken, taskAcceptance.rejectRequest);
+
 // Task Acknowledgment
 router.get('/today/unacknowledged', verifyToken, taskAcknowledgment.getTodaysUnacknowledgedTasks);
 router.post('/acknowledge', verifyToken, taskAcknowledgment.acknowledgeTodaysTasks);

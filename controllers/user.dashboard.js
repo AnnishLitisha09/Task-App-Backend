@@ -304,7 +304,10 @@ exports.getHodDashboard = async (req, res) => {
         const dayAfterTomorrow = new Date(tomorrowDate);
         dayAfterTomorrow.setDate(dayAfterTomorrow.getDate() + 1);
 
-        const isEvening = localNow.getHours() > 19 || (localNow.getHours() === 19 && localNow.getMinutes() >= 30);
+        const isEvening = localNow.getHours() >= 19;
+        const effectiveTodayStr = isEvening ?
+            `${tomorrowDate.getFullYear()}-${String(tomorrowDate.getMonth() + 1).padStart(2, '0')}-${String(tomorrowDate.getDate()).padStart(2, '0')}` :
+            dateStr;
         const pendingDateLimit = isEvening ? dayAfterTomorrow : tomorrowDate;
 
         // 2. Department Statistics
@@ -339,27 +342,33 @@ exports.getHodDashboard = async (req, res) => {
             include: [
                 {
                     model: TaskType,
-                    required: true,
-                    where: {
-                        start_date: {
-                            [Op.gte]: todayDate,
-                            [Op.lt]: pendingDateLimit
-                        }
-                    },
+                    required: false,
                     attributes: ['start_date', 'start_time', 'end_time']
                 }
             ],
             order: [['created_at', 'DESC']]
         });
 
-        // Batch fetch names for creators
-        const creatorIds = [...new Set([
+        // 4b. Department-wide Escalations (Tasks assigned to dept members with status 'escalated')
+        const deptEscalations = await TaskAssign.findAll({
+            where: {
+                user_id: { [Op.in]: deptUserIds.length > 0 ? deptUserIds : [0] },
+                status: 'escalated'
+            },
+            include: [
+                { model: Task, include: [{ model: TaskType }] },
+                { model: User, attributes: ['user_id', 'role'] }
+            ]
+        });
+
+        // Batch fetch names for creators and assignees
+        const involvedUserIds = [...new Set([
             ...pendingApprovals.map(t => t.creator_id),
-            // We'll also need creator names for the schedule
+            ...deptEscalations.map(e => e.user_id)
         ])];
 
-        const creators = await User.findAll({
-            where: { user_id: { [Op.in]: creatorIds } },
+        const usersWithProfiles = await User.findAll({
+            where: { user_id: { [Op.in]: involvedUserIds } },
             include: [
                 { model: Student, attributes: ['name'], required: false },
                 { model: Faculty, attributes: ['name'], required: false },
@@ -367,10 +376,11 @@ exports.getHodDashboard = async (req, res) => {
                 { model: RoleUser, attributes: ['name'], required: false }
             ]
         });
-        const creatorMap = {};
-        creators.forEach(c => {
-            const p = c.Student || c.Faculty || c.Staff || c.RoleUser;
-            creatorMap[c.user_id] = p ? p.name : `User #${c.user_id}`;
+
+        const profileNameMap = {};
+        usersWithProfiles.forEach(u => {
+            const p = u.Student || u.Faculty || u.Staff || u.RoleUser;
+            profileNameMap[u.user_id] = p ? p.name : `User #${u.user_id}`;
         });
 
         const formattedPending = pendingApprovals.map(t => ({
@@ -378,18 +388,30 @@ exports.getHodDashboard = async (req, res) => {
             title: t.title,
             category: t.category,
             priority: t.priority,
-            requested_by: creatorMap[t.creator_id],
+            requested_by: profileNameMap[t.creator_id],
             requested_at: t.created_at,
             timing: t.TaskTypes?.[0] ? `${t.TaskTypes[0].start_date} ${t.TaskTypes[0].start_time}` : 'N/A'
         }));
+
+        const formattedEscalations = deptEscalations.map(e => {
+            const t = e.Task;
+            const tt = t.TaskTypes?.[0];
+            return {
+                task_id: t.task_id,
+                title: t.title,
+                assignee_name: profileNameMap[e.user_id],
+                status: e.status,
+                timing: tt ? `${tt.start_date} ${tt.start_time}` : 'N/A'
+            };
+        });
 
         // 5. Today's Department Schedule (Assigned to OR Created by Dept Members Today)
         const todaysTasks = await Task.findAll({
             where: {
                 is_deleted: false,
                 [Op.or]: [
-                    { creator_id: { [Op.in]: deptUserIds } },
-                    literal(`EXISTS (SELECT 1 FROM task_assign ta WHERE ta.task_id = \`Task\`.\`task_id\` AND ta.user_id IN (${deptUserIds.join(',')}))`)
+                    { creator_id: { [Op.in]: deptUserIds.length > 0 ? deptUserIds : [0] } },
+                    deptUserIds.length > 0 ? literal(`EXISTS (SELECT 1 FROM task_assign ta WHERE ta.task_id = \`Task\`.\`task_id\` AND ta.user_id IN (${deptUserIds.join(',')}))`) : { [Op.raw]: '1=0' }
                 ]
             },
             include: [{
@@ -397,11 +419,11 @@ exports.getHodDashboard = async (req, res) => {
                 required: true,
                 where: {
                     [Op.or]: [
-                        literal(`DATE(start_date) = '${dateStr}'`),
+                        literal(`DATE(start_date) = '${effectiveTodayStr}'`),
                         {
                             [Op.and]: [
-                                literal(`DATE(start_date) <= '${dateStr}'`),
-                                literal(`DATE(end_date) >= '${dateStr}'`)
+                                literal(`DATE(start_date) <= '${effectiveTodayStr}'`),
+                                literal(`DATE(end_date) >= '${effectiveTodayStr}'`)
                             ]
                         }
                     ]
@@ -411,9 +433,9 @@ exports.getHodDashboard = async (req, res) => {
 
         // Ensure creator names for schedule
         const schedCreatorIds = [...new Set(todaysTasks.map(t => t.creator_id))];
-        const missingSchedNames = schedCreatorIds.filter(id => !creatorMap[id]);
+        const missingSchedNames = schedCreatorIds.filter(id => !profileNameMap[id]);
         if (missingSchedNames.length > 0) {
-            const extraCreators = await User.findAll({
+            const extraRes = await User.findAll({
                 where: { user_id: { [Op.in]: missingSchedNames } },
                 include: [
                     { model: Student, attributes: ['name'], required: false },
@@ -422,18 +444,22 @@ exports.getHodDashboard = async (req, res) => {
                     { model: RoleUser, attributes: ['name'], required: false }
                 ]
             });
-            extraCreators.forEach(c => {
-                const p = c.Student || c.Faculty || c.Staff || c.RoleUser;
-                creatorMap[c.user_id] = p ? p.name : `User #${c.user_id}`;
+            extraRes.forEach(u => {
+                const p = u.Student || u.Faculty || u.Staff || u.RoleUser;
+                profileNameMap[u.user_id] = p ? p.name : `User #${u.user_id}`;
             });
         }
 
-        const schedule = todaysTasks.map(t => ({
-            task_id: t.task_id,
-            title: t.title,
-            creator_name: creatorMap[t.creator_id] || "Creator",
-            timing: t.TaskTypes?.[0] ? `${t.TaskTypes[0].start_time} - ${t.TaskTypes[0].end_time}` : 'N/A'
-        }));
+        const schedule = todaysTasks.map(t => {
+            const tt = t.TaskTypes?.[0];
+            const isLongTask = tt?.task_name === 'Date-Only / Long Task' || tt?.task_name === 'Long Task';
+            return {
+                task_id: t.task_id,
+                title: t.title,
+                creator_name: profileNameMap[t.creator_id] || "Creator",
+                timing: isLongTask ? '08:45:00 - 16:30:00' : (tt ? `${tt.start_time} - ${tt.end_time}` : 'N/A')
+            };
+        });
 
         // 6. Department Tasks History (All Tasks Created by Department Members)
         const deptTasks = await Task.findAll({
@@ -452,7 +478,7 @@ exports.getHodDashboard = async (req, res) => {
 
         // Ensure creator names for history
         const historyCreatorIds = [...new Set(deptTasks.map(t => t.creator_id))];
-        const missingHistoryNames = historyCreatorIds.filter(id => !creatorMap[id]);
+        const missingHistoryNames = historyCreatorIds.filter(id => !profileNameMap[id]);
         if (missingHistoryNames.length > 0) {
             const extraRes = await User.findAll({
                 where: { user_id: { [Op.in]: missingHistoryNames } },
@@ -465,7 +491,7 @@ exports.getHodDashboard = async (req, res) => {
             });
             extraRes.forEach(c => {
                 const p = c.Student || c.Faculty || c.Staff || c.RoleUser;
-                creatorMap[c.user_id] = p ? p.name : `User #${c.user_id}`;
+                profileNameMap[c.user_id] = p ? p.name : `User #${c.user_id}`;
             });
         }
 
@@ -474,7 +500,7 @@ exports.getHodDashboard = async (req, res) => {
             title: t.title,
             category: t.category,
             priority: t.priority,
-            creator_name: creatorMap[t.creator_id] || "Creator",
+            creator_name: profileNameMap[t.creator_id] || "Creator",
             created_at: t.created_at,
             timing: t.TaskTypes?.[0] ? `${t.TaskTypes[0].start_date} ${t.TaskTypes[0].start_time}` : 'N/A'
         }));
@@ -482,6 +508,8 @@ exports.getHodDashboard = async (req, res) => {
         // 7. Response
         res.json({
             success: true,
+            today_date: effectiveTodayStr,
+            is_tomorrow_preview: isEvening,
             department: {
                 id: deptId,
                 name: deptName
@@ -492,6 +520,8 @@ exports.getHodDashboard = async (req, res) => {
             },
             pending_approvals_count: formattedPending.length,
             pending_approvals: formattedPending,
+            escalated_tasks_count: formattedEscalations.length,
+            escalated_tasks: formattedEscalations,
             todays_schedule_count: schedule.length,
             todays_schedule: schedule,
             department_tasks_count: formattedDeptTasks.length,
@@ -694,6 +724,7 @@ exports.getPrincipalDashboard = async (req, res) => {
         const now = new Date();
         const istOffset = 330 * 60 * 1000;
         const localNow = new Date(now.getTime() + (now.getTimezoneOffset() * 60000) + istOffset);
+        const dateStr = `${localNow.getFullYear()}-${String(localNow.getMonth() + 1).padStart(2, '0')}-${String(localNow.getDate()).padStart(2, '0')}`;
 
         const todayDate = new Date(localNow);
         todayDate.setHours(0, 0, 0, 0);
@@ -702,7 +733,10 @@ exports.getPrincipalDashboard = async (req, res) => {
         const dayAfterTomorrow = new Date(tomorrowDate);
         dayAfterTomorrow.setDate(dayAfterTomorrow.getDate() + 1);
 
-        const isEvening = localNow.getHours() > 19 || (localNow.getHours() === 19 && localNow.getMinutes() >= 30);
+        const isEvening = localNow.getHours() >= 19;
+        const effectiveTodayStr = isEvening ?
+            `${tomorrowDate.getFullYear()}-${String(tomorrowDate.getMonth() + 1).padStart(2, '0')}-${String(tomorrowDate.getDate()).padStart(2, '0')}` :
+            dateStr;
         const pendingDateLimit = isEvening ? dayAfterTomorrow : tomorrowDate;
 
         // 1. Verify Principal Role
@@ -726,7 +760,14 @@ exports.getPrincipalDashboard = async (req, res) => {
         const studentCount = await Student.count();
         const facultyCount = await Faculty.count();
 
-        // Global task stats removed by requirement
+        // 3. Institutional Escalations (All tasks with status 'escalated')
+        const allEscalations = await TaskAssign.findAll({
+            where: { status: 'escalated' },
+            include: [
+                { model: Task, include: [{ model: TaskType }] },
+                { model: User, attributes: ['user_id', 'role'] }
+            ]
+        });
 
         // 4. Tasks Specifically Awaiting Principal's Approval (Today/Tomorrow rule)
         const pendingForMe = await Task.findAll({
@@ -739,23 +780,21 @@ exports.getPrincipalDashboard = async (req, res) => {
             include: [
                 {
                     model: TaskType,
-                    required: true,
-                    where: {
-                        start_date: {
-                            [Op.gte]: todayDate,
-                            [Op.lt]: pendingDateLimit
-                        }
-                    },
+                    required: false,
                     attributes: ['start_date', 'start_time', 'end_time']
                 }
             ],
             order: [['created_at', 'DESC']]
         });
 
-        // Resolve names for specific pending tasks
-        const creatorIds = [...new Set(pendingForMe.map(t => t.creator_id))];
-        const creators = await User.findAll({
-            where: { user_id: creatorIds },
+        // Batch fetch profiles
+        const involvedUserIds = [...new Set([
+            ...pendingForMe.map(t => t.creator_id),
+            ...allEscalations.map(e => e.user_id)
+        ])];
+
+        const usersWithProfiles = await User.findAll({
+            where: { user_id: { [Op.in]: involvedUserIds } },
             include: [
                 { model: Student, attributes: ['name'], required: false },
                 { model: Faculty, attributes: ['name'], required: false },
@@ -763,10 +802,11 @@ exports.getPrincipalDashboard = async (req, res) => {
                 { model: RoleUser, attributes: ['name'], required: false }
             ]
         });
-        const creatorMap = {};
-        creators.forEach(c => {
-            const p = c.Student || c.Faculty || c.Staff || c.RoleUser;
-            creatorMap[c.user_id] = p ? p.name : `User #${c.user_id}`;
+
+        const profileNameMap = {};
+        usersWithProfiles.forEach(u => {
+            const p = u.Student || u.Faculty || u.Staff || u.RoleUser;
+            profileNameMap[u.user_id] = p ? p.name : `User #${u.user_id}`;
         });
 
         const formattedPending = pendingForMe.map(t => ({
@@ -774,14 +814,27 @@ exports.getPrincipalDashboard = async (req, res) => {
             title: t.title,
             category: t.category,
             priority: t.priority,
-            requested_by: creatorMap[t.creator_id],
+            requested_by: profileNameMap[t.creator_id],
             requested_at: t.created_at,
             timing: t.TaskTypes?.[0] ? `${t.TaskTypes[0].start_date} ${t.TaskTypes[0].start_time}` : 'N/A'
         }));
 
+        const formattedEscalations = allEscalations.map(e => {
+            const t = e.Task;
+            const tt = t.TaskTypes?.[0];
+            return {
+                task_id: t.task_id,
+                title: t.title,
+                assignee_name: profileNameMap[e.user_id],
+                role: e.User?.role,
+                status: e.status,
+                timing: tt ? `${tt.start_date} ${tt.start_time}` : 'N/A'
+            };
+        });
+
         // 5. Today's Schedule for the Principal
         const todaysAssignments = await TaskAssign.findAll({
-            where: { user_id: userId, status: { [Op.in]: ['accepted', 'pending', 'in_progress'] } },
+            where: { user_id: userId, status: { [Op.in]: ['accepted', 'pending', 'in_progress', 'escalated'] } },
             include: [{
                 model: Task,
                 where: { is_deleted: false },
@@ -790,30 +843,36 @@ exports.getPrincipalDashboard = async (req, res) => {
                     required: true,
                     where: {
                         [Op.or]: [
-                            literal(`DATE(start_date) = '${todayDate.toISOString().split('T')[0]}'`),
+                            literal(`DATE(start_date) = '${effectiveTodayStr}'`),
                             {
                                 [Op.and]: [
-                                    literal(`DATE(start_date) <= '${todayDate.toISOString().split('T')[0]}'`),
-                                    literal(`DATE(end_date) >= '${todayDate.toISOString().split('T')[0]}'`)
+                                    literal(`DATE(start_date) <= '${effectiveTodayStr}'`),
+                                    literal(`DATE(end_date) >= '${effectiveTodayStr}'`)
                                 ]
                             }
                         ]
                     }
                 }]
             }],
-            order: [[literal('\`Task->TaskTypes\`.\`start_time\`'), 'ASC']]
+            order: [[literal('`Task->TaskTypes`.`start_time`'), 'ASC']]
         });
 
-        const schedule = todaysAssignments.map(a => ({
-            task_id: a.Task.task_id,
-            title: a.Task.title,
-            status: a.status,
-            timing: a.Task.TaskTypes?.[0] ? `${a.Task.TaskTypes[0].start_time} - ${a.Task.TaskTypes[0].end_time}` : 'N/A'
-        }));
+        const schedule = todaysAssignments.map(a => {
+            const tt = a.Task.TaskTypes?.[0];
+            const isLongTask = tt?.task_name === 'Date-Only / Long Task' || tt?.task_name === 'Long Task';
+            return {
+                task_id: a.Task.task_id,
+                title: a.Task.title,
+                status: a.status,
+                timing: isLongTask ? '08:45:00 - 16:30:00' : (tt ? `${tt.start_time} - ${tt.end_time}` : 'N/A')
+            };
+        });
 
         res.json({
             success: true,
             role: "Principal",
+            today_date: effectiveTodayStr,
+            is_tomorrow_preview: isEvening,
             institutional_stats: {
                 total_departments: deptCount,
                 total_students: studentCount,
@@ -822,6 +881,10 @@ exports.getPrincipalDashboard = async (req, res) => {
             personal_actions: {
                 pending_my_approval_count: formattedPending.length,
                 pending_my_approval_list: formattedPending
+            },
+            escalations: {
+                total_escalated: formattedEscalations.length,
+                escalated_list: formattedEscalations
             },
             todays_schedule: schedule
         });
@@ -854,8 +917,21 @@ exports.getStudentDashboard = async (req, res) => {
         const dayAfterTomorrow = new Date(tomorrowDate);
         dayAfterTomorrow.setDate(dayAfterTomorrow.getDate() + 1);
 
-        const isEvening = localNow.getHours() > 19 || (localNow.getHours() === 19 && localNow.getMinutes() >= 30);
-        const pendingDateLimit = isEvening ? dayAfterTomorrow : tomorrowDate;
+        const isEvening = localNow.getHours() >= 19;
+        const effectiveTodayDate = isEvening ? tomorrowDate : todayDate;
+        const effectiveTodayStr = isEvening ?
+            `${tomorrowDate.getFullYear()}-${String(tomorrowDate.getMonth() + 1).padStart(2, '0')}-${String(tomorrowDate.getDate()).padStart(2, '0')}` :
+            dateStr;
+
+        // Acknowledge check for TODAY (not effective tomorrow)
+        const TaskAcknowledgment = require('../models').TaskAcknowledgment;
+        const hasAcknowledgedToday = await TaskAcknowledgment.findOne({
+            where: { user_id: userId, task_id: null, acknowledge_date: dateStr }
+        });
+        const hour = localNow.getHours();
+        const minute = localNow.getMinutes();
+        const totalMinutes = hour * 60 + minute;
+        const needsAcknowledgement = !hasAcknowledgedToday && totalMinutes >= (6 * 60 + 30) && totalMinutes <= (8 * 60 + 45);
 
         // 1. Fetch Student Details with Dept and Faculty
         const student = await Student.findOne({
@@ -872,7 +948,7 @@ exports.getStudentDashboard = async (req, res) => {
 
         // 2. Fetch All Active Assignments (Accepted/In Progress) - regardless of date for Overdue check
         const activeAssignments = await TaskAssign.findAll({
-            where: { user_id: userId, status: { [Op.in]: ['accepted', 'in_progress'] } },
+            where: { user_id: userId, status: { [Op.in]: ['accepted', 'in_progress', 'escalated'] } },
             include: [{
                 model: Task,
                 where: { is_deleted: false },
@@ -885,16 +961,27 @@ exports.getStudentDashboard = async (req, res) => {
 
         const schedule = [];
         const overdueTasks = [];
+        const escalatedTasks = [];
 
         // Current time for comparison (HH:MM)
         const localTimeStr = `${String(localNow.getHours()).padStart(2, '0')}:${String(localNow.getMinutes()).padStart(2, '0')}`;
+
+        const getISTDateStr = (dateVal) => {
+            if (!dateVal) return null;
+            const d = new Date(dateVal);
+            const istOffset = 330 * 60 * 1000;
+            const localD = new Date(d.getTime() + (d.getTimezoneOffset() * 60000) + istOffset);
+            return `${localD.getFullYear()}-${String(localD.getMonth() + 1).padStart(2, '0')}-${String(localD.getDate()).padStart(2, '0')}`;
+        };
 
         activeAssignments.forEach(a => {
             const task = a.Task;
             const taskType = task.TaskTypes?.[0];
             if (!taskType) return;
 
-            const taskEndStr = taskType.end_date ? new Date(taskType.end_date).toISOString().split('T')[0] : null;
+            const isLongTask = taskType.task_name === 'Date-Only / Long Task' || taskType.task_name === 'Long Task';
+            const taskStartStr = getISTDateStr(taskType.start_date);
+            const taskEndStr = getISTDateStr(taskType.end_date) || taskStartStr;
 
             const taskData = {
                 assignment_id: a.id,
@@ -912,40 +999,53 @@ exports.getStudentDashboard = async (req, res) => {
                 score: task.score,
                 penalty_per_hour: task.penalty_per_hour,
                 timing: {
-                    start_time: taskType.start_time,
-                    end_time: taskType.end_time,
+                    start_time: isLongTask ? '08:45:00' : taskType.start_time,
+                    end_time: isLongTask ? '16:30:00' : taskType.end_time,
                     start_date: taskType.start_date,
                     end_date: taskType.end_date
                 },
                 task_type: taskType.task_name,
-                date: taskEndStr || 'N/A'
+                date: taskEndStr || taskStartStr || 'N/A'
             };
+
+            // Escalated Logic
+            if (a.status === 'escalated') {
+                escalatedTasks.push(taskData);
+                return;
+            }
 
             // Overdue Logic: 
             // 1. End Date is strictly in the past
             // 2. End Date is today AND end time has passed
             // AND No proof submitted
             let isOverdue = false;
+            const taskEndTime = isLongTask ? '16:30:00' : taskType.end_time;
+
             if (taskEndStr) {
                 if (taskEndStr < dateStr) {
                     isOverdue = true;
                 } else if (taskEndStr === dateStr) {
-                    if (taskType.end_time && localTimeStr > taskType.end_time) {
+                    if (taskEndTime && localTimeStr > taskEndTime) {
                         isOverdue = true;
                     }
                 }
             }
 
+            const isToday = (taskStartStr && taskEndStr)
+                ? (effectiveTodayStr >= taskStartStr && effectiveTodayStr <= taskEndStr)
+                : (taskStartStr === effectiveTodayStr || taskEndStr === effectiveTodayStr);
+
             // Must have NO proof/closure to be truly "Overdue" as per user request
             if (isOverdue && (!a.proof || a.proof === '')) {
                 overdueTasks.push(taskData);
-            } else if (taskEndStr === dateStr) {
-                // If it's today and NOT overdue yet (or has proof), put in schedule
+            } else if (isToday) {
+                // If it's effectively today and NOT overdue yet (or has proof), put in schedule
                 schedule.push(taskData);
             }
         });
 
-        // 3. Fetch Pending Tasks for Approval (Today/Tomorrow rule)
+        // 3. Fetch Pending Tasks for Approval (Effective Today/Tomorrow rule)
+        const pendingDateLimit = isEvening ? dayAfterTomorrow : tomorrowDate;
         const pendingAssignments = await TaskAssign.findAll({
             where: { user_id: userId, status: 'pending' },
             include: [{
@@ -956,36 +1056,57 @@ exports.getStudentDashboard = async (req, res) => {
                     required: true,
                     where: {
                         start_date: {
-                            [Op.gte]: todayDate,
+                            [Op.gte]: effectiveTodayDate,
                             [Op.lt]: pendingDateLimit
                         }
                     },
-                    attributes: ['start_date', 'start_time']
+                    attributes: ['start_date', 'start_time', 'task_name']
                 }]
             }]
         });
 
-        const pendingApprovals = pendingAssignments.map(a => ({
-            assignment_id: a.id,
-            task_id: a.Task.task_id,
-            title: a.Task.title,
-            description: a.Task.description,
-            category: a.Task.category,
-            priority: a.Task.priority,
-            is_mandatory: a.Task.is_mandatory,
-            is_package: a.Task.is_package,
-            is_document: a.Task.is_document,
-            score: a.Task.score,
-            penalty_per_hour: a.Task.penalty_per_hour,
-            origin_type: a.Task.origin_type,
-            start_date: a.Task.TaskTypes?.[0]?.start_date || null,
-            start_time: a.Task.TaskTypes?.[0]?.start_time || null,
-            task_type: a.Task.TaskTypes?.[0]?.task_name || null
-        }));
+        const pendingApprovals = [];
+        for (const a of pendingAssignments) {
+            const taskType = a.Task.TaskTypes?.[0];
+
+            // Filter out Bidding tasks that have reached max acceptances
+            if (taskType?.task_name === 'Bidding / Nomination Task' && taskType.max_acceptances) {
+                const acceptedCount = await TaskAssign.count({
+                    where: {
+                        task_id: a.Task.task_id,
+                        status: { [Op.in]: ['accepted', 'completed', 'in_progress'] }
+                    }
+                });
+                if (acceptedCount >= taskType.max_acceptances) {
+                    continue; // Skip, slot is full
+                }
+            }
+
+            pendingApprovals.push({
+                assignment_id: a.id,
+                task_id: a.Task.task_id,
+                title: a.Task.title,
+                description: a.Task.description,
+                category: a.Task.category,
+                priority: a.Task.priority,
+                is_mandatory: a.Task.is_mandatory,
+                is_package: a.Task.is_package,
+                is_document: a.Task.is_document,
+                score: a.Task.score,
+                penalty_per_hour: a.Task.penalty_per_hour,
+                origin_type: a.Task.origin_type,
+                start_date: taskType?.start_date || null,
+                start_time: taskType?.start_time || null,
+                task_type: taskType?.task_name || null
+            });
+        }
 
         // 4. Response
         res.json({
             success: true,
+            needs_acknowledgement: needsAcknowledgement,
+            today_date: effectiveTodayStr,
+            is_tomorrow_preview: isEvening,
             student_details: {
                 user_id: student.user_id,
                 name: student.name,
@@ -1006,10 +1127,12 @@ exports.getStudentDashboard = async (req, res) => {
             counts: {
                 today_schedule_count: schedule.length,
                 overdue_tasks_count: overdueTasks.length,
-                pending_approval_count: pendingApprovals.length
+                pending_approval_count: pendingApprovals.length,
+                escalated_tasks_count: escalatedTasks.length
             },
             todays_schedule: schedule,
             overdue_tasks: overdueTasks,
+            escalated_tasks: escalatedTasks,
             pending_for_approval: pendingApprovals
         });
 
@@ -1034,6 +1157,26 @@ exports.getStaffDashboard = async (req, res) => {
         const localNow = new Date(now.getTime() + (now.getTimezoneOffset() * 60000) + istOffset);
         const dateStr = `${localNow.getFullYear()}-${String(localNow.getMonth() + 1).padStart(2, '0')}-${String(localNow.getDate()).padStart(2, '0')}`;
 
+        const todayDate = new Date(localNow);
+        todayDate.setHours(0, 0, 0, 0);
+        const tomorrowDate = new Date(todayDate);
+        tomorrowDate.setDate(tomorrowDate.getDate() + 1);
+
+        const isEvening = localNow.getHours() >= 19;
+        const effectiveTodayStr = isEvening ?
+            `${tomorrowDate.getFullYear()}-${String(tomorrowDate.getMonth() + 1).padStart(2, '0')}-${String(tomorrowDate.getDate()).padStart(2, '0')}` :
+            dateStr;
+
+        // Acknowledge check for TODAY
+        const TaskAcknowledgment = require('../models').TaskAcknowledgment;
+        const hasAcknowledgedToday = await TaskAcknowledgment.findOne({
+            where: { user_id: userId, task_id: null, acknowledge_date: dateStr }
+        });
+        const hour = localNow.getHours();
+        const minute = localNow.getMinutes();
+        const totalMinutes = hour * 60 + minute;
+        const needsAcknowledgement = !hasAcknowledgedToday && totalMinutes >= (6 * 60 + 30) && totalMinutes <= (8 * 60 + 45);
+
         // 1. Fetch Staff Details
         const staff = await Staff.findOne({ where: { user_id: userId } });
         if (!staff) {
@@ -1044,17 +1187,18 @@ exports.getStaffDashboard = async (req, res) => {
         const totalAssignments = await TaskAssign.count({ where: { user_id: userId } });
         const pendingTasks = await TaskAssign.count({ where: { user_id: userId, status: 'pending' } });
         const completedTasks = await TaskAssign.count({ where: { user_id: userId, status: 'completed' } });
+        const escalatedTasksCount = await TaskAssign.count({ where: { user_id: userId, status: 'escalated' } });
 
         const efficiency = totalAssignments > 0 ? ((completedTasks / totalAssignments) * 100).toFixed(2) : "0.00";
 
-        // 3. Managed Employee Count (Staff specifically reporting to this user)
+        // 3. Managed Employee Count
         const managedEmployeeCount = await Staff.count({
             where: { manager_id: userId }
         });
 
-        // 4. Today's Schedule
+        // 4. Today's Schedule (using effectiveTodayStr)
         const todaysAssignments = await TaskAssign.findAll({
-            where: { user_id: userId, status: { [Op.in]: ['accepted', 'pending', 'in_progress'] } },
+            where: { user_id: userId, status: { [Op.in]: ['accepted', 'pending', 'in_progress', 'escalated'] } },
             include: [{
                 model: Task,
                 where: { is_deleted: false },
@@ -1063,11 +1207,11 @@ exports.getStaffDashboard = async (req, res) => {
                     required: true,
                     where: {
                         [Op.or]: [
-                            literal(`DATE(start_date) = '${dateStr}'`),
+                            literal(`DATE(start_date) = '${effectiveTodayStr}'`),
                             {
                                 [Op.and]: [
-                                    literal(`DATE(start_date) <= '${dateStr}'`),
-                                    literal(`DATE(end_date) >= '${dateStr}'`)
+                                    literal(`DATE(start_date) <= '${effectiveTodayStr}'`),
+                                    literal(`DATE(end_date) >= '${effectiveTodayStr}'`)
                                 ]
                             }
                         ]
@@ -1077,12 +1221,25 @@ exports.getStaffDashboard = async (req, res) => {
             order: [[literal('`Task->TaskTypes`.`start_time`'), 'ASC']]
         });
 
-        const schedule = todaysAssignments.map(a => ({
-            task_id: a.Task.task_id,
-            title: a.Task.title,
-            status: a.status,
-            timing: a.Task.TaskTypes?.[0] ? `${a.Task.TaskTypes[0].start_time} - ${a.Task.TaskTypes[0].end_time}` : 'N/A'
-        }));
+        const schedule = [];
+        const escalatedTasks = [];
+
+        todaysAssignments.forEach(a => {
+            const tt = a.Task.TaskTypes?.[0];
+            const isLongTask = tt?.task_name === 'Date-Only / Long Task' || tt?.task_name === 'Long Task';
+            const taskData = {
+                task_id: a.Task.task_id,
+                title: a.Task.title,
+                status: a.status,
+                timing: isLongTask ? '08:45:00 - 16:30:00' : (tt ? `${tt.start_time} - ${tt.end_time}` : 'N/A')
+            };
+
+            if (a.status === 'escalated') {
+                escalatedTasks.push(taskData);
+            } else {
+                schedule.push(taskData);
+            }
+        });
 
         // 5. Recent Activity (Latest 3 logs)
         const recentLogs = await TaskLog.findAll({
@@ -1102,6 +1259,9 @@ exports.getStaffDashboard = async (req, res) => {
 
         res.json({
             success: true,
+            needs_acknowledgement: needsAcknowledgement,
+            today_date: effectiveTodayStr,
+            is_tomorrow_preview: isEvening,
             profile: {
                 name: staff.name,
                 email: staff.email,
@@ -1111,10 +1271,12 @@ exports.getStaffDashboard = async (req, res) => {
                 total_tasks: totalAssignments,
                 pending_tasks: pendingTasks,
                 completed_tasks: completedTasks,
+                escalated_tasks_count: escalatedTasksCount,
                 efficiency: `${efficiency}%`,
                 managed_employees_count: managedEmployeeCount
             },
             todays_schedule: schedule,
+            escalated_tasks: escalatedTasks,
             recent_activity: activity
         });
 
