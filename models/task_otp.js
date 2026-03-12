@@ -5,6 +5,7 @@ module.exports = (sequelize, DataTypes) => {
     class TaskOTP extends Model {
         static associate(models) {
             TaskOTP.belongsTo(models.TaskAssign, { foreignKey: 'assignment_id' });
+            TaskOTP.belongsTo(models.Task, { foreignKey: 'task_id' });
         }
     }
 
@@ -16,7 +17,11 @@ module.exports = (sequelize, DataTypes) => {
         },
         assignment_id: {
             type: DataTypes.BIGINT.UNSIGNED,
-            allowNull: false
+            allowNull: true
+        },
+        task_id: {
+            type: DataTypes.BIGINT.UNSIGNED,
+            allowNull: true
         },
         otp_code: {
             type: DataTypes.STRING(6),

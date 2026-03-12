@@ -136,9 +136,42 @@ exports.getMaintenanceLogs = async (req, res) => {
             order: [['created_at', 'DESC']]
         });
 
-        res.json(logs);
+        res.json({ success: true, logs });
     } catch (error) {
-        res.status(500).json({ message: error.message });
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+// Fetch logs specifically for a Venue (including its resources)
+exports.getMaintenanceLogsByVenue = async (req, res) => {
+    try {
+        const { venueId } = req.params;
+
+        // 1. Get all resource IDs for this venue
+        const resources = await Resource.findAll({
+            where: { venue_id: venueId },
+            attributes: ['resource_id']
+        });
+        const resourceIds = resources.map(r => r.resource_id);
+
+        // 2. Fetch logs that match EITHER the venue directly OR one of its resources
+        const logs = await MaintenanceLog.findAll({
+            where: {
+                [Op.or]: [
+                    { venue_id: venueId },
+                    { resource_id: { [Op.in]: resourceIds } }
+                ]
+            },
+            include: [
+                { model: Venue, attributes: ['name'] },
+                { model: Resource, attributes: ['name'] }
+            ],
+            order: [['created_at', 'DESC']]
+        });
+
+        res.json({ success: true, venue_id: venueId, total: logs.length, logs });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
     }
 };
 

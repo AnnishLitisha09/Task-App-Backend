@@ -14,6 +14,8 @@ module.exports = (sequelize, DataTypes) => {
       Task.hasMany(models.TaskPackageClosure, { foreignKey: 'task_id' });
       Task.hasMany(models.TaskAssign, { foreignKey: 'task_id' }); // One task → many assignments
       Task.hasMany(models.TaskEscalation, { foreignKey: 'task_id' }); // One task → many escalations
+      Task.hasMany(models.TaskLog, { foreignKey: 'task_id' }); // One task → many logs
+      Task.hasMany(models.TaskOTP, { foreignKey: 'task_id' }); // Universal OTPs
       Task.belongsTo(models.Task, { as: 'Parent', foreignKey: 'parent_task_id' });
       Task.hasMany(models.Task, { as: 'Children', foreignKey: 'parent_task_id' });
     }

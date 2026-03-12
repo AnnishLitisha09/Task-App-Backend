@@ -1,17 +1,22 @@
-const { RoleAssignment, User, Role } = require('./models');
 
-async function debugRoleAssignments() {
+const { TaskAssign } = require('./models');
+
+async function debugAssignments() {
     try {
-        const assignments = await RoleAssignment.findAll({
-            // include: [{ model: User, attributes: ['id', 'user_id'] }, { model: Role, attributes: ['user_role'] }]
+        const assignments = await TaskAssign.findAll({
+            limit: 5,
+            order: [['id', 'DESC']]
         });
-        console.log("Total Assignments:", assignments.length);
+
         assignments.forEach(a => {
-            console.log(`User: ${a.user_id}, Role: ${a.role_id}, Dept: ${a.department_id}, Venue: ${a.venue_id}`);
+            console.log('ID:' + a.id + '|TID:' + a.task_id + '|UID:' + a.user_id + '|STAT:' + a.status);
         });
-    } catch (error) {
-        console.error("Error:", error);
+
+        process.exit(0);
+    } catch (err) {
+        console.error(err);
+        process.exit(1);
     }
 }
 
-debugRoleAssignments();
+debugAssignments();

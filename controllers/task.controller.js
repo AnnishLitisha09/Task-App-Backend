@@ -1,6 +1,7 @@
-const { Task, TaskAssign, TaskType, TaskPackageClosure, TaskClosure, User, Student, Faculty, Staff, RoleUser, RoleAssignment, Role, Department, TaskEscalation, AuthAccount, Notification, TaskLog, TaskTitle, Venue } = require('../models');
+const { Task, TaskAssign, TaskType, TaskPackageClosure, TaskClosure, User, Student, Faculty, Staff, RoleUser, RoleAssignment, Role, Department, TaskEscalation, AuthAccount, Notification, TaskLog, TaskTitle, Venue, TaskApprovalRequest } = require('../models');
 const XLSX = require('xlsx');
 const { canAssignTo } = require('./task.assignment');
+const { checkTaskOverlap } = require('../utils/task-utils');
 
 
 // Helper: Pagination
@@ -81,7 +82,7 @@ const validateTaskType = (taskTypeData) => {
 };
 
 // Helper: Normalize Task Payload (Parse JSON strings, consolidate IDs, etc.)
-const normalizeTaskPayload = (body) => {
+const normalizeTaskPayload = async (body) => {
     let payload = { ...body };
 
     try {
@@ -108,8 +109,33 @@ const normalizeTaskPayload = (body) => {
     }
     payload.assignee_ids = finalIds;
 
-    // Consistency: Map "Long Task" to the canonical "Date-Only / Long Task"
-    // to avoid ENUM truncation errors in the database.
+    // Faculty specific normalization & PK Resolution
+    if (payload.facultyId && !payload.faculty_id) payload.faculty_id = payload.facultyId;
+    if (payload.isFaculty !== undefined && payload.is_faculty === undefined) payload.is_faculty = payload.isFaculty;
+
+    if (payload.faculty_id) {
+        let facultyRecord = await Faculty.findByPk(payload.faculty_id);
+        if (!facultyRecord) {
+            facultyRecord = await Faculty.findOne({ where: { user_id: payload.faculty_id } });
+        }
+        if (facultyRecord) {
+            payload.faculty_id = facultyRecord.id; // Resolve to PK
+            payload.is_faculty = true; // Auto-infer
+            
+            // Add faculty user to assignees if not there
+            if (facultyRecord.user_id) {
+                const fUserId = facultyRecord.user_id * 1;
+                if (!payload.assignee_ids.includes(fUserId)) {
+                    payload.assignee_ids.push(fUserId);
+                }
+            }
+        }
+    }
+
+    if (typeof payload.is_faculty === 'string') payload.is_faculty = (payload.is_faculty === 'true' || payload.is_faculty === '1');
+    payload.is_faculty = !!payload.is_faculty;
+
+    // Consistency: Map "Long Task" to canonical names
     if (payload.task_type_data && payload.task_type_data.task_name === 'Long Task') {
         payload.task_type_data.task_name = 'Date-Only / Long Task';
     }
@@ -140,23 +166,14 @@ exports.createTask = async (req, res) => {
             return res.status(403).json({ message: 'You do not have permission to create tasks' });
         }
 
+        // Use normalization helper
+        const payload = await normalizeTaskPayload(req.body);
         const {
-            title,
-            description,
-            category,
-            priority,
-            is_package,
-            venue_id,
-            is_pause_allowed,
-            score,
-            penalty_per_hour,
-            is_document,
-            is_mandatory,
-            resource_id,
-            is_faculty,
-            faculty_id,
-            task_type_data // { task_name, start_date, end_date, start_time, end_time, recurrence, time_quota_hours }
-        } = req.body;
+            title, description, category, priority, is_package, venue_id,
+            is_pause_allowed, score, penalty_per_hour, is_document, is_mandatory,
+            resource_id, is_faculty, faculty_id,
+            task_type_data
+        } = payload;
 
         // Validate required fields
         if (!title || !category || !priority) {
@@ -196,6 +213,7 @@ exports.createTask = async (req, res) => {
             is_faculty: is_faculty || false,
             faculty_id: faculty_id || null,
             creator_id: userId,
+            is_approved: true,
             status: 'Active'
         }, { transaction: t });
 
@@ -293,6 +311,307 @@ exports.getTaskById = async (req, res) => {
 
         res.json(task);
     } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+// Get exhaustive task details (history, logs, transfers, escalations)
+exports.getExhaustiveTaskDetails = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const task = await Task.findOne({
+            where: { task_id: id, is_deleted: false },
+            include: [
+                { 
+                    model: User, 
+                    as: 'Creator', 
+                    attributes: ['user_id', 'role'],
+                    include: [
+                        { model: Student, attributes: ['name', 'year', 'department_id'], include: [{ model: Department, attributes: ['name'] }] },
+                        { model: Faculty, attributes: ['name', 'department_id'], include: [{ model: Department, attributes: ['name'] }] },
+                        { model: Staff, attributes: ['name'] },
+                        { model: RoleUser, attributes: ['name'] }
+                    ]
+                },
+                { 
+                    model: User, 
+                    as: 'Approver', 
+                    attributes: ['user_id', 'role'],
+                    include: [
+                        { model: Student, attributes: ['name', 'year', 'department_id'], include: [{ model: Department, attributes: ['name'] }] },
+                        { model: Faculty, attributes: ['name', 'department_id'], include: [{ model: Department, attributes: ['name'] }] },
+                        { model: Staff, attributes: ['name'] },
+                        { model: RoleUser, attributes: ['name'] }
+                    ]
+                },
+                { model: TaskType },
+                { 
+                    model: Venue, 
+                    attributes: ['venue_id', 'name', 'location', 'venue_type'],
+                    include: [{
+                        model: RoleAssignment,
+                        include: [
+                            { 
+                                model: User, 
+                                attributes: ['user_id', 'role'],
+                                include: [
+                                    { model: Student, attributes: ['name'] },
+                                    { model: Faculty, attributes: ['name'] },
+                                    { model: Staff, attributes: ['name'] }
+                                ]
+                            }, 
+                            { 
+                                model: Role, 
+                                attributes: ['user_role'],
+                                where: { user_role: 'INCHARGE' }
+                            }
+                        ],
+                        required: false
+                    }]
+                },
+                {
+                    model: TaskPackageClosure,
+                    include: [{ model: TaskClosure, attributes: ['name'] }]
+                },
+                {
+                    model: TaskAssign,
+                    include: [{ 
+                        model: User, 
+                        attributes: ['user_id', 'role'],
+                        include: [
+                            { model: Student, attributes: ['name', 'year', 'department_id'], include: [{ model: Department, attributes: ['name'] }] },
+                            { model: Faculty, attributes: ['name', 'department_id'], include: [{ model: Department, attributes: ['name'] }] },
+                            { model: Staff, attributes: ['name'] },
+                            { model: RoleUser, attributes: ['name'] }
+                        ]
+                    }]
+                },
+                {
+                    model: TaskLog,
+                    include: [{ 
+                        model: User, 
+                        attributes: ['user_id', 'role'],
+                        include: [
+                            { model: Student, attributes: ['name'] },
+                            { model: Faculty, attributes: ['name'] },
+                            { model: Staff, attributes: ['name'] },
+                            { model: RoleUser, attributes: ['name'] }
+                        ]
+                    }],
+                    required: false
+                },
+                {
+                    model: TaskEscalation,
+                    include: [
+                        { 
+                            model: User, as: 'Creator', attributes: ['user_id', 'role'],
+                            include: [{ model: Student, attributes: ['name'] }, { model: Faculty, attributes: ['name'] }, { model: Staff, attributes: ['name'] }, { model: RoleUser, attributes: ['name'] }]
+                        },
+                        { 
+                            model: User, as: 'RejectedUser', attributes: ['user_id', 'role'],
+                            include: [{ model: Student, attributes: ['name'] }, { model: Faculty, attributes: ['name'] }, { model: Staff, attributes: ['name'] }, { model: RoleUser, attributes: ['name'] }]
+                        }
+                    ],
+                    required: false
+                },
+                {
+                    model: Task,
+                    as: 'Children',
+                    include: [
+                        { model: TaskType },
+                        {
+                            model: TaskAssign,
+                            include: [{ 
+                                model: User, 
+                                attributes: ['user_id', 'role'],
+                                include: [
+                                    { model: Student, attributes: ['name'] },
+                                    { model: Faculty, attributes: ['name'] },
+                                    { model: Staff, attributes: ['name'] },
+                                    { model: RoleUser, attributes: ['name'] }
+                                ]
+                            }]
+                        }
+                    ],
+                    required: false
+                }
+            ],
+            order: [
+                [TaskLog, 'created_at', 'ASC'], // Order logs chronologically
+                [TaskEscalation, 'created_at', 'DESC'] // Order escalations newest first
+            ]
+        });
+
+        if (!task) return res.status(404).json({ message: 'Task not found' });
+
+        // Fetch Approval Request if applicable
+        const approvalRequest = await TaskApprovalRequest.findOne({
+            where: {
+                [require('sequelize').Op.or]: [
+                    { task_id: id },
+                    { task_ids: { [require('sequelize').Op.like]: `%${id}%` } }
+                ]
+            },
+            order: [['created_at', 'DESC']]
+        });
+
+        // Helper to format User profiles with all details
+        const formatUserDetailed = (user) => {
+            if (!user) return null;
+            const profile = user.Student || user.Faculty || user.Staff || user.RoleUser || {};
+            const dept = (user.Student?.Department || user.Faculty?.Department)?.name || 'N/A';
+            
+            return {
+                user_id: user.user_id,
+                role: user.role,
+                name: profile.name || 'Unknown',
+                year: user.Student?.year || 'N/A',
+                department: dept
+            };
+        };
+
+        const formatUserSimple = (user) => {
+            if (!user) return null;
+            const profile = user.Student || user.Faculty || user.Staff || user.RoleUser || {};
+            return {
+                user_id: user.user_id,
+                role: user.role,
+                name: profile.name || 'Unknown'
+            };
+        };
+
+        const assignments_list = (task.TaskAssigns || []).map(a => ({
+                assignment_id: a.id,
+                assignee: formatUserDetailed(a.User),
+                status: a.status,
+                reason: a.reason,
+                proof_url: a.proof,
+                accepted_at: a.accepted_at,
+                rejected_at: a.rejected_at,
+                submitted_time: a.submitted_time,
+                assigned_at: a.created_at
+            }));
+
+        // Group assignees
+        const assignee_groups = {
+            students: assignments_list.filter(a => a.assignee?.role === 'student').map(a => a.assignee),
+            faculty: assignments_list.filter(a => a.assignee?.role === 'faculty').map(a => a.assignee),
+            staff: assignments_list.filter(a => a.assignee?.role === 'staff').map(a => a.assignee),
+            others: assignments_list.filter(a => !['student', 'faculty', 'staff'].includes(a.assignee?.role)).map(a => a.assignee)
+        };
+
+        // Venue details including Incharge
+        const venue_incharges = (task.Venue?.RoleAssignments || []).map(ra => formatUserSimple(ra.User));
+
+        // Execution status calculation
+        const now = new Date();
+        const taskType = task.TaskTypes?.[0];
+        let execution_status = 'unknown';
+
+        if (task.status === 'completed') {
+            execution_status = 'completed';
+        } else if (taskType) {
+            const startDate = taskType.start_date ? new Date(taskType.start_date) : null;
+            const endDate = taskType.end_date ? new Date(taskType.end_date) : null;
+            const startTime = taskType.start_time;
+            const endTime = taskType.end_time;
+
+            // Simple date-based logic for now, more complex time logic could be added
+            if (startDate && now < startDate) {
+                execution_status = 'not_started';
+            } else if (endDate && now > endDate) {
+                execution_status = 'expired';
+            } else {
+                execution_status = 'alive';
+            }
+        }
+
+        // Transfer history from logs
+        const transfer_history = (task.TaskLogs || [])
+            .filter(log => ['transfer', 'reject_and_transfer'].includes(log.action))
+            .map(log => ({
+                from_user: formatUserSimple(log.User),
+                details: log.details,
+                timestamp: log.created_at
+            }));
+
+        const formattedTask = {
+            task_info: {
+                task_id: task.task_id,
+                title: task.title,
+                description: task.description,
+                category: task.category,
+                priority: task.priority,
+                status: task.status,
+                execution_status,
+                is_mandatory: task.is_mandatory,
+                origin_type: task.origin_type,
+                score: task.score,
+                penalty_per_hour: task.penalty_per_hour,
+                created_at: task.created_at,
+                updated_at: task.updated_at
+            },
+            is_faculty_detail: task.is_faculty ? {
+                is_faculty: true,
+                faculty_id: task.faculty_id
+                // Note: task.Faculty relation might exist if included in Task.findOne
+            } : { is_faculty: false },
+            schedule: taskType || null,
+            venue: task.Venue ? {
+                venue_id: task.Venue.venue_id,
+                name: task.Venue.name,
+                location: task.Venue.location,
+                incharges: venue_incharges
+            } : null,
+            approval_detail: approvalRequest ? {
+                request_id: approvalRequest.id,
+                status: approvalRequest.status,
+                approver_id: approvalRequest.approver_id,
+                reason: approvalRequest.reason,
+                created_at: approvalRequest.created_at
+            } : (task.is_approved ? { status: 'approved' } : { status: 'pending' }),
+            closure_methods: (task.TaskPackageClosures || []).map(c => c.TaskClosure?.name).filter(Boolean),
+            assignees: {
+                grouped: assignee_groups,
+                all: assignments_list
+            },
+            people: {
+                creator: formatUserDetailed(task.Creator),
+                approver: formatUserDetailed(task.Approver)
+            },
+            history_logs: (task.TaskLogs || []).map(log => ({
+                log_id: log.id,
+                action: log.action,
+                details: log.details,
+                actor: formatUserSimple(log.User),
+                timestamp: log.created_at
+            })),
+            transfer_history,
+            escalations: (task.TaskEscalations || []).map(esc => ({
+                escalation_id: esc.id,
+                reason: esc.reason,
+                message: esc.msg,
+                status: esc.status,
+                escalated_to: formatUserSimple(esc.Creator),
+                escalated_about: formatUserSimple(esc.RejectedUser),
+                is_read: esc.is_read,
+                created_at: esc.created_at
+            })),
+            sub_tasks: (task.Children || []).map(child => ({
+                task_id: child.task_id,
+                title: child.title,
+                status: child.status,
+                schedule: child.TaskTypes?.[0] || null,
+                assignments: (child.TaskAssigns || []).map(a => ({
+                    assignee: formatUserSimple(a.User),
+                    status: a.status
+                }))
+            }))
+        };
+
+        res.json(formattedTask);
+    } catch (error) {
+        console.error('Error in getExhaustiveTaskDetails:', error);
         res.status(500).json({ message: error.message });
     }
 };
@@ -663,7 +982,7 @@ exports.createUnifiedTask = async (req, res) => {
         }
 
         // Use normalization helper
-        const payload = normalizeTaskPayload(req.body);
+        const payload = await normalizeTaskPayload(req.body);
         let {
             title, description, category, priority, is_package, venue_id,
             is_pause_allowed, score, penalty_per_hour, is_document, is_mandatory,
@@ -795,11 +1114,17 @@ exports.createUnifiedTask = async (req, res) => {
             }
         }
 
-        // --- NEW: Faculty Ownership Logic ---
+        // --- NEW: Faculty Ownership Logic (Unified with normalization) ---
+        let facultyUserId = null;
         if (is_faculty && faculty_id) {
-            const facultyUser = await Faculty.findByPk(faculty_id);
-            if (facultyUser && facultyUser.user_id && !finalAssigneeIds.includes(facultyUser.user_id * 1)) {
-                finalAssigneeIds.push(facultyUser.user_id * 1);
+            const facultyRecord = await Faculty.findByPk(faculty_id);
+            if (facultyRecord && facultyRecord.user_id) {
+                facultyUserId = facultyRecord.user_id * 1;
+                // Redundant check since normalizeTaskPayload already adds it, 
+                // but good for safety if assignee_ids were cleared somehow.
+                if (!finalAssigneeIds.includes(facultyUserId)) {
+                    finalAssigneeIds.push(facultyUserId);
+                }
             }
         }
 
@@ -901,7 +1226,7 @@ exports.createUnifiedTask = async (req, res) => {
                 penalty_per_hour: penalty_per_hour || 0,
                 is_document: is_document || false,
                 is_mandatory: is_mandatory || false,
-                is_approved: requires_approval ? false : (is_approved || false),
+                is_approved: requires_approval ? false : true,
                 approver_id: approver_id || null,
                 resource_id: resource_id || null,
                 is_faculty: is_faculty || false,
@@ -936,14 +1261,54 @@ exports.createUnifiedTask = async (req, res) => {
                     const allowed = await canAssignTo(userId, assigneeId);
                     const assigneeRole = roleMap[assigneeId];
                     const isStaff = assigneeRole === 'staff';
-                    const autoAccept = is_mandatory || isStaff;
+                    const isFacultySupervisor = (assigneeId === facultyUserId);
+                    // Faculty supervisor only auto-accepts if they are the creator
+                    const facultyAutoAccept = isFacultySupervisor && (facultyUserId === userId);
+                    const autoAccept = is_mandatory || isStaff || facultyAutoAccept;
 
                     if (allowed) {
+                        let finalStatus = autoAccept ? 'accepted' : 'pending';
+                        let finalAcceptedAt = autoAccept ? new Date() : null;
+
+                        // If it's mandatory, check for overlap before auto-accepting
+                        if (autoAccept) {
+                            const overlap = await checkTaskOverlap(assigneeId, {
+                                start_date: oDate,
+                                end_date: (task_type_data.task_name === 'Recurring Task') ? oDate : (task_type_data.end_date || oDate),
+                                start_time: task_type_data.start_time,
+                                end_time: task_type_data.end_time,
+                                task_name: task_type_data.task_name
+                            }, parentTask.task_id);
+
+                            if (overlap.hasConflict) {
+                                finalStatus = 'pending';
+                                finalAcceptedAt = null;
+
+                                // Escalate to Creator
+                                await TaskEscalation.create({
+                                    task_id: parentTask.task_id,
+                                    reason: `Conflict: Mandatory Task Blocked`,
+                                    msg: `Mandatory task "${title}" could not be auto-accepted for User ${assigneeId} due to overlap with "${overlap.conflictTask.title}".`,
+                                    creator_id: userId,
+                                    rejected_user_id: assigneeId,
+                                    status: 'pending',
+                                    is_read: false
+                                }, { transaction: t });
+
+                                await Notification.create({
+                                    user_id: userId,
+                                    title: 'Mandatory Task Conflict',
+                                    msg: `User ${assigneeId} has a conflict for mandatory task "${title}". Auto-acceptance failed.`,
+                                    type: 'task_escalation'
+                                }, { transaction: t });
+                            }
+                        }
+
                         assignments.push({
                             task_id: parentTask.task_id,
                             user_id: assigneeId,
-                            status: autoAccept ? 'accepted' : 'pending',
-                            accepted_at: autoAccept ? new Date() : null
+                            status: finalStatus,
+                            accepted_at: finalAcceptedAt
                         });
 
                         await Notification.create({
@@ -1017,11 +1382,46 @@ exports.createUnifiedTask = async (req, res) => {
                             const isChildStaff = roleMap[sid] === 'staff';
                             const childAutoAccept = sub.is_mandatory || isChildStaff;
 
+                            let finalChildStatus = childAutoAccept ? 'accepted' : 'pending';
+                            let finalChildAcceptedAt = childAutoAccept ? new Date() : null;
+
+                            if (childAutoAccept) {
+                                const overlapChild = await checkTaskOverlap(sid, {
+                                    start_date: sub.start_date || oDate,
+                                    end_date: sub.end_date || oDate,
+                                    start_time: sub.start_time || task_type_data.start_time,
+                                    end_time: sub.end_time || task_type_data.end_time,
+                                    task_name: sub.task_name || 'Fixed Time Task'
+                                }, childTask.task_id);
+
+                                if (overlapChild.hasConflict) {
+                                    finalChildStatus = 'pending';
+                                    finalChildAcceptedAt = null;
+
+                                    await TaskEscalation.create({
+                                        task_id: childTask.task_id,
+                                        reason: `Conflict: Mandatory Sub-task Blocked`,
+                                        msg: `Mandatory sub-task "${childTask.title}" could not be auto-accepted for User ${sid} due to overlap with "${overlapChild.conflictTask.title}".`,
+                                        creator_id: userId,
+                                        rejected_user_id: sid,
+                                        status: 'pending',
+                                        is_read: false
+                                    }, { transaction: t });
+
+                                    await Notification.create({
+                                        user_id: userId,
+                                        title: 'Mandatory Sub-task Conflict',
+                                        msg: `User ${sid} has a conflict for mandatory sub-task "${childTask.title}". Auto-acceptance failed.`,
+                                        type: 'task_escalation'
+                                    }, { transaction: t });
+                                }
+                            }
+
                             childAssignments.push({
                                 task_id: childTask.task_id,
                                 user_id: sid,
-                                status: childAutoAccept ? 'accepted' : 'pending',
-                                accepted_at: childAutoAccept ? new Date() : null
+                                status: finalChildStatus,
+                                accepted_at: finalChildAcceptedAt
                             });
 
                             await Notification.create({
@@ -1205,7 +1605,7 @@ exports.finalizeTaskAssignments = async (approvalRequest, transaction = null) =>
     const t = transaction || await Task.sequelize.transaction();
 
     try {
-        const payload = normalizeTaskPayload(approvalRequest.task_payload);
+        const payload = await normalizeTaskPayload(approvalRequest.task_payload);
         const taskIds = approvalRequest.task_ids || [approvalRequest.task_id];
 
         // 1. Update all tasks to Active and Approved
@@ -1437,19 +1837,31 @@ exports.updateTask = async (req, res) => {
             return res.status(403).json({ message: 'Only the creator or an admin can update this task' });
         }
 
+        const payload = await normalizeTaskPayload(req.body);
         const {
             title, description, category, priority, is_package, venue_id,
             is_pause_allowed, score, penalty_per_hour, is_document, is_mandatory,
             is_approved, approver_id, resource_id, is_faculty, faculty_id,
             status, task_type_data,
             task_title_id // NEW: support for updating master title link
-        } = req.body;
+        } = payload;
 
         // If task_title_id is changing, we might want to update the title too
         let updateTitle = title || task.title;
         if (task_title_id && task_title_id !== task.task_title_id && !title) {
             const masterTitle = await TaskTitle.findByPk(task_title_id);
             if (masterTitle) updateTitle = masterTitle.task_title;
+        }
+
+        let finalFacultyId = faculty_id !== undefined ? faculty_id : task.faculty_id;
+        if (is_faculty && finalFacultyId) {
+            let facultyRecord = await Faculty.findByPk(finalFacultyId);
+            if (!facultyRecord) {
+                facultyRecord = await Faculty.findOne({ where: { user_id: finalFacultyId } });
+            }
+            if (facultyRecord) {
+                finalFacultyId = facultyRecord.id;
+            }
         }
 
         // Update basic task fields
@@ -1469,7 +1881,7 @@ exports.updateTask = async (req, res) => {
             approver_id: approver_id !== undefined ? approver_id : task.approver_id,
             resource_id: resource_id !== undefined ? resource_id : task.resource_id,
             is_faculty: is_faculty !== undefined ? is_faculty : task.is_faculty,
-            faculty_id: faculty_id !== undefined ? faculty_id : task.faculty_id,
+            faculty_id: finalFacultyId,
             status: status || task.status,
             task_title_id: task_title_id !== undefined ? task_title_id : task.task_title_id
         }, { transaction: t });
@@ -2833,7 +3245,8 @@ exports.getDailyTasks = async (req, res) => {
                         ]
                     }
                 }]
-            }]
+            }],
+            order: [['id', 'DESC']]
         });
 
         // 2. Fetch Self-Log Tasks (Created by the user)
@@ -2856,7 +3269,8 @@ exports.getDailyTasks = async (req, res) => {
                         }
                     ]
                 }
-            }]
+            }],
+            order: [['task_id', 'DESC']]
         });
 
         res.json({
@@ -3012,18 +3426,31 @@ exports.getDailyTaskReport = async (req, res) => {
             return false;
         };
 
-        // 1. Fetch tasks CREATED BY the user (including their assignments)
         const createdTasks = await Task.findAll({
             where: { creator_id: userId, is_deleted: false },
             include: [
                 { model: TaskType, required: true },
                 { model: Venue, attributes: ['name', 'location'] },
                 {
+                    model: TaskPackageClosure,
+                    include: [{ model: TaskClosure, attributes: ['name'] }]
+                },
+                {
                     model: TaskAssign,
                     required: false,
-                    include: [{ model: User, attributes: ['user_id', 'role'] }]
+                    include: [{ 
+                        model: User, 
+                        attributes: ['user_id', 'role'],
+                        include: [
+                            { model: Student, attributes: ['name'] },
+                            { model: Faculty, attributes: ['name'] },
+                            { model: Staff, attributes: ['name'] },
+                            { model: RoleUser, attributes: ['name'] }
+                        ]
+                    }]
                 }
-            ]
+            ],
+            order: [['task_id', 'DESC']]
         });
 
         // 2. Fetch Tasks ASSIGNED TO the user (Directive Tasks)
@@ -3036,12 +3463,26 @@ exports.getDailyTaskReport = async (req, res) => {
                     { model: TaskType, required: true },
                     { model: Venue, attributes: ['name', 'location'] },
                     {
+                        model: TaskPackageClosure,
+                        include: [{ model: TaskClosure, attributes: ['name'] }]
+                    },
+                    {
                         model: TaskAssign,
                         required: false,
-                        include: [{ model: User, attributes: ['user_id', 'role'] }]
+                        include: [{ 
+                            model: User, 
+                            attributes: ['user_id', 'role'],
+                            include: [
+                                { model: Student, attributes: ['name'] },
+                                { model: Faculty, attributes: ['name'] },
+                                { model: Staff, attributes: ['name'] },
+                                { model: RoleUser, attributes: ['name'] }
+                            ]
+                        }]
                     }
                 ]
-            }]
+            }],
+            order: [['id', 'DESC']]
         });
 
         // Combine and de-duplicate by task_id
@@ -3060,15 +3501,21 @@ exports.getDailyTaskReport = async (req, res) => {
             const type = task.TaskTypes?.[0] || {};
             let assignees = [];
             if (task.TaskAssigns) {
-                assignees = task.TaskAssigns.map(a => ({
-                    assignment_id: a.id,
-                    user_id: a.user_id,
-                    status: a.status,
-                    details: a.User ? { role: a.User.role } : null
-                }));
+                assignees = task.TaskAssigns.map(a => {
+                    const u = a.User || {};
+                    const profile = u.Student || u.Faculty || u.Staff || u.RoleUser || {};
+                    return {
+                        assignment_id: a.id,
+                        user_id: a.user_id,
+                        status: a.status,
+                        name: profile.name || 'Unknown',
+                        role: u.role
+                    };
+                });
             }
 
             const selfAssignment = task.TaskAssigns?.find(a => a.user_id == userId);
+            const closureMethods = (task.TaskPackageClosures || []).map(c => c.TaskClosure?.name).filter(Boolean);
 
             return {
                 task_id: task.task_id,
@@ -3077,17 +3524,18 @@ exports.getDailyTaskReport = async (req, res) => {
                 category: task.category,
                 priority: task.priority,
                 origin_type: task.origin_type,
-                status: selfAssignment ? selfAssignment.status : 'Active',
+                status: selfAssignment ? selfAssignment.status : (task.status || 'Active'),
                 is_mandatory: task.is_mandatory,
                 is_document: task.is_document,
                 score: task.score,
                 penalty_per_hour: task.penalty_per_hour,
                 creator_id: task.creator_id,
-                assignees: assignees.length > 0 ? assignees : undefined,
+                assignees: assignees,
                 venue: task.Venue ? {
                     name: task.Venue.name,
                     location: task.Venue.location
                 } : null,
+                closure_methods: closureMethods,
                 time: {
                     start_date: type.start_date,
                     end_date: type.end_date,

@@ -1,5 +1,6 @@
-const { Task, TaskAssign, User, Student, Faculty, Staff, RoleUser, RoleAssignment, Role } = require('../models');
+const { Task, TaskAssign, User, Student, Faculty, Staff, RoleUser, RoleAssignment, Role, TaskType } = require('../models');
 const XLSX = require('xlsx');
+const { checkTaskOverlap } = require('../utils/task-utils');
 
 // Helper: Get user's role details (check if Principal, HOD, etc.)
 const getUserRoleDetails = async (userId) => {
@@ -314,6 +315,63 @@ exports.bulkAssignByExcel = async (req, res) => {
             error_count: errors.length,
             errors
         });
+
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+// Self Assign Task
+exports.selfAssignTask = async (req, res) => {
+    try {
+        const { id: taskId } = req.params;
+        const assigneeId = req.userId;
+
+        // Check if task exists
+        const task = await Task.findByPk(taskId, {
+            include: [{ model: TaskType }]
+        });
+        
+        if (!task || task.is_deleted) {
+            return res.status(404).json({ message: 'Task not found' });
+        }
+
+        // Check if already assigned
+        const existing = await TaskAssign.findOne({ where: { task_id: taskId, user_id: assigneeId } });
+        if (existing) {
+            return res.status(400).json({ message: 'You are already assigned to this task' });
+        }
+
+        // Check for task overlap
+        if (task.TaskTypes && task.TaskTypes.length > 0) {
+            const taskType = task.TaskTypes[0];
+            const taskDetails = {
+                start_date: taskType.start_date,
+                end_date: taskType.end_date,
+                start_time: taskType.start_time,
+                end_time: taskType.end_time,
+                task_name: taskType.task_name
+            };
+
+            const overlapCheck = await checkTaskOverlap(assigneeId, taskDetails);
+            if (overlapCheck.hasConflict) {
+                return res.status(412).json({
+                    success: false,
+                    message: "Cannot self-assign task due to a schedule conflict.",
+                    conflictTask: overlapCheck.conflictTask
+                });
+            }
+        }
+
+        // Create assignment and auto-accept
+        await TaskAssign.create({
+            task_id: taskId,
+            user_id: assigneeId,
+            status: 'accepted',
+            accepted_at: new Date()
+        });
+
+        res.json({ message: 'Task self-assigned successfully' });
 
     } catch (error) {
         res.status(500).json({ message: error.message });

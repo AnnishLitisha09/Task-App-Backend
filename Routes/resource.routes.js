@@ -69,11 +69,14 @@ router.put('/venues/:id/incharge', isAdmin, resourceController.assignVenueInchar
 router.get('/venues/:id/extended-details', maintenanceController.getVenueExtendedDetails);
 router.get('/venues/:id/history', maintenanceController.getVenueStatusHistory);
 router.get('/venues/:id/resource-analytics', maintenanceController.getVenueResourceAnalytics);
+router.get('/venues/:venueId/maintenance-logs', maintenanceController.getMaintenanceLogsByVenue); // NEW
 
 // Resources
-router.get('/', resourceController.getAllResources);
-router.post('/', resourceController.addResource);
-router.put('/:id', isAdmin, resourceController.updateResource);
-router.delete('/:id', isAdmin, resourceController.deleteResource);
+router.get('/master', resourceController.getMasterResources); // Master list
+router.get('/venue/:id', resourceController.getResourcesByVenue); // Specific venue resources
+router.post('/', isAdmin, resourceController.addResource); // Add to master (Admin Only)
+router.put('/:id', isAdmin, resourceController.updateResource); // Update master (Admin Only)
+router.delete('/:id', isAdmin, resourceController.deleteResource); // Delete master (Admin Only)
+router.post('/assign', resourceController.assignResourceToVenue); // Allocation logic
 
 module.exports = router;

@@ -37,6 +37,7 @@ router.delete('/:id', verifyToken, taskController.deleteTask);
 
 // Task Assignment
 router.post('/:id/assign/bulk', verifyToken, upload.single('file'), taskAssignment.bulkAssignByExcel);
+router.post('/:id/self-assign', verifyToken, taskAssignment.selfAssignTask);
 
 // Task Acceptance/Rejection
 router.post('/:id/accept', verifyToken, taskAcceptance.acceptTask);
@@ -75,6 +76,7 @@ router.get('/schedule/today', verifyToken, taskController.getTodaysApprovedSched
 
 // Task Detail (Comprehensive)
 router.get('/:id/detail', verifyToken, taskController.getTaskDetail); // NEW: Get all task details
+router.get('/:id/exhaustive', verifyToken, taskController.getExhaustiveTaskDetails); // NEW: Exhaustive details with logs/history
 
 // Task Completion & Proof
 router.post('/:id/submit-proof', verifyToken, taskController.submitTaskProof);

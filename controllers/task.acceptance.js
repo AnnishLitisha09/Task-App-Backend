@@ -47,61 +47,21 @@ exports.acceptTask = async (req, res) => {
         }
 
         // 2. Conflict Detection: Check for overlapping accepted/completed tasks
-        const isLongTask = taskType.task_name === 'Date-Only / Long Task' || taskType.task_name === 'Long Task';
-        const startDate = new Date(taskType.start_date).toISOString().split('T')[0];
-        const endDate = new Date(taskType.end_date || taskType.start_date).toISOString().split('T')[0];
+        const { checkTaskOverlap } = require('../utils/task-utils');
+        const conflict = await checkTaskOverlap(userId, {
+            start_date: taskType.start_date,
+            end_date: taskType.end_date,
+            start_time: taskType.start_time,
+            end_time: taskType.end_time,
+            task_name: taskType.task_name
+        }, taskId);
 
-        // Find existing non-rejected assignments
-        const existingAssignments = await TaskAssign.findAll({
-            where: {
-                user_id: userId,
-                task_id: { [Op.ne]: taskId },
-                status: { [Op.in]: ['accepted', 'completed', 'in_progress'] }
-            },
-            include: [{
-                model: Task,
-                required: true,
-                include: [{
-                    model: TaskType,
-                    required: true
-                }]
-            }]
-        });
-
-        for (const existing of existingAssignments) {
-            const exTask = existing.Task;
-            const exType = exTask.TaskTypes?.[0];
-            if (!exType) continue;
-
-            const exIsLong = exType.task_name === 'Date-Only / Long Task' || exType.task_name === 'Long Task';
-            const exStart = new Date(exType.start_date).toISOString().split('T')[0];
-            const exEnd = new Date(exType.end_date || exType.start_date).toISOString().split('T')[0];
-
-            // Date range overlap check
-            const datesOverlap = (startDate <= exEnd && endDate >= exStart);
-
-            if (datesOverlap) {
-                if (isLongTask || exIsLong) {
-                    // If either is a long task, any date overlap is a conflict
-                    return res.status(412).json({
-                        message: "Time Conflict Detected",
-                        details: `Conflict with '${exTask.title}'. Long tasks occupy the entire day and cannot overlap with other tasks in their range (${exStart} to ${exEnd}).`,
-                        conflict_task_id: exTask.task_id
-                    });
-                } else {
-                    // Both are standard tasks. Check for time overlap on the same date.
-                    // (Actually standard tasks are usually single-day, so exStart === exEnd === startDate === endDate if datesOverlap is true)
-                    if (exStart === startDate && exType.start_time && exType.end_time && taskType.start_time && taskType.end_time) {
-                        if (exType.start_time < taskType.end_time && exType.end_time > taskType.start_time) {
-                            return res.status(412).json({
-                                message: "Time Conflict Detected",
-                                details: `Overlap with '${exTask.title}' on ${startDate} from ${exType.start_time} to ${exType.end_time}.`,
-                                conflict_task_id: exTask.task_id
-                            });
-                        }
-                    }
-                }
-            }
+        if (conflict.hasConflict) {
+            return res.status(412).json({
+                message: "Time Conflict Detected",
+                details: conflict.conflictTask.reason,
+                conflict_task_id: conflict.conflictTask.task_id
+            });
         }
 
         // 3. Update assignment

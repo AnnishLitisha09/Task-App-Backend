@@ -625,19 +625,20 @@ exports.getFacultyDailyStats = async (req, res) => {
 
             if (a.status === 'escalated') {
                 escalatedTasks.push(taskData);
-            } else if (a.status === 'pending') {
+            } else if (a.status === 'pending' || task.status === 'Pending Approval') {
                 // Pending for effective today or future
+                // If the task itself is "Pending Approval", it sits in this bucket regardless of assignment status
                 if (taskStartStr >= effectiveTodayStr) {
                     pendingTasks.push(taskData);
                 }
             } else if (['accepted', 'in_progress', 'completed'].includes(a.status)) {
-                // Schedule check for effective today
-                if (effectiveTodayStr >= taskStartStr && effectiveTodayStr <= taskEndStr) {
+                // Schedule check for effective today - ONLY for Active tasks
+                if (task.status === 'Active' && effectiveTodayStr >= taskStartStr && effectiveTodayStr <= taskEndStr) {
                     allTasksToday.push(taskData);
                 }
 
                 // Proof check (based on ACTUAL today)
-                if (a.status !== 'completed' && task.is_document && (!a.proof || a.proof === '')) {
+                if (task.status === 'Active' && a.status !== 'completed' && task.is_document && (!a.proof || a.proof === '')) {
                     const taskEndTime = isLongTask ? '16:30:00' : taskType.end_time;
                     const localTimeStr = `${String(localNow.getHours()).padStart(2, '0')}:${String(localNow.getMinutes()).padStart(2, '0')}`;
                     if (taskEndStr < todayStr || (taskEndStr === todayStr && localTimeStr > taskEndTime)) {

@@ -447,125 +447,159 @@ exports.deleteVenue = async (req, res) => {
     }
 };
 
-// --- Resource CRUD ---
+// --- Resource CRUD (Master List & Allocation) ---
 
-// Get all resources with Venue info
-exports.getAllResources = async (req, res) => {
+// Get all resources in the Master List (Inventory)
+exports.getMasterResources = async (req, res) => {
     try {
         const resources = await Resource.findAll({
-            where: { deleted_at: null },
-            include: [{
-                model: Venue,
-                attributes: ['venue_id', 'name', 'location']
-            }],
+            where: { venue_id: null, deleted_at: null },
             order: [['resource_id', 'ASC']]
         });
-        res.json({ total: resources.length, resources });
+        res.json({ success: true, total: resources.length, resources });
     } catch (error) {
-        res.status(500).json({ message: error.message });
+        res.status(500).json({ success: false, message: error.message });
     }
 };
 
-// Add Resource with Venue Mapping
+// Get Resources assigned to a specific Venue
+exports.getResourcesByVenue = async (req, res) => {
+    try {
+        const { id } = req.params; // Venue ID
+        const resources = await Resource.findAll({
+            where: { venue_id: id, deleted_at: null },
+            order: [['resource_id', 'ASC']]
+        });
+        res.json({ success: true, count: resources.length, resources });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+// Add Resource to Master List (Admin Only)
 exports.addResource = async (req, res) => {
     try {
-        const { name, description, venue_id, quantity, status } = req.body;
-        const userId = req.userId;
-        const userRole = req.userRole?.toUpperCase();
+        const { name, description, quantity, status } = req.body;
 
         if (!name) {
-            return res.status(400).json({ message: 'Resource name is required' });
-        }
-
-        let targetVenueId = venue_id;
-
-        // --- Role-Based Access and Auto-Assignment ---
-        if (userRole !== 'ADMIN') {
-            // Check if user is an incharge for ANY venue
-            const assignments = await RoleAssignment.findAll({
-                where: { user_id: userId, venue_id: { [Op.ne]: null } }
-            });
-
-            if (assignments.length === 0) {
-                return res.status(403).json({ message: 'You are not authorized to create resources (Venue Incharge only).' });
-            }
-
-            const managedVenueIds = assignments.map(a => a.venue_id);
-
-            if (targetVenueId) {
-                // If they provided a venue_id, check if they manage it
-                if (!managedVenueIds.includes(parseInt(targetVenueId))) {
-                    return res.status(403).json({ message: 'You can only create resources for venues you manage.' });
-                }
-            } else {
-                // Auto-assign if they manage exactly one venue
-                if (managedVenueIds.length === 1) {
-                    targetVenueId = managedVenueIds[0];
-                } else {
-                    return res.status(400).json({ message: 'Please specify a venue_id from the ones you manage.' });
-                }
-            }
-        } else {
-            // Admin can choose any venue_id, but we should validate it if provided
-            if (targetVenueId) {
-                const venue = await Venue.findByPk(targetVenueId);
-                if (!venue) {
-                    return res.status(404).json({ message: 'Venue not found' });
-                }
-            }
+            return res.status(400).json({ success: false, message: 'Resource name is required' });
         }
 
         const resource = await Resource.create({
             name,
             description,
-            venue_id: targetVenueId || null,
-            quantity: quantity || 1,
+            venue_id: null, // Master List
+            quantity: quantity || 0,
             status: status || 'available'
         });
-        res.status(201).json({ message: 'Resource created successfully', resource });
+        res.status(201).json({ success: true, message: 'Resource added to Master List', resource });
     } catch (error) {
-        console.error('Error in addResource:', error);
-        res.status(500).json({ message: error.message });
+        res.status(500).json({ success: false, message: error.message });
     }
 };
 
-// Update Resource with Venue Mapping
+// Update Master Resource (Admin Only)
 exports.updateResource = async (req, res) => {
     try {
         const { id } = req.params;
-        const { name, description, venue_id, quantity } = req.body;
+        const { name, description, quantity, status } = req.body;
 
         const resource = await Resource.findByPk(id);
         if (!resource) {
-            return res.status(404).json({ message: 'Resource not found' });
+            return res.status(404).json({ success: false, message: 'Resource not found' });
         }
 
         await resource.update({
             name: name || resource.name,
             description: description !== undefined ? description : resource.description,
-            venue_id: venue_id !== undefined ? venue_id : resource.venue_id,
-            quantity: quantity !== undefined ? quantity : resource.quantity
+            quantity: quantity !== undefined ? quantity : resource.quantity,
+            status: status || resource.status
         });
 
-        res.json({ message: 'Resource updated successfully', resource });
+        res.json({ success: true, message: 'Resource updated successfully', resource });
     } catch (error) {
-        res.status(500).json({ message: error.message });
+        res.status(500).json({ success: false, message: error.message });
     }
 };
 
-// Delete Resource
+// Delete Resource (Admin Only)
 exports.deleteResource = async (req, res) => {
     try {
         const { id } = req.params;
         const resource = await Resource.findByPk(id);
         if (!resource) {
-            return res.status(404).json({ message: 'Resource not found' });
+            return res.status(404).json({ success: false, message: 'Resource not found' });
         }
 
-        await resource.destroy(); // Paranoid delete
-        res.json({ message: 'Resource deleted successfully' });
+        await resource.destroy(); 
+        res.json({ success: true, message: 'Resource deleted successfully' });
     } catch (error) {
-        res.status(500).json({ message: error.message });
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+// Assign/Allocate Resource from Master to Venue
+exports.assignResourceToVenue = async (req, res) => {
+    const t = await Resource.sequelize.transaction();
+    try {
+        const { master_resource_id, quantity } = req.body;
+        const venue_id = req.query['venue-id'] || req.query.venue_id || req.body.venue_id;
+
+        if (!master_resource_id || !venue_id || !quantity) {
+            await t.rollback();
+            return res.status(400).json({ success: false, message: 'master_resource_id, venue_id, and quantity are required' });
+        }
+
+        // 1. Fetch Master Resource
+        const master = await Resource.findOne({
+            where: { resource_id: master_resource_id, venue_id: null },
+            transaction: t
+        });
+
+        if (!master) {
+            await t.rollback();
+            return res.status(404).json({ success: false, message: 'Master Resource not found' });
+        }
+
+        if (master.quantity < quantity) {
+            await t.rollback();
+            return res.status(400).json({ success: false, message: `Insufficient quantity in Master List. Available: ${master.quantity}` });
+        }
+
+        // 2. Subtract from Master
+        await master.update({ quantity: master.quantity - quantity }, { transaction: t });
+
+        // 3. Create/Update Venue Resource
+        // We look for a resource with the same name in that venue or create a new one
+        let venueResource = await Resource.findOne({
+            where: { venue_id, name: master.name },
+            transaction: t
+        });
+
+        if (venueResource) {
+            await venueResource.update({ quantity: venueResource.quantity + quantity }, { transaction: t });
+        } else {
+            venueResource = await Resource.create({
+                name: master.name,
+                description: master.description,
+                venue_id: venue_id,
+                quantity: quantity,
+                status: 'available'
+            }, { transaction: t });
+        }
+
+        await t.commit();
+        res.json({
+            success: true,
+            message: `Allocated ${quantity} ${master.name}(s) to venue.`,
+            remaining_master: master.quantity,
+            venue_resource: venueResource
+        });
+
+    } catch (error) {
+        await t.rollback();
+        console.error('ALLOCATION ERROR:', error);
+        res.status(500).json({ success: false, message: error.message });
     }
 };
 
