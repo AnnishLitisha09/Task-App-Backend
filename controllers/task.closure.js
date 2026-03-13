@@ -84,4 +84,62 @@ exports.getClosureTypes = async (req, res) => {
     }
 };
 
+// Start Task (For No Closure)
+exports.startTask = async (req, res) => {
+    const t = await Task.sequelize.transaction();
+    try {
+        const { id: taskId } = req.params;
+        const userId = req.userId;
+
+        // Check if task exists
+        const task = await Task.findByPk(taskId);
+        if (!task || task.is_deleted) {
+            await t.rollback();
+            return res.status(404).json({ message: 'Task not found' });
+        }
+
+        // Find assignment
+        const assignment = await TaskAssign.findOne({
+            where: { task_id: taskId, user_id: userId }
+        });
+
+        if (!assignment) {
+            await t.rollback();
+            return res.status(404).json({ message: 'Task assignment not found' });
+        }
+
+        // Transition: must be in 'accepted' (or 'pending' for some roles)
+        if (assignment.status !== 'accepted' && assignment.status !== 'pending') {
+            await t.rollback();
+            return res.status(400).json({ 
+                message: `Task cannot be started from current status: ${assignment.status}`,
+                current_status: assignment.status
+            });
+        }
+
+        // Update status to in_progress
+        await assignment.update({
+            status: 'in_progress'
+        }, { transaction: t });
+
+        await TaskLog.create({
+            task_id: taskId,
+            user_id: userId,
+            action: 'start_task',
+            details: `Task started by user ${userId}. Status moved to in_progress.`
+        }, { transaction: t });
+
+        await t.commit();
+        res.json({ 
+            message: 'Task started successfully',
+            task_id: taskId,
+            status: 'in_progress'
+        });
+
+    } catch (error) {
+        if (t) await t.rollback();
+        res.status(500).json({ message: error.message });
+    }
+};
+
 module.exports = exports;

@@ -40,12 +40,57 @@ const processAllEscalations = async () => {
             const taskStartTime = tt.start_time;
 
             if (taskStartStr < todayStr || (taskStartStr === todayStr && localTimeStr > taskStartTime)) {
+                // STUDENT CHECK: Students are marked as rejected instead of escalated
+                const user = await User.findByPk(a.user_id);
+                if (user && user.role && user.role.toLowerCase() === 'student') {
+                    await a.update({ status: 'rejected', reason: 'Not Accepted by Start Time' });
+                    await TaskLog.create({
+                        task_id: a.task_id,
+                        user_id: a.user_id,
+                        action: 'unaccepted_auto_reject',
+                        details: `Student task auto-rejected: Not accepted by start time.`
+                    });
+                    continue;
+                }
+
                 await escalateAssignment(a, 'Task Not Accepted by Start Time');
+                continue;
+            }
+
+            // --- 6 working hours acceptance rule for non-students ---
+            const user = await User.findByPk(a.user_id);
+            if (user && user.role && user.role.toLowerCase() !== 'student') {
+                const assignedAt = new Date(a.created_at); // Assignment time
+                const istAssignedAt = new Date(assignedAt.getTime() + (assignedAt.getTimezoneOffset() * 60000) + istOffset);
+                
+                const getWorkingMinutes = (start, end) => {
+                    let totalMins = 0;
+                    let current = new Date(start);
+                    while (current < end) {
+                        if (current.getDay() !== 0) {
+                            const currentH = current.getHours();
+                            const currentM = current.getMinutes();
+                            const timeInMins = currentH * 60 + currentM;
+                            const workStartMins = 8 * 60 + 45; // 8:45 AM
+                            const workEndMins = 16 * 60;       // 4:00 PM
+                            if (timeInMins >= workStartMins && timeInMins < workEndMins) totalMins++;
+                        }
+                        current.setMinutes(current.getMinutes() + 1);
+                    }
+                    return totalMins;
+                };
+
+                const elapsedWorkingMins = getWorkingMinutes(istAssignedAt, localNow);
+                const SIX_HOURS_IN_MINS = 6 * 60;
+                
+                if (elapsedWorkingMins >= SIX_HOURS_IN_MINS) {
+                    await escalateAssignment(a, 'Task Not Accepted within 6 Working Hours (8:45 AM - 4:00 PM)');
+                }
             }
         }
 
-        // Trigger 2: OVERDUE tasks (status 'accepted'/'in_progress', end_time + 1 hour passed)
-        const overdue = await TaskAssign.findAll({
+        // Trigger 2: OVERDUE tasks
+        const ongoing = await TaskAssign.findAll({
             where: { status: { [Op.in]: ['accepted', 'in_progress'] } },
             include: [{
                 model: Task,
@@ -54,22 +99,70 @@ const processAllEscalations = async () => {
             }]
         });
 
-        for (const a of overdue) {
+        for (const a of ongoing) {
             const tt = a.Task?.TaskTypes?.[0];
             if (!tt) continue;
 
             const isLongTask = tt.task_name === 'Date-Only / Long Task' || tt.task_name === 'Long Task';
             const taskEndStr = new Date(tt.end_date || tt.start_date).toISOString().split('T')[0];
             const taskEndTime = isLongTask ? '16:30:00' : tt.end_time;
-
             if (!taskEndTime) continue;
 
-            const [h, m] = taskEndTime.split(':').map(Number);
-            const endMinutes = h * 60 + m + 60; // +1 hour delay buffer
-            const currentMinutes = localNow.getHours() * 60 + localNow.getMinutes();
+            // Student Check: No escalation at 1 hour for students
+            const user = await User.findByPk(a.user_id);
+            const isStudent = user && user.role && user.role.toLowerCase() === 'student';
 
-            if (taskEndStr < todayStr || (taskEndStr === todayStr && currentMinutes > endMinutes)) {
-                await escalateAssignment(a, 'Task Overdue (1 Hour Buffer Passed)');
+            // Standard Escalation Check (Non-Students)
+            if (!isStudent) {
+                const [h, m] = taskEndTime.split(':').map(Number);
+                const endMinutes = h * 60 + m + 60; // +1 hour buffer
+                const currentMinutes = localNow.getHours() * 60 + localNow.getMinutes();
+
+                if (taskEndStr < todayStr || (taskEndStr === todayStr && currentMinutes > endMinutes)) {
+                    await escalateAssignment(a, 'Task Overdue (1 Hour Buffer Passed)');
+                    continue; // Skip 24hr check if already escalated
+                }
+            }
+
+            // NEW: 24-Hour No Proof Logic for Students
+            if (isStudent) {
+                const endDateTime = new Date(`${taskEndStr}T${taskEndTime}`);
+                const diffMs = localNow - endDateTime;
+                const diffHours = diffMs / (1000 * 60 * 60);
+
+                if (diffHours >= 24) {
+                    await a.update({ status: 'not_completed', reason: 'No proof submitted within 24 hours' });
+                    await TaskLog.create({
+                        task_id: a.task_id,
+                        user_id: a.user_id,
+                        action: 'auto_not_completed',
+                        details: `Student task marked not_completed: No submission within 24 hours of end time.`
+                    });
+                }
+            }
+        }
+
+        // Trigger 3: Priority Override Timeout
+        const { ESCALATION_WINDOW_END } = require('../config/constants');
+        const [escH, escM] = ESCALATION_WINDOW_END.split(':').map(Number);
+        
+        if (localNow.getHours() > escH || (localNow.getHours() === escH && localNow.getMinutes() >= escM)) {
+            const pendingOverrides = await TaskEscalation.findAll({
+                where: {
+                    reason: { [Op.like]: '%Priority Override Requested%' },
+                    status: 'pending',
+                    created_at: { [Op.lt]: new Date(todayStr + ' 00:00:00') }
+                }
+            });
+
+            for (const esc of pendingOverrides) {
+                await esc.update({ status: 'escalated', msg: esc.msg + ' [AUTO-ESCALATED after morning deadline]' });
+                await Notification.create({
+                    user_id: 1, // Admin
+                    title: 'Priority Override Escalation',
+                    msg: `URGENT: Override request for Task ${esc.task_id} timeout. Decision required.`,
+                    type: 'task_escalation'
+                });
             }
         }
 

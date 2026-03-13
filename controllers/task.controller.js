@@ -1,7 +1,8 @@
 const { Task, TaskAssign, TaskType, TaskPackageClosure, TaskClosure, User, Student, Faculty, Staff, RoleUser, RoleAssignment, Role, Department, TaskEscalation, AuthAccount, Notification, TaskLog, TaskTitle, Venue, TaskApprovalRequest } = require('../models');
 const XLSX = require('xlsx');
 const { canAssignTo } = require('./task.assignment');
-const { checkTaskOverlap } = require('../utils/task-utils');
+const { checkTaskOverlap, isWithinWorkHours } = require('../utils/task-utils');
+const { MAX_DAILY_TASKS, PRIORITY_WEIGHTS } = require('../config/constants');
 
 
 // Helper: Pagination
@@ -25,8 +26,18 @@ const canCreateTask = (userRole) => {
 };
 
 // Helper: Validate task type specific fields
-const validateTaskType = (taskTypeData) => {
+const validateTaskType = (taskTypeData, priority = 'low') => {
     const { task_name, start_date, end_date, start_time, end_time, recurrence, time_quota_hours, venue_id } = taskTypeData;
+
+    // Check Business Hours (Rule 6)
+    if (['Fixed Time Task', 'Floating Task', 'Recurring Task', 'Meeting'].includes(task_name)) {
+        if (start_time && end_time) {
+            const check = isWithinWorkHours(start_time, end_time, priority);
+            if (!check.isWithin) {
+                throw new Error(check.reason);
+            }
+        }
+    }
 
     switch (task_name) {
         case 'Fixed Time Task':
@@ -185,7 +196,7 @@ exports.createTask = async (req, res) => {
         }
 
         // Validate task type specific fields
-        validateTaskType(task_type_data);
+        validateTaskType(task_type_data, priority);
 
         // Check if task date is Sunday (for single tasks created via this endpoint)
         if (task_type_data.start_date) {
@@ -247,6 +258,9 @@ exports.createTask = async (req, res) => {
 
     } catch (error) {
         await t.rollback();
+        if (error.message.includes('work hours')) {
+            return res.status(400).json({ message: error.message });
+        }
         res.status(500).json({ message: error.message });
     }
 };
@@ -761,6 +775,50 @@ exports.submitTaskProof = async (req, res) => {
             status: 'completed'
         });
 
+        // Rule 8 & 11: Automatic Resume & Notifications
+        (async () => {
+            try {
+                // 1. Notify Creator
+                await Notification.create({
+                    user_id: task.creator_id,
+                    title: 'Task Completed',
+                    msg: `User ${userId} completed "${task.title}".`,
+                    type: 'task_completed'
+                });
+
+                // 2. Resume Paused Long Tasks for this user
+                const pausedTasks = await TaskAssign.findAll({
+                    where: { user_id: userId },
+                    include: [{
+                        model: Task,
+                        where: { status: 'PAUSED', is_paused: true, is_deleted: false }
+                    }]
+                });
+
+                for (const pausedAssign of pausedTasks) {
+                    const pTask = pausedAssign.Task;
+                    // Simply resume the first paused task found for the user
+                    // (Or we could be more specific by checking overlap dates, but usually users have one background long task)
+                    await pTask.update({ status: 'Active', is_paused: false });
+                    await TaskLog.create({
+                        task_id: pTask.task_id,
+                        user_id: userId,
+                        action: 'resume',
+                        details: `Automatically resumed after completion of "${task.title}" at ${new Date().toISOString()}`
+                    });
+
+                    await Notification.create({
+                        user_id: userId,
+                        title: 'Task Resumed',
+                        msg: `Background task "${pTask.title}" has been automatically resumed.`,
+                        type: 'task_resumed'
+                    });
+                }
+            } catch (notifyErr) {
+                console.error('Post-completion background logic error:', notifyErr);
+            }
+        })();
+
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -1078,7 +1136,7 @@ exports.createUnifiedTask = async (req, res) => {
             return res.status(400).json({ message: 'Approver ID is required when task needs approval' });
         }
 
-        validateTaskType(task_type_data);
+        validateTaskType(task_type_data, priority);
 
         // --- PRE-CALCULATE ASSIGNEES ---
         let finalAssigneeIds = [...assignee_ids];
@@ -1206,10 +1264,11 @@ exports.createUnifiedTask = async (req, res) => {
                 if (occurrenceDates.length >= 365) break;
             }
         } else {
-            // For single tasks (Long Task, Fixed Time, etc.), always add the start date
-            // Don't skip Sunday here, as a Long Task might span across Sundays or start on one.
             occurrenceDates.push(start);
         }
+
+        // Rule 10: Preliminary Recurring Conflict Check (Optional/Proposed)
+        // We'll handle this during the per-assignee assignment loop below for better precision.
 
         // --- BATCH CREATION ---
         const createdTaskIds = [];
@@ -1258,6 +1317,12 @@ exports.createUnifiedTask = async (req, res) => {
             if (!requires_approval && finalAssigneeIds.length > 0) {
                 const assignments = [];
                 for (const assigneeId of finalAssigneeIds) {
+                    // Skip if user was not found during batch fetch (e.g. non-existent or deleted)
+                    if (!roleMap[assigneeId]) {
+                        console.warn(`[createUnifiedTask] Skipping invalid/deleted assignee ID: ${assigneeId}`);
+                        continue;
+                    }
+
                     const allowed = await canAssignTo(userId, assigneeId);
                     const assigneeRole = roleMap[assigneeId];
                     const isStaff = assigneeRole === 'staff';
@@ -1272,35 +1337,75 @@ exports.createUnifiedTask = async (req, res) => {
 
                         // If it's mandatory, check for overlap before auto-accepting
                         if (autoAccept) {
-                            const overlap = await checkTaskOverlap(assigneeId, {
-                                start_date: oDate,
-                                end_date: (task_type_data.task_name === 'Recurring Task') ? oDate : (task_type_data.end_date || oDate),
-                                start_time: task_type_data.start_time,
-                                end_time: task_type_data.end_time,
-                                task_name: task_type_data.task_name
-                            }, parentTask.task_id);
+                            // 1. Daily Task Limit Check
+                            const dailyCount = await TaskAssign.count({
+                                where: { user_id: assigneeId, status: { [Op.in]: ['accepted', 'in_progress'] } },
+                                include: [{
+                                    model: Task,
+                                    required: true,
+                                    include: [{ model: TaskType, where: { start_date: oDate } }]
+                                }]
+                            });
 
-                            if (overlap.hasConflict) {
+                            if (dailyCount >= MAX_DAILY_TASKS) {
                                 finalStatus = 'pending';
                                 finalAcceptedAt = null;
-
-                                // Escalate to Creator
                                 await TaskEscalation.create({
                                     task_id: parentTask.task_id,
-                                    reason: `Conflict: Mandatory Task Blocked`,
-                                    msg: `Mandatory task "${title}" could not be auto-accepted for User ${assigneeId} due to overlap with "${overlap.conflictTask.title}".`,
+                                    reason: 'Daily Task Limit Reached',
+                                    msg: `User ${assigneeId} already has ${MAX_DAILY_TASKS} tasks for ${oDate}. Auto-acceptance failed.`,
                                     creator_id: userId,
                                     rejected_user_id: assigneeId,
-                                    status: 'pending',
-                                    is_read: false
+                                    status: 'pending'
                                 }, { transaction: t });
+                            } else {
+                                const overlap = await checkTaskOverlap(assigneeId, {
+                                    start_date: oDate,
+                                    end_date: (task_type_data.task_name === 'Recurring Task') ? oDate : (task_type_data.end_date || oDate),
+                                    start_time: task_type_data.start_time,
+                                    end_time: task_type_data.end_time,
+                                    task_name: task_type_data.task_name,
+                                    priority: priority
+                                }, parentTask.task_id);
 
-                                await Notification.create({
-                                    user_id: userId,
-                                    title: 'Mandatory Task Conflict',
-                                    msg: `User ${assigneeId} has a conflict for mandatory task "${title}". Auto-acceptance failed.`,
-                                    type: 'task_escalation'
-                                }, { transaction: t });
+                                if (overlap.hasConflict) {
+                                    finalStatus = 'pending';
+                                    finalAcceptedAt = null;
+
+                                    if (overlap.type === 'priority_override') {
+                                        // Higher priority task can request override
+                                        await TaskEscalation.create({
+                                            task_id: parentTask.task_id,
+                                            reason: `Priority Override Requested`,
+                                            msg: `Task "${title}" (${priority}) requests to override "${overlap.conflictTask.title}" (${overlap.conflictTask.priority}) for User ${assigneeId}.`,
+                                            creator_id: userId,
+                                            rejected_user_id: assigneeId,
+                                            status: 'pending'
+                                        }, { transaction: t });
+
+                                        await Notification.create({
+                                            user_id: userId,
+                                            title: 'Priority Override Potential',
+                                            msg: `Your task "${title}" can override "${overlap.conflictTask.title}" for User ${assigneeId}. Approval required.`,
+                                            type: 'priority_override_request'
+                                        }, { transaction: t });
+                                    } else {
+                                        // Rule 10: Shift/Skip for Recurring Tasks
+                                        if (task_type_data.task_name === 'Recurring Task') {
+                                            console.log(`Skipping recurring instance for user ${assigneeId} due to conflict.`);
+                                            continue; // Skip assignment for this user on this date
+                                        }
+
+                                        await TaskEscalation.create({
+                                            task_id: parentTask.task_id,
+                                            reason: overlap.type === 'work_hours' ? 'Work Hours Violation' : 'Conflict: Mandatory Task Blocked',
+                                            msg: overlap.reason || `Conflict for User ${assigneeId} with "${overlap.conflictTask?.title}".`,
+                                            creator_id: userId,
+                                            rejected_user_id: assigneeId,
+                                            status: 'pending'
+                                        }, { transaction: t });
+                                    }
+                                }
                             }
                         }
 
@@ -1373,6 +1478,11 @@ exports.createUnifiedTask = async (req, res) => {
                     if (!requires_approval && subAssigneeIds.length > 0) {
                         const childAssignments = [];
                         for (const sid of subAssigneeIds) {
+                            // Skip if user was not found during batch fetch
+                            if (!roleMap[sid]) {
+                                console.warn(`[createUnifiedTask] Skipping invalid sub-assignee ID: ${sid}`);
+                                continue;
+                            }
                             const allowedChild = await canAssignTo(userId, sid);
                             if (!allowedChild) {
                                 console.warn(`Assignment to user ${sid} for sub-task ${sub.title} skipped due to permissions.`);
@@ -1386,34 +1496,61 @@ exports.createUnifiedTask = async (req, res) => {
                             let finalChildAcceptedAt = childAutoAccept ? new Date() : null;
 
                             if (childAutoAccept) {
-                                const overlapChild = await checkTaskOverlap(sid, {
-                                    start_date: sub.start_date || oDate,
-                                    end_date: sub.end_date || oDate,
-                                    start_time: sub.start_time || task_type_data.start_time,
-                                    end_time: sub.end_time || task_type_data.end_time,
-                                    task_name: sub.task_name || 'Fixed Time Task'
-                                }, childTask.task_id);
+                                // 1. Daily Task Limit Check
+                                const childDailyCount = await TaskAssign.count({
+                                    where: { user_id: sid, status: { [Op.in]: ['accepted', 'in_progress'] } },
+                                    include: [{
+                                        model: Task,
+                                        required: true,
+                                        include: [{ model: TaskType, where: { start_date: sub.start_date || oDate } }]
+                                    }]
+                                });
 
-                                if (overlapChild.hasConflict) {
+                                if (childDailyCount >= MAX_DAILY_TASKS) {
                                     finalChildStatus = 'pending';
                                     finalChildAcceptedAt = null;
-
                                     await TaskEscalation.create({
                                         task_id: childTask.task_id,
-                                        reason: `Conflict: Mandatory Sub-task Blocked`,
-                                        msg: `Mandatory sub-task "${childTask.title}" could not be auto-accepted for User ${sid} due to overlap with "${overlapChild.conflictTask.title}".`,
+                                        reason: 'Daily Task Limit Reached',
+                                        msg: `User ${sid} already has ${MAX_DAILY_TASKS} tasks for ${oDate}. Auto-acceptance failed for sub-task.`,
                                         creator_id: userId,
                                         rejected_user_id: sid,
-                                        status: 'pending',
-                                        is_read: false
+                                        status: 'pending'
                                     }, { transaction: t });
+                                } else {
+                                    const overlapChild = await checkTaskOverlap(sid, {
+                                        start_date: sub.start_date || oDate,
+                                        end_date: sub.end_date || oDate,
+                                        start_time: sub.start_time || task_type_data.start_time,
+                                        end_time: sub.end_time || task_type_data.end_time,
+                                        task_name: sub.task_name || 'Fixed Time Task',
+                                        priority: priority
+                                    }, childTask.task_id);
 
-                                    await Notification.create({
-                                        user_id: userId,
-                                        title: 'Mandatory Sub-task Conflict',
-                                        msg: `User ${sid} has a conflict for mandatory sub-task "${childTask.title}". Auto-acceptance failed.`,
-                                        type: 'task_escalation'
-                                    }, { transaction: t });
+                                    if (overlapChild.hasConflict) {
+                                        finalChildStatus = 'pending';
+                                        finalChildAcceptedAt = null;
+
+                                        if (overlapChild.type === 'priority_override') {
+                                            await TaskEscalation.create({
+                                                task_id: childTask.task_id,
+                                                reason: `Priority Override Requested (Sub-task)`,
+                                                msg: `Sub-task "${childTask.title}" (${priority}) requests to override "${overlapChild.conflictTask.title}" for User ${sid}.`,
+                                                creator_id: userId,
+                                                rejected_user_id: sid,
+                                                status: 'pending'
+                                            }, { transaction: t });
+                                        } else {
+                                            await TaskEscalation.create({
+                                                task_id: childTask.task_id,
+                                                reason: overlapChild.type === 'work_hours' ? 'Work Hours Violation' : 'Conflict: Mandatory Sub-task Blocked',
+                                                msg: overlapChild.reason || `Sub-task Conflict for User ${sid} with "${overlapChild.conflictTask?.title}".`,
+                                                creator_id: userId,
+                                                rejected_user_id: sid,
+                                                status: 'pending'
+                                            }, { transaction: t });
+                                        }
+                                    }
                                 }
                             }
 
@@ -1590,7 +1727,7 @@ exports.createUnifiedTask = async (req, res) => {
         console.error('Error in createUnifiedTask:', error);
 
         // Return 400 for validation errors or explicit check failures
-        if (error.message.includes('requires') || error.message.includes('fields') || error.message.includes('deadline')) {
+        if (error.message.includes('requires') || error.message.includes('fields') || error.message.includes('deadline') || error.message.includes('work hours')) {
             return res.status(400).json({ message: error.message });
         }
 
@@ -2343,6 +2480,130 @@ exports.getTasksAssignedToday = async (req, res) => {
             tasks: formatted
         });
     } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+// 2b. Get Tasks Scheduled for Today by User ID (Improved)
+exports.getTasksAssignedTodayByUserId = async (req, res) => {
+    try {
+        const { userId } = req.params;
+        const { Op } = require('sequelize');
+        
+        const now = new Date();
+        const todayStr = new Date(now.getTime() + (5.5 * 60 * 60 * 1000)).toISOString().split('T')[0];
+
+        const assignments = await TaskAssign.findAll({
+            where: { user_id: userId },
+            include: [{
+                model: Task,
+                where: { is_deleted: false },
+                include: [{
+                    model: TaskType,
+                    where: {
+                        [Op.and]: [
+                            { start_date: { [Op.lte]: `${todayStr} 23:59:59` } },
+                            {
+                                [Op.or]: [
+                                    { end_date: { [Op.gte]: `${todayStr} 00:00:00` } },
+                                    { end_date: null }
+                                ]
+                            }
+                        ]
+                    }
+                }]
+            }]
+        });
+
+        // Helper for robust IST date string
+        const toISTDateStr = (d) => {
+            if (!d) return null;
+            return new Date(new Date(d).getTime() + (5.5 * 60 * 60 * 1000)).toISOString().split('T')[0];
+        };
+
+        const isOccurrence = (targetDateStr, tStart, tEnd, recurrence) => {
+            const startStr = toISTDateStr(tStart);
+            const endStr = toISTDateStr(tEnd);
+
+            if (targetDateStr < startStr) return false;
+            if (endStr && targetDateStr > endStr) return false;
+
+            if (recurrence === 'none' || !recurrence) return targetDateStr === startStr;
+            if (recurrence === 'daily') return true;
+
+            const targetDate = new Date(`${targetDateStr}T00:00:00`);
+            const startDate = new Date(`${startStr}T00:00:00`);
+
+            if (recurrence === 'weekly') return targetDate.getDay() === startDate.getDay();
+            if (recurrence === 'monthly') return targetDate.getDate() === startDate.getDate();
+            return false;
+        };
+
+        const todayTasks = [];
+        assignments.forEach(a => {
+            const task = a.Task;
+            const taskType = task.TaskTypes[0];
+            if (isOccurrence(todayStr, taskType.start_date, taskType.end_date, taskType.recurrence)) {
+                todayTasks.push({
+                    assignment_id: a.id,
+                    task_id: task.task_id,
+                    title: task.title,
+                    status: a.status,
+                    priority: task.priority,
+                    category: task.category,
+                    timing: {
+                        start_time: taskType.start_time,
+                        end_time: taskType.end_time
+                    }
+                });
+            }
+        });
+
+        res.json({
+            user_id: userId,
+            date: todayStr,
+            count: todayTasks.length,
+            tasks: todayTasks
+        });
+    } catch (error) {
+        console.error('Error in getTasksAssignedTodayByUserId:', error);
+        res.status(500).json({ message: error.message });
+    }
+};
+
+// Delete Task Assignment (Soft Delete)
+exports.deleteAssignment = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const userId = req.userId;
+        const userRole = req.userRole;
+
+        const assignment = await TaskAssign.findByPk(id, {
+            include: [{ model: Task }]
+        });
+
+        if (!assignment) {
+            return res.status(404).json({ message: 'Assignment not found' });
+        }
+
+        // Only admin or creator of the task can delete the assignment
+        if (userRole !== 'admin' && assignment.Task.creator_id !== userId) {
+            return res.status(403).json({ message: 'Only an admin or the task creator can delete this assignment' });
+        }
+
+        await assignment.destroy(); // Soft delete due to paranoid: true in model
+        
+        await TaskLog.create({
+            task_id: assignment.task_id,
+            user_id: userId,
+            action: 'delete_assignment',
+            details: `Assignment ID ${id} (User ID ${assignment.user_id}) deleted by ${userRole}`
+        });
+
+        res.json({ message: 'Task assignment deleted successfully' });
+
+    } catch (error) {
+        console.error('Error in deleteAssignment:', error);
         res.status(500).json({ message: error.message });
     }
 };
@@ -3206,8 +3467,29 @@ exports.getDailyTasks = async (req, res) => {
         const istOffset = 5.5 * 60 * 60 * 1000;
         const localNow = new Date(now.getTime() + (now.getTimezoneOffset() * 60000) + istOffset);
 
-        // If it's after 4:30 PM (16:30) today, and no specific date requested, show tomorrow
-        if (!date && localNow.getHours() >= 16 && (localNow.getHours() > 16 || localNow.getMinutes() >= 30)) {
+        // Fetch user role to determine the visibility shift time
+        const { User } = require('../models');
+        const user = await User.findByPk(userId);
+        const isStudent = user && user.role && user.role.toLowerCase() === 'student';
+
+        // Visibility Shift Rules:
+        // Students: Shift to tomorrow at 7:00 PM (19:00)
+        // Others: Shift to tomorrow at 4:30 PM (16:30)
+        let shouldShiftToTomorrow = false;
+
+        if (!date) {
+            if (isStudent) {
+                if (localNow.getHours() >= 19) {
+                    shouldShiftToTomorrow = true;
+                }
+            } else {
+                if (localNow.getHours() >= 16 && (localNow.getHours() > 16 || localNow.getMinutes() >= 30)) {
+                    shouldShiftToTomorrow = true;
+                }
+            }
+        }
+
+        if (shouldShiftToTomorrow) {
             targetDate.setDate(targetDate.getDate() + 1);
 
             // If tomorrow is Sunday, skip to Monday
@@ -3792,6 +4074,58 @@ exports.getTaskAnalysis = async (req, res) => {
 
     } catch (error) {
         console.error("TASK ANALYSIS ERROR:", error);
+        res.status(500).json({ message: error.message });
+    }
+};
+
+// 12. Notify Pending Assignees (Students)
+exports.notifyPendingAssignees = async (req, res) => {
+    try {
+        const { id: taskId } = req.params;
+        const userId = req.userId; // user requesting to notify (creator or admin)
+
+        const task = await Task.findByPk(taskId, {
+            include: [{
+                model: TaskAssign,
+                where: { status: 'pending' },
+                required: false,
+                include: [{ model: User, attributes: ['user_id', 'role'] }]
+            }]
+        });
+
+        if (!task || task.is_deleted) {
+            return res.status(404).json({ message: 'Task not found' });
+        }
+
+        // Authorization: only creator or admin can trigger this
+        const reqUser = await User.findByPk(userId);
+        if (task.creator_id !== userId && reqUser.role.toLowerCase() !== 'admin' && task.faculty_id !== userId) {
+            return res.status(403).json({ message: 'You are not authorized to notify assignees for this task' });
+        }
+
+        const pendingAssignments = task.TaskAssigns || [];
+        let notifiedCount = 0;
+
+        for (const assign of pendingAssignments) {
+            if (assign.User && assign.User.role && assign.User.role.toLowerCase() === 'student') {
+                // Send notification
+                await Notification.create({
+                    user_id: assign.user_id,
+                    title: 'Action Required: Accept Task',
+                    msg: `You have a pending task "${task.title}". Please accept or reject it.`,
+                    type: 'task_reminder'
+                });
+                notifiedCount++;
+            }
+        }
+
+        res.json({
+            message: `Successfully notified ${notifiedCount} pending student assignee(s).`,
+            notified_count: notifiedCount
+        });
+
+    } catch (error) {
+        console.error('Error in notifyPendingAssignees:', error);
         res.status(500).json({ message: error.message });
     }
 };

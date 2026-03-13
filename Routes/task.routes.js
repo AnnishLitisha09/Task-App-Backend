@@ -34,10 +34,14 @@ router.get('/calendar/venue', verifyToken, calendarController.getVenueCalendar);
 router.post('/unified-create', verifyToken, upload.single('file'), taskController.createUnifiedTask);
 router.put('/:id', verifyToken, taskController.updateTask);
 router.delete('/:id', verifyToken, taskController.deleteTask);
+router.delete('/assignment/:id', verifyToken, taskController.deleteAssignment);
+
 
 // Task Assignment
 router.post('/:id/assign/bulk', verifyToken, upload.single('file'), taskAssignment.bulkAssignByExcel);
+router.put('/assignments/:id/status', verifyToken, taskAssignment.adminUpdateStatus);
 router.post('/:id/self-assign', verifyToken, taskAssignment.selfAssignTask);
+router.post('/:id/notify-pending', verifyToken, taskController.notifyPendingAssignees);
 
 // Task Acceptance/Rejection
 router.post('/:id/accept', verifyToken, taskAcceptance.acceptTask);
@@ -67,6 +71,8 @@ router.get('/assigned-to/:userId', verifyToken, taskController.getTasksAssignedT
 router.get('/pending-upcoming', verifyToken, taskController.getPendingUpcomingTasks);
 router.get('/pending-proof', verifyToken, taskController.getPendingProofTasks); // NEW: Pending Proof
 router.get('/assigned-today', verifyToken, taskController.getTasksAssignedToday); // NEW: Assigned Today
+router.get('/assigned-today/:userId', verifyToken, taskController.getTasksAssignedTodayByUserId); // NEW: Assigned Today for user
+
 router.get('/approved-upcoming', verifyToken, taskController.getApprovedUpcomingTasks); // NEW: Approved Upcoming
 router.get('/unapproved-tasks', verifyToken, taskController.getUnapprovedTasks); // NEW: Unapproved (Pending + Past/Current Start)
 router.get('/daily', verifyToken, taskController.getDailyTasks); // NEW: Grouped Daily Tasks
@@ -87,6 +93,7 @@ router.get('/otp/creator/assignments', verifyToken, taskOTPController.getCreator
 
 // Task Closure
 router.get('/closure-types', verifyToken, taskClosure.getClosureTypes);
+router.post('/:id/start', verifyToken, taskClosure.startTask);
 router.post('/:id/close', verifyToken, taskClosure.closeTask);
 
 // Escalation Support

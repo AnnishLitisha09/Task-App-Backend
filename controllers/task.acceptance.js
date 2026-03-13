@@ -29,6 +29,51 @@ exports.acceptTask = async (req, res) => {
             return res.status(400).json({ message: 'Task schedule details not found' });
         }
 
+        // --- NEW: 7:00 PM Visibility Rule for Students ---
+        // Verify user role
+        const user = await User.findByPk(userId);
+        if (user && user.role && user.role.toLowerCase() === 'student') {
+            if (taskType.start_date) {
+                const now = new Date();
+                const istOffset = 5.5 * 60 * 60 * 1000;
+                const localNow = new Date(now.getTime() + (now.getTimezoneOffset() * 60000) + istOffset);
+                
+                // Get local date string YYYY-MM-DD
+                const year = localNow.getFullYear();
+                const month = String(localNow.getMonth() + 1).padStart(2, '0');
+                const day = String(localNow.getDate()).padStart(2, '0');
+                const localDateStr = `${year}-${month}-${day}`;
+
+                const taskDateStr = new Date(taskType.start_date).toISOString().split('T')[0];
+
+                if (taskDateStr > localDateStr) {
+                    // Task is for a future date. Check if it's tomorrow AND if it's past 7 PM today
+                    const localTomorrow = new Date(localNow);
+                    localTomorrow.setDate(localTomorrow.getDate() + 1);
+                    const tYear = localTomorrow.getFullYear();
+                    const tMonth = String(localTomorrow.getMonth() + 1).padStart(2, '0');
+                    const tDay = String(localTomorrow.getDate()).padStart(2, '0');
+                    const localTomorrowStr = `${tYear}-${tMonth}-${tDay}`;
+
+                    if (taskDateStr === localTomorrowStr) {
+                        if (localNow.getHours() < 19) {
+                            return res.status(403).json({
+                                message: 'Task Not Yet Available',
+                                details: 'Students can only accept tomorrow\'s tasks after 7:00 PM today.'
+                            });
+                        }
+                    } else {
+                        // Task is for a date even further in the future
+                         return res.status(403).json({
+                            message: 'Task Not Yet Available',
+                            details: 'Students cannot accept tasks scheduled for future dates early.'
+                        });
+                    }
+                }
+            }
+        }
+        // --- END NEW RULE ---
+
         // 1b. Check Bidding Task Limits
         if (taskType.task_name === 'Bidding / Nomination Task' && taskType.max_acceptances) {
             const acceptedCount = await TaskAssign.count({
@@ -46,22 +91,67 @@ exports.acceptTask = async (req, res) => {
             }
         }
 
-        // 2. Conflict Detection: Check for overlapping accepted/completed tasks
+        // 1c. Maximum Daily Task Limit (Rule 12.2)
+        const { MAX_DAILY_TASKS } = require('../config/constants');
+        const dailyCount = await TaskAssign.count({
+            where: { user_id: userId, status: { [Op.in]: ['accepted', 'in_progress'] } },
+            include: [{
+                model: Task,
+                required: true,
+                include: [{ model: TaskType, where: { start_date: taskType.start_date } }]
+            }]
+        });
+
+        if (dailyCount >= MAX_DAILY_TASKS) {
+            return res.status(403).json({
+                message: 'Daily task limit reached',
+                details: `You already have ${MAX_DAILY_TASKS} active tasks for ${taskType.start_date.toISOString().split('T')[0]}.`
+            });
+        }
+
+        // 2. Conflict Detection: Check for overlapping tasks
         const { checkTaskOverlap } = require('../utils/task-utils');
         const conflict = await checkTaskOverlap(userId, {
             start_date: taskType.start_date,
             end_date: taskType.end_date,
             start_time: taskType.start_time,
             end_time: taskType.end_time,
-            task_name: taskType.task_name
+            task_name: taskType.task_name,
+            priority: assignment.Task?.priority || 'low'
         }, taskId);
 
         if (conflict.hasConflict) {
-            return res.status(412).json({
-                message: "Time Conflict Detected",
-                details: conflict.conflictTask.reason,
-                conflict_task_id: conflict.conflictTask.task_id
-            });
+            if (conflict.type === 'priority_override') {
+                if (conflict.can_pause) {
+                    // Rule 7: Auto-pause Long Task
+                    const { Task: ConflictTask } = require('../models');
+                    const cTask = await ConflictTask.findByPk(conflict.conflictTask.task_id);
+                    if (cTask) {
+                        await cTask.update({ is_paused: true, status: 'PAUSED' });
+                        await TaskLog.create({
+                            task_id: cTask.task_id,
+                            user_id: userId,
+                            action: 'pause',
+                            details: `Auto-paused due to overlapping higher priority task "${assignment.Task.title}"`
+                        });
+                        // Continue to accept the new task
+                    }
+                } else {
+                    // Rule 3: Manual override required for standard tasks
+                    return res.status(409).json({
+                        message: "Priority Override Required",
+                        details: `Task "${assignment.Task.title}" has higher priority than conflicting task "${conflict.conflictTask.title}", but replacement requires creator approval.`,
+                        conflict_task_id: conflict.conflictTask.task_id,
+                        type: 'priority_override_request'
+                    });
+                }
+            } else {
+                return res.status(412).json({
+                    message: "Time Conflict Detected",
+                    details: conflict.reason || "This task overlaps with an existing schedule.",
+                    conflict_task_id: conflict.conflictTask?.task_id
+                });
+            }
         }
 
         // 3. Update assignment
@@ -380,7 +470,27 @@ exports.transferTask = async (req, res) => {
         }
 
         const task = assignment.Task;
+        const taskType = task.TaskTypes?.[0];
         const previousStatus = assignment.status;
+
+        // Rule 4: Task Lock Window (30 mins)
+        if (taskType && taskType.start_time) {
+            const now = new Date();
+            const startDateTime = new Date(taskType.start_date);
+            const [h, m] = taskType.start_time.split(':');
+            startDateTime.setHours(h, m, 0, 0);
+
+            const diffMs = startDateTime - now;
+            const diffMin = diffMs / (1000 * 60);
+
+            if (diffMin <= 30 && diffMin > -60) { // Lock window: 30 mins before start until 60 mins after (or logic)
+                await t.rollback();
+                return res.status(403).json({ 
+                    message: 'Task is locked', 
+                    details: 'Tasks cannot be transferred or reassigned within 30 minutes of the start time.' 
+                });
+            }
+        }
 
         // 2. Apply Penalty if task was already accepted
         if (previousStatus === 'accepted') {

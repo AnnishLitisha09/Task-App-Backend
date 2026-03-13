@@ -211,12 +211,17 @@ exports.getAllVenues = async (req, res) => {
                             attributes: ['user_role']
                         }
                     ]
+                },
+                {
+                    model: Resource,
+                    required: false,
+                    where: { deleted_at: null }
                 }
             ],
             order: [['venue_id', 'ASC']]
         });
 
-        // Format response to include incharge details
+        // Format response to include incharge details and resource details
         const formattedVenues = venues.map(venue => {
             const venueData = {
                 venue_id: venue.venue_id,
@@ -226,7 +231,14 @@ exports.getAllVenues = async (req, res) => {
                 description: venue.description,
                 image_url: venue.image_url,
                 created_at: venue.created_at,
-                incharge: null
+                incharge: null,
+                total_resource_count: venue.Resources ? venue.Resources.reduce((acc, r) => acc + (r.quantity || 0), 0) : 0,
+                available_resources: venue.Resources ? venue.Resources.filter(r => r.status === 'available').map(r => ({
+                    resource_id: r.resource_id,
+                    name: r.name,
+                    quantity: r.quantity,
+                    status: r.status
+                })) : []
             };
 
             // Check if there's an assigned incharge
@@ -539,6 +551,7 @@ exports.deleteResource = async (req, res) => {
 };
 
 // Assign/Allocate Resource from Master to Venue
+// LOGIC CHANGE: This now ADDS to the Master total when a venue adds a resource.
 exports.assignResourceToVenue = async (req, res) => {
     const t = await Resource.sequelize.transaction();
     try {
@@ -548,6 +561,12 @@ exports.assignResourceToVenue = async (req, res) => {
         if (!master_resource_id || !venue_id || !quantity) {
             await t.rollback();
             return res.status(400).json({ success: false, message: 'master_resource_id, venue_id, and quantity are required' });
+        }
+
+        const qty = parseInt(quantity);
+        if (isNaN(qty) || qty <= 0) {
+            await t.rollback();
+            return res.status(400).json({ success: false, message: 'Valid positive quantity is required' });
         }
 
         // 1. Fetch Master Resource
@@ -561,29 +580,23 @@ exports.assignResourceToVenue = async (req, res) => {
             return res.status(404).json({ success: false, message: 'Master Resource not found' });
         }
 
-        if (master.quantity < quantity) {
-            await t.rollback();
-            return res.status(400).json({ success: false, message: `Insufficient quantity in Master List. Available: ${master.quantity}` });
-        }
-
-        // 2. Subtract from Master
-        await master.update({ quantity: master.quantity - quantity }, { transaction: t });
+        // 2. Add to Master (Global Total increases when resources are registered to venues)
+        await master.update({ quantity: master.quantity + qty }, { transaction: t });
 
         // 3. Create/Update Venue Resource
-        // We look for a resource with the same name in that venue or create a new one
         let venueResource = await Resource.findOne({
             where: { venue_id, name: master.name },
             transaction: t
         });
 
         if (venueResource) {
-            await venueResource.update({ quantity: venueResource.quantity + quantity }, { transaction: t });
+            await venueResource.update({ quantity: venueResource.quantity + qty }, { transaction: t });
         } else {
             venueResource = await Resource.create({
                 name: master.name,
                 description: master.description,
                 venue_id: venue_id,
-                quantity: quantity,
+                quantity: qty,
                 status: 'available'
             }, { transaction: t });
         }
@@ -591,8 +604,8 @@ exports.assignResourceToVenue = async (req, res) => {
         await t.commit();
         res.json({
             success: true,
-            message: `Allocated ${quantity} ${master.name}(s) to venue.`,
-            remaining_master: master.quantity,
+            message: `Allocated ${qty} ${master.name}(s) to venue and updated global total.`,
+            total_master_quantity: master.quantity,
             venue_resource: venueResource
         });
 

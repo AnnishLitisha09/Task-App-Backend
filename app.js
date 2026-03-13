@@ -56,7 +56,7 @@ db.sequelize.authenticate()
     require('./jobs/morning-awareness');
     const { runTaskEscalation } = require('./jobs/task-escalation');
     const { handleRecurrence } = require('./jobs/task-recurrence');
-    const { runStart10MinReminderJob, runOtpProgressSummaryJob, runDocumentSummaryJob } = require('./jobs/task-notifications');
+    const { runStart10MinReminderJob, runOtpProgressSummaryJob, runDocumentSummaryJob, runPreTaskStudentStatusJob } = require('./jobs/task-notifications');
     const cron = require('node-cron');
 
     // Daily task escalation check at midnight
@@ -80,6 +80,14 @@ db.sequelize.authenticate()
     // 10-Minute Pre-Task Reminder: Runs every minute
     cron.schedule('* * * * *', async () => {
       await runStart10MinReminderJob();
+    }, {
+      scheduled: true,
+      timezone: "Asia/Kolkata"
+    });
+
+    // 2-Hour Pre-Task Student Status Check: Runs every minute
+    cron.schedule('* * * * *', async () => {
+      await runPreTaskStudentStatusJob();
     }, {
       scheduled: true,
       timezone: "Asia/Kolkata"

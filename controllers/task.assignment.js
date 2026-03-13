@@ -331,7 +331,7 @@ exports.selfAssignTask = async (req, res) => {
         const task = await Task.findByPk(taskId, {
             include: [{ model: TaskType }]
         });
-        
+
         if (!task || task.is_deleted) {
             return res.status(404).json({ message: 'Task not found' });
         }
@@ -373,6 +373,40 @@ exports.selfAssignTask = async (req, res) => {
 
         res.json({ message: 'Task self-assigned successfully' });
 
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+// Admin: Update assignment status directly
+exports.adminUpdateStatus = async (req, res) => {
+    try {
+        const { id: assignmentId } = req.params;
+        const { status } = req.body;
+        const adminId = req.userId;
+        const adminRole = req.userRole;
+
+        if (adminRole !== 'admin') {
+            return res.status(403).json({ message: 'Only admins can manually update assignment status' });
+        }
+
+        const assignment = await TaskAssign.findByPk(assignmentId);
+        if (!assignment) {
+            return res.status(404).json({ message: 'Assignment not found' });
+        }
+
+        await assignment.update({ status });
+
+        // Log the administrative action
+        const { TaskLog } = require('../models');
+        await TaskLog.create({
+            task_id: assignment.task_id,
+            user_id: assignment.user_id,
+            action: 'admin_status_update',
+            details: `Status manually updated to ${status} by Admin ${adminId}`
+        });
+
+        res.json({ message: `Assignment status updated to ${status}` });
     } catch (error) {
         res.status(500).json({ message: error.message });
     }

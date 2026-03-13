@@ -202,36 +202,55 @@ exports.checkMorningAcknowledgment = async () => {
             const supervisorId = await getSupervisor(userId);
             if (!supervisorId) continue; // No one to escalate to? Skip or fallback to admin
 
-            // Escalate all tasks for this user
+            // Get user details to check for student role
+            const user = await User.findByPk(userId);
+            const isStudent = user && user.role && user.role.toLowerCase() === 'student';
+
+            // Escalate/Update all tasks for this user
             const userTasks = activeAssignments.filter(a => a.user_id === userId);
             for (const assign of userTasks) {
-                // 1. Update assignment status and mark task escalated
-                await TaskAssign.update(
-                    { status: 'escalated' },
-                    { where: { id: assign.id } }
-                );
-                await Task.update(
-                    { is_escalate: true },
-                    { where: { task_id: assign.task_id } }
-                );
+                if (isStudent) {
+                    // Logic for students: Mark as rejected/absent, no formal escalation
+                    await TaskAssign.update(
+                        { status: 'rejected', reason: 'Absent (No Acknowledgement)' },
+                        { where: { id: assign.id } }
+                    );
+                    
+                    await TaskLog.create({
+                        task_id: assign.task_id,
+                        user_id: userId,
+                        action: 'absence_auto_reject',
+                        details: `Task auto-rejected (marked absent): Missing daily acknowledgement by 08:45 AM.`
+                    });
+                } else {
+                    // Standard logic: Update assignment status and mark task escalated
+                    await TaskAssign.update(
+                        { status: 'escalated' },
+                        { where: { id: assign.id } }
+                    );
+                    await Task.update(
+                        { is_escalate: true },
+                        { where: { task_id: assign.task_id } }
+                    );
 
-                // 2. Create formal escalation record for the supervisor
-                await TaskEscalation.create({
-                    task_id: assign.task_id,
-                    reason: 'No Acknowledgement by 08:45 AM',
-                    msg: `User did not acknowledge daily morning awareness for task "${assign.Task.title}".`,
-                    creator_id: supervisorId, // "To" the supervisor
-                    rejected_user_id: userId, // "From" the failing user
-                    status: 'pending'
-                });
+                    // 2. Create formal escalation record for the supervisor
+                    await TaskEscalation.create({
+                        task_id: assign.task_id,
+                        reason: 'No Acknowledgement by 08:45 AM',
+                        msg: `User did not acknowledge daily morning awareness for task "${assign.Task.title}".`,
+                        creator_id: supervisorId, // "To" the supervisor
+                        rejected_user_id: userId, // "From" the failing user
+                        status: 'pending'
+                    });
 
-                // 3. Log the action
-                await TaskLog.create({
-                    task_id: assign.task_id,
-                    user_id: userId,
-                    action: 'escalation',
-                    details: `Task escalated to User ${supervisorId}: Missing daily acknowledgement by 08:45 AM.`
-                });
+                    // 3. Log the action
+                    await TaskLog.create({
+                        task_id: assign.task_id,
+                        user_id: userId,
+                        action: 'escalation',
+                        details: `Task escalated to User ${supervisorId}: Missing daily acknowledgement by 08:45 AM.`
+                    });
+                }
                 escalationCount++;
             }
         }

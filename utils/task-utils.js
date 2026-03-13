@@ -8,24 +8,73 @@ const { Op } = require('sequelize');
  * @param {number} [excludeTaskId] - Optional ID to exclude from checks (useful for updates).
  * @returns {Promise<object>} - { hasConflict: boolean, conflictTask: object | null }
  */
-async function checkTaskOverlap(userId, taskDetails, excludeTaskId = null) {
-    const { start_date, end_date, start_time, end_time, task_name } = taskDetails;
+const { PRIORITY_WEIGHTS, BUFFER_MINUTES, WORK_START, WORK_END } = require('../config/constants');
 
-    // Helper: Normalize date to YYYY-MM-DD string
-    const toDateStr = (d) => new Date(d).toISOString().split('T')[0];
+/**
+ * Checks if given times are within allowed work hours.
+ */
+function isWithinWorkHours(startTime, endTime, priority = 'low') {
+    if (!startTime || !endTime) return { isWithin: true }; // Can't validate without times
+
+    const parseTime = (t) => {
+        const [h, m] = t.split(':').map(Number);
+        return h * 60 + m;
+    };
+
+    if (priority === 'critical') return { isWithin: true };
+
+    const startMin = parseTime(startTime);
+    const endMin = parseTime(endTime);
+    const workStartMin = parseTime(WORK_START);
+    const workEndMin = parseTime(WORK_END);
+
+    if (startMin < workStartMin || endMin > workEndMin) {
+        return {
+            isWithin: false,
+            reason: `Tasks must be within work hours (${WORK_START} - ${WORK_END}).`
+        };
+    }
+
+    return { isWithin: true };
+}
+
+/**
+ * Checks if a proposed task overlaps with any existing 'accepted', 'completed', or 'in_progress' tasks for a user.
+ * Now includes priority awareness, time buffers, and work hour validation.
+ */
+async function checkTaskOverlap(userId, taskDetails, excludeTaskId = null) {
+    const { start_date, end_date, start_time, end_time, task_name, priority = 'low' } = taskDetails;
+
+    const toDateStr = (d) => {
+        if (!d) return null;
+        return new Date(new Date(d).getTime() + (5.5 * 60 * 60 * 1000)).toISOString().split('T')[0];
+    };
+    const parseTime = (t) => {
+        if (!t) return null;
+        const [h, m] = t.split(':').map(Number);
+        return h * 60 + m;
+    };
+
+    // 0. Work Hour Validation
+    const workHourCheck = isWithinWorkHours(start_time, end_time, priority);
+    if (!workHourCheck.isWithin) {
+        return {
+            hasConflict: true,
+            type: 'work_hours',
+            reason: workHourCheck.reason
+        };
+    }
 
     const propStartStr = toDateStr(start_date);
     const propEndStr = end_date ? toDateStr(end_date) : propStartStr;
     const propIsLong = task_name === 'Date-Only / Long Task' || task_name === 'Long Task';
+    const propWeight = PRIORITY_WEIGHTS[priority] || 0;
 
-    // 1. Find existing non-rejected assignments
     const whereClause = {
         user_id: userId,
-        status: { [Op.in]: ['accepted', 'completed', 'in_progress'] }
+        status: { [Op.in]: ['accepted', 'in_progress'] } // Exclude 'completed' per new rule
     };
-    if (excludeTaskId) {
-        whereClause.task_id = { [Op.ne]: excludeTaskId };
-    }
+    if (excludeTaskId) whereClause.task_id = { [Op.ne]: excludeTaskId };
 
     const existingAssignments = await TaskAssign.findAll({
         where: whereClause,
@@ -33,10 +82,7 @@ async function checkTaskOverlap(userId, taskDetails, excludeTaskId = null) {
             model: Task,
             required: true,
             where: { is_deleted: false },
-            include: [{
-                model: TaskType,
-                required: true
-            }]
+            include: [{ model: TaskType, required: true }]
         }]
     });
 
@@ -48,55 +94,59 @@ async function checkTaskOverlap(userId, taskDetails, excludeTaskId = null) {
         const exIsLong = exType.task_name === 'Date-Only / Long Task' || exType.task_name === 'Long Task';
         const exStartStr = toDateStr(exType.start_date);
         const exEndStr = exType.end_date ? toDateStr(exType.end_date) : exStartStr;
+        const exWeight = PRIORITY_WEIGHTS[exTask.priority] || 0;
 
-        // A. Date Range Overlap Check
-        // Two ranges [s1, e1] and [s2, e2] overlap if (s1 <= e2 && e1 >= s2)
+        // Date Range Overlap Check
         const datesOverlap = (propStartStr <= exEndStr && propEndStr >= exStartStr);
+        if (!datesOverlap) continue;
 
-        if (datesOverlap) {
-            // Case 1: Either is a Long Task (occupies entire day range)
-            if (propIsLong || exIsLong) {
+        // Case 1: Long Task Conflict
+        if (propIsLong || exIsLong) {
+            // Long tasks are "background", can be paused if higher priority comes in
+            if (propWeight > exWeight) {
+                // Return potential for pause/override
                 return { 
                     hasConflict: true, 
-                    conflictTask: { 
-                        task_id: exTask.task_id, 
-                        title: exTask.title,
-                        reason: `Conflict with '${exTask.title}'. Long tasks occupy the entire day range (${exStartStr} to ${exEndStr}).`
-                    } 
+                    type: 'priority_override',
+                    can_pause: exIsLong,
+                    conflictTask: { task_id: exTask.task_id, title: exTask.title, priority: exTask.priority, weight: exWeight }
+                };
+            } else {
+                return { 
+                    hasConflict: true, 
+                    type: 'blocked',
+                    reason: `Blocked by ${exIsLong ? 'Long Task' : 'High Priority'} "${exTask.title}".`
                 };
             }
+        }
 
-            // Case 2: Both are standard tasks. Check for time overlap on ANY overlapping date.
-            // (Standard tasks usually don't span months, so we can iterate through the overlapping dates if it's just a few days)
-            // But usually standard tasks are single-day or few-days.
-            // If they share any date, and have overlapping times, it's a conflict.
-            
-            // Actually, we only care if they overlap in TIME.
-            // If both have times set:
-            if (exType.start_time && exType.end_time && start_time && end_time) {
-                // Time overlap check: (s1 < e2 && e1 > s2)
-                if (start_time < exType.end_time && end_time > exType.start_time) {
+        // Case 2: Standard Time Overlap with 5-min Buffer
+        if (exType.start_time && exType.end_time && start_time && end_time) {
+            const s1 = parseTime(start_time);
+            const e1 = parseTime(end_time);
+            const s2 = parseTime(exType.start_time);
+            const e2 = parseTime(exType.end_time);
+
+            // Check overlap with buffer: (s1 < e2 + buffer && e1 > s2 - buffer)
+            if (s1 < (e2 + BUFFER_MINUTES) && e1 > (s2 - BUFFER_MINUTES)) {
+                if (propWeight > exWeight) {
                     return { 
                         hasConflict: true, 
-                        conflictTask: { 
-                            task_id: exTask.task_id, 
-                            title: exTask.title,
-                            reason: `Time overlap with '${exTask.title}' (${exType.start_time} - ${exType.end_time}).`
-                        } 
+                        type: 'priority_override',
+                        conflictTask: { task_id: exTask.task_id, title: exTask.title, priority: exTask.priority, weight: exWeight }
+                    };
+                } else {
+                    return { 
+                        hasConflict: true, 
+                        type: 'blocked',
+                        reason: `Time overlap (with ${BUFFER_MINUTES}m buffer) with "${exTask.title}".`
                     };
                 }
-            } else if (!exType.start_time || !start_time) {
-                // If one doesn't have time but is NOT a long task, it might be a floating task or similar.
-                // Usually, if it's not a long task, we assume it's okay unless times strictly overlap.
-                // But if they share dates and one is "anytime", we might allow it.
-                // Most standard tasks here seem to have times.
             }
         }
     }
 
-    return { hasConflict: false, conflictTask: null };
+    return { hasConflict: false };
 }
 
-module.exports = {
-    checkTaskOverlap
-};
+module.exports = { checkTaskOverlap, isWithinWorkHours };

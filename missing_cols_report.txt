@@ -1,8 +1,8 @@
 SCHEMA MISSING COLUMNS REPORT
 ============================
 
-Table 'tasks' is missing columns: is_paused
-ALTER TABLE tasks ADD COLUMN is_paused TINYINT(1) NULL DEFAULT 0;
+Table 'tasks' is missing columns: locked_at
+ALTER TABLE tasks ADD COLUMN locked_at DATETIME NULL;
 
 Table 'task_assign' is missing columns: createdAt, updatedAt, deletedAt
 ALTER TABLE task_assign ADD COLUMN createdAt DATETIME NOT NULL;

@@ -211,8 +211,71 @@ const runDocumentSummaryJob = async () => {
     }
 };
 
+/**
+ * Pre-Task Student Status Notification: Notify creator 2 hours before a task starts
+ * about the acceptance status of student assignees.
+ * Runs every minute.
+ */
+const runPreTaskStudentStatusJob = async () => {
+    try {
+        const now = new Date();
+        const istOffset = 330 * 60 * 1000;
+        const localNow = new Date(now.getTime() + (now.getTimezoneOffset() * 60000) + istOffset);
+
+        const dateStr = `${localNow.getFullYear()}-${String(localNow.getMonth() + 1).padStart(2, '0')}-${String(localNow.getDate()).padStart(2, '0')}`;
+
+        // Target time is exactly 2 hours (120 minutes) from now
+        localNow.setMinutes(localNow.getMinutes() + 120);
+        const targetTimeStr = `${String(localNow.getHours()).padStart(2, '0')}:${String(localNow.getMinutes()).padStart(2, '0')}:00`;
+
+        const tasksStartingSoon = await Task.findAll({
+            where: { is_deleted: false, status: { [Op.ne]: 'Inactive' } },
+            include: [
+                {
+                    model: TaskType,
+                    required: true,
+                    where: {
+                        start_date: dateStr,
+                        start_time: targetTimeStr
+                    }
+                },
+                {
+                    model: TaskAssign,
+                    include: [{ model: User, attributes: ['user_id', 'role'] }]
+                }
+            ]
+        });
+
+        for (const task of tasksStartingSoon) {
+            // Filter only student assignments
+            const studentAssigns = task.TaskAssigns.filter(a => a.User && a.User.role && a.User.role.toLowerCase() === 'student');
+            
+            if (studentAssigns.length > 0) {
+                const totalStudents = studentAssigns.length;
+                const acceptedCount = studentAssigns.filter(a => a.status === 'accepted').length;
+                const pendingCount = studentAssigns.filter(a => a.status === 'pending').length;
+                const rejectedCount = studentAssigns.filter(a => a.status === 'rejected').length;
+
+                let msg = `Assignee Status Update for "${task.title}" (Starts in 2 Hours):\n`;
+                msg += `- Total Students: ${totalStudents}\n`;
+                msg += `- Accepted: ${acceptedCount}\n`;
+                msg += `- Pending: ${pendingCount}\n`;
+                msg += `- Rejected: ${rejectedCount}`;
+
+                await sendNotification(task.creator_id, "Pre-Task Assignee Status", msg);
+                if (task.is_faculty && task.faculty_id) {
+                    await sendNotification(task.faculty_id, "Pre-Task Assignee Status", msg);
+                }
+            }
+        }
+    } catch (error) {
+        console.error("PRE-TASK STUDENT STATUS CRON ERROR:", error);
+    }
+};
+
 module.exports = {
     runStart10MinReminderJob,
     runOtpProgressSummaryJob,
-    runDocumentSummaryJob
+    runDocumentSummaryJob,
+    runPreTaskStudentStatusJob
 };
