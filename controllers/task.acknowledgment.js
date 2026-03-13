@@ -95,7 +95,6 @@ exports.getTodaysUnacknowledgedTasks = async (req, res) => {
     }
 };
 
-// Get user's acknowledgment history
 exports.getAcknowledgmentHistory = async (req, res) => {
     try {
         const userId = req.userId;
@@ -106,27 +105,48 @@ exports.getAcknowledgmentHistory = async (req, res) => {
 
         const acknowledgments = await TaskAcknowledgment.findAll({
             where: {
-                user_id: userId,
                 acknowledge_date: {
                     [Op.gte]: startDate.toISOString().split('T')[0]
                 }
             },
-            include: [{ model: Task, attributes: ['task_id', 'title', 'category', 'priority'] }],
+            include: [
+                { model: Task, attributes: ['task_id', 'title', 'category', 'priority'] },
+                { 
+                    model: User, 
+                    attributes: ['user_id', 'role'],
+                    include: [
+                        { model: Student, attributes: ['name', 'email'] },
+                        { model: Faculty, attributes: ['name', 'email'] },
+                        { model: Staff, attributes: ['name', 'email'] },
+                        { model: RoleUser, attributes: ['name', 'email'] }
+                    ]
+                }
+            ],
             order: [['acknowledge_date', 'DESC']]
         });
 
-        res.json({
-            days: parseInt(days),
-            count: acknowledgments.length,
-            acknowledgments: acknowledgments.map(ack => ({
+        const history = acknowledgments.map(ack => {
+            const user = ack.User || {};
+            const profile = user.Student || user.Faculty || user.Staff || user.RoleUser || {};
+            return {
                 task_id: ack.task_id,
                 task_title: ack.Task?.title,
                 task_category: ack.Task?.category,
                 task_priority: ack.Task?.priority,
                 acknowledge_date: ack.acknowledge_date,
                 acknowledged_at: ack.acknowledged_at,
+                user_id: ack.user_id,
+                name: profile.name || user.name || 'Unknown',
+                role: user.role || 'others',
+                email: profile.email || user.email || '—',
                 status: ack.acknowledged_at ? 'acknowledged' : 'pending'
-            }))
+            };
+        });
+
+        res.json({
+            days: parseInt(days),
+            count: history.length,
+            acknowledgments: history
         });
 
     } catch (error) {
@@ -375,7 +395,15 @@ exports.getUnacknowledgedUsersReport = async (req, res) => {
 // General daily acknowledgement (Morning Awareness)
 exports.acknowledgeGeneral = async (req, res) => {
     try {
-        const userId = req.userId;
+        const adminId = req.userId;
+        const adminRole = req.userRole;
+        
+        // Admin can specify a different user_id to acknowledge for them
+        let targetUserId = adminId;
+        if (adminRole === 'admin' && req.body.user_id) {
+            targetUserId = req.body.user_id;
+        }
+
         const now = new Date();
         const istOffset = 330 * 60 * 1000;
         const localNow = new Date(now.getTime() + (now.getTimezoneOffset() * 60000) + istOffset);
@@ -388,11 +416,14 @@ exports.acknowledgeGeneral = async (req, res) => {
         const startWindow = 6 * 60 + 30; // 390
         const endWindow = 8 * 60 + 45;   // 525
 
-        if (totalMinutes < startWindow || totalMinutes > endWindow) {
-            return res.status(400).json({
-                success: false,
-                message: 'Acknowledgement is only allowed between 06:30 AM and 08:45 AM.'
-            });
+        // Bypass time check ONLY for Admin
+        if (adminRole !== 'admin') {
+            if (totalMinutes < startWindow || totalMinutes > endWindow) {
+                return res.status(400).json({
+                    success: false,
+                    message: `Acknowledgement is only allowed between 06:30 AM and 08:45 AM. Current time is ${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}.`
+                });
+            }
         }
 
         const today = `${localNow.getFullYear()}-${String(localNow.getMonth() + 1).padStart(2, '0')}-${String(localNow.getDate()).padStart(2, '0')}`;
@@ -401,7 +432,7 @@ exports.acknowledgeGeneral = async (req, res) => {
         const [ack, created] = await TaskAcknowledgment.findOrCreate({
             where: {
                 task_id: null,
-                user_id: userId,
+                user_id: targetUserId,
                 acknowledge_date: today
             },
             defaults: {
@@ -415,9 +446,12 @@ exports.acknowledgeGeneral = async (req, res) => {
 
         res.json({
             success: true,
-            message: 'Daily morning awareness acknowledged. This confirms you are aware of your tasks for today.',
+            message: adminRole === 'admin' && targetUserId !== adminId 
+                ? `Daily morning awareness acknowledged for User ID ${targetUserId}.`
+                : 'Daily morning awareness acknowledged. This confirms you are aware of your tasks for today.',
             acknowledged_at: ack.acknowledged_at,
-            date: today
+            date: today,
+            user_id: targetUserId
         });
 
     } catch (error) {
