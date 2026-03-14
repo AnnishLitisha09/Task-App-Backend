@@ -502,92 +502,35 @@ exports.getVenueStatusHistory = async (req, res) => {
         const venue = await Venue.findByPk(id);
         if (!venue) return res.status(404).json({ message: 'Venue not found' });
 
-        const history = [];
-        const today = new Date();
+        // 1. Get all resource IDs for this venue to include their logs too
+        const resources = await Resource.findAll({
+            where: { venue_id: id },
+            attributes: ['resource_id']
+        });
+        const resourceIds = resources.map(r => r.resource_id);
 
-        for (let i = 0; i < 2; i++) {
-            const date = new Date(today);
-            date.setDate(today.getDate() - i);
-            const dateStr = toDateStr(date);
+        // 2. Fetch all logs for this venue specifically for Status Changes
+        const logs = await MaintenanceLog.findAll({
+            where: {
+                venue_id: id,
+                category: 'Status Change'
+            },
+            order: [['created_at', 'DESC']],
+            limit: 20 // Last 20 status changes
+        });
 
-            // Fetch maintenance logs for this date
-            const maintenanceLogs = await MaintenanceLog.findAll({
-                where: {
-                    venue_id: id,
-                    [Op.or]: [
-                        literal(`DATE(start_time) = '${dateStr}'`),
-                        literal(`DATE(end_time) = '${dateStr}'`),
-                        {
-                            [Op.and]: [
-                                { start_time: { [Op.lte]: dateStr } },
-                                { end_time: { [Op.gte]: dateStr } }
-                            ]
-                        }
-                    ]
-                }
-            });
-
-            // Check Full Day Booking for this day
-            const bookings = await Task.findAll({
-                where: { is_deleted: false },
-                include: [{
-                    model: TaskType,
-                    required: true,
-                    where: {
-                        [Op.and]: [
-                            { [Op.or]: [{ venue_id: id }, literal(`\`Task\`.\`venue_id\` = ${id}`)] },
-                            literal(`DATE(start_date) <= '${dateStr}'`),
-                            literal(`DATE(end_date) >= '${dateStr}'`)
-                        ]
-                    }
-                }, {
-                    model: TaskAssign,
-                    where: { status: 'accepted' },
-                    required: true
-                }]
-            });
-
-            const slots = bookings.map(t => {
-                const tt = t.TaskTypes[0];
-                return { start: tt.start_time, end: tt.end_time };
-            }).sort((a, b) => a.start.localeCompare(b.start));
-
-            let isFullDayBooked = false;
-            if (slots.length > 0) {
-                let currentEnd = "08:45";
-                let covered = true;
-                if (slots[0].start > "08:45") covered = false;
-                else {
-                    for (const slot of slots) {
-                        if (slot.start > currentEnd) {
-                            covered = false;
-                            break;
-                        }
-                        if (slot.end > currentEnd) currentEnd = slot.end;
-                    }
-                }
-                if (covered && currentEnd >= "16:30") isFullDayBooked = true;
-            }
-
-            // Determine Status
-            let status = venue.status; // Default
-            if (maintenanceLogs.some(l => l.status === 'in_progress')) status = 'under maintenance';
-            else if (isFullDayBooked) status = 'full day booked';
-            else if (bookings.length > 0) status = 'partially booked';
-            else status = 'open';
-
-            history.push({
-                date: dateStr,
-                status: status,
-                maintenance_activities: maintenanceLogs.map(l => ({
-                    issue: l.issue_title,
-                    from: l.start_time,
-                    to: l.end_time,
-                    status: l.status,
-                    category: l.category
-                }))
-            });
-        }
+        // 3. Format logs for the timeline
+        const history = logs.map(l => ({
+            log_id: l.log_id,
+            category: l.category,
+            status: l.category === 'Status Change' ? l.issue_title.split(': ')[1] || 'Status Update' : 'Maintenance',
+            issue_title: l.issue_title,
+            description: l.description,
+            resource_name: l.Resource ? l.Resource.name : null,
+            created_at: l.created_at,
+            start_time: l.start_time,
+            end_time: l.end_time
+        }));
 
         res.json({
             venue_id: id,

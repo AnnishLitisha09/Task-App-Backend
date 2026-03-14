@@ -806,21 +806,20 @@ exports.updateVenueStatus = async (req, res) => {
              else effectiveStatus = 'open'; // default
         }
 
+        const oldStatus = venue.status || 'open';
         venue.status = effectiveStatus;
         await venue.save();
 
-        // Automatically log it in MaintenanceLog to preserve history
-        if (reason) {
-            const { MaintenanceLog } = require('../models');
-            await MaintenanceLog.create({
-                venue_id: id,
-                category: 'Status Change',
-                issue_title: `Status changed to: ${status.toUpperCase()}`,
-                description: reason,
-                status: effectiveStatus === 'open' ? 'completed' : 'in_progress',
-                start_time: new Date()
-            });
-        }
+        // Always log the change to preserve genuine history
+        const { MaintenanceLog } = require('../models');
+        await MaintenanceLog.create({
+            venue_id: id,
+            category: 'Status Change',
+            issue_title: `Status: ${oldStatus.toUpperCase()} -> ${effectiveStatus.toUpperCase()}`,
+            description: reason || 'Manual status update by Incharge/Admin',
+            status: effectiveStatus === 'open' ? 'completed' : 'in_progress',
+            start_time: new Date()
+        });
 
         res.json({
             success: true,
