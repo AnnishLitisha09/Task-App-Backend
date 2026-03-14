@@ -1559,3 +1559,184 @@ exports.updateStudentFaculty = async (req, res) => {
         res.status(500).json({ message: error.message });
     }
 };
+
+// ==========================================
+// Authority Allocation APIs (Admin Only)
+// ==========================================
+
+/**
+ * Assign authority to a role user
+ * Scopes:
+ *   - institutional: e.g. PRINCIPAL → no dept/venue needed
+ *   - departmental:  e.g. HOD → requires department_id
+ *   - infrastructure: e.g. INCHARGE → requires venue_id
+ */
+exports.assignAuthority = async (req, res) => {
+    const t = await User.sequelize.transaction();
+    try {
+        const { user_id, role_name, department_id, venue_id } = req.body;
+
+        if (!user_id || !role_name) {
+            await t.rollback();
+            return res.status(400).json({ message: 'user_id and role_name are required' });
+        }
+
+        // Verify the user exists and is a role-user
+        const user = await User.findByPk(user_id);
+        if (!user) {
+            await t.rollback();
+            return res.status(404).json({ message: 'User not found' });
+        }
+
+        // Find the role with its scope
+        const { Scope } = require('../models');
+        const role = await Role.findOne({
+            where: { user_role: role_name },
+            include: [{ model: Scope }]
+        });
+        if (!role) {
+            await t.rollback();
+            return res.status(404).json({ message: `Role '${role_name}' not found` });
+        }
+
+        const scopeName = role.Scope?.scope?.toLowerCase() || '';
+
+        // Scope-based validation
+        if (scopeName === 'departmental' && !department_id) {
+            await t.rollback();
+            return res.status(400).json({ message: `Role '${role_name}' requires a department_id (departmental scope)` });
+        }
+        if (scopeName === 'infrastructure' && !venue_id) {
+            await t.rollback();
+            return res.status(400).json({ message: `Role '${role_name}' requires a venue_id (infrastructure scope)` });
+        }
+
+        // Enforce single assignment per scope context
+        if (scopeName === 'departmental' && department_id) {
+            // Remove existing holder of this role in this department
+            await RoleAssignment.destroy({ where: { role_id: role.role_id, department_id }, transaction: t });
+        } else if (scopeName === 'infrastructure' && venue_id) {
+            // Remove existing holder of this role in this venue
+            await RoleAssignment.destroy({ where: { role_id: role.role_id, venue_id }, transaction: t });
+        } else if (scopeName === 'institutional') {
+            // Remove existing institutional holder of this role
+            await RoleAssignment.destroy({ where: { role_id: role.role_id }, transaction: t });
+        }
+
+        const assignment = await RoleAssignment.create({
+            user_id,
+            role_id: role.role_id,
+            department_id: scopeName === 'departmental' ? department_id : null,
+            venue_id: scopeName === 'infrastructure' ? venue_id : null,
+            created_at: new Date(),
+            updated_at: new Date()
+        }, { transaction: t });
+
+        await t.commit();
+        res.status(201).json({
+            message: `Authority '${role_name}' assigned successfully`,
+            assignment_id: assignment.id,
+            scope: scopeName,
+            user_id,
+            role_name,
+            department_id: assignment.department_id,
+            venue_id: assignment.venue_id
+        });
+    } catch (error) {
+        await t.rollback();
+        res.status(500).json({ message: error.message });
+    }
+};
+
+/**
+ * Remove authority from a role user
+ */
+exports.removeAuthority = async (req, res) => {
+    try {
+        const { user_id, role_name } = req.body;
+
+        if (!user_id || !role_name) {
+            return res.status(400).json({ message: 'user_id and role_name are required' });
+        }
+
+        const role = await Role.findOne({ where: { user_role: role_name } });
+        if (!role) return res.status(404).json({ message: `Role '${role_name}' not found` });
+
+        const deleted = await RoleAssignment.destroy({ where: { user_id, role_id: role.role_id } });
+        if (!deleted) return res.status(404).json({ message: 'Authority assignment not found' });
+
+        res.json({ message: `Authority '${role_name}' removed from user ${user_id}` });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+/**
+ * Get all authority assignments - grouped by scope
+ */
+exports.getAllAuthorities = async (req, res) => {
+    try {
+        const { Scope } = require('../models');
+        const assignments = await RoleAssignment.findAll({
+            include: [
+                {
+                    model: User,
+                    attributes: ['user_id', 'role'],
+                    include: [{ model: RoleUser, attributes: ['name', 'email'] }]
+                },
+                {
+                    model: Role,
+                    include: [{ model: Scope, attributes: ['scope'] }]
+                },
+                { model: Department, attributes: ['name'] }
+            ],
+            order: [['created_at', 'DESC']]
+        });
+
+        const grouped = { institutional: [], departmental: [], infrastructure: [], other: [] };
+
+        for (const a of assignments) {
+            const scope = a.Role?.Scope?.scope?.toLowerCase() || 'other';
+            const entry = {
+                assignment_id: a.id,
+                user_id: a.user_id,
+                name: a.User?.RoleUser?.name || 'N/A',
+                email: a.User?.RoleUser?.email || 'N/A',
+                role: a.Role?.user_role,
+                scope,
+                department: a.Department?.name || null,
+                venue_id: a.venue_id || null
+            };
+            if (grouped[scope]) grouped[scope].push(entry);
+            else grouped.other.push(entry);
+        }
+
+        res.json(grouped);
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+/**
+ * Get available roles grouped by scope (for the assignment dropdown)
+ */
+exports.getAvailableRoles = async (req, res) => {
+    try {
+        const { Scope } = require('../models');
+        const roles = await Role.findAll({
+            include: [{ model: Scope, attributes: ['scope'] }],
+            order: [['user_role', 'ASC']]
+        });
+
+        const grouped = {};
+        for (const r of roles) {
+            const scope = r.Scope?.scope || 'other';
+            if (!grouped[scope]) grouped[scope] = [];
+            grouped[scope].push({ role_id: r.role_id, role_name: r.user_role });
+        }
+
+        res.json(grouped);
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};

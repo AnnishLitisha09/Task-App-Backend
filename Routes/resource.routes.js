@@ -90,4 +90,12 @@ router.post('/manage-resource', resourceController.manageResource); // Unified m
 router.post('/bulk', isAdmin, memoryUpload.single('file'), resourceController.bulkCreateResources);
 router.post('/venues/bulk', isAdmin, memoryUpload.single('file'), resourceController.bulkCreateVenues);
 
+// Role & Scope Management (Admin Only)
+router.get('/scopes', isAdmin, resourceController.getAllScopes);
+router.post('/scopes', isAdmin, resourceController.createScope);
+router.get('/roles', isAdmin, resourceController.getAllRoles);
+router.post('/roles', isAdmin, resourceController.createRole);
+router.put('/roles/:id', isAdmin, resourceController.updateRole);
+router.delete('/roles/:id', isAdmin, resourceController.deleteRole);
+
 module.exports = router;

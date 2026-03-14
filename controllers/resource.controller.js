@@ -1273,3 +1273,120 @@ exports.bulkCreateVenues = async (req, res) => {
         res.status(500).json({ message: 'Bulk upload failed', error: error.message });
     }
 };
+
+// ==========================================
+// Role & Scope Management APIs (Admin Only)
+// ==========================================
+
+// Get all scopes
+exports.getAllScopes = async (req, res) => {
+    try {
+        const scopes = await Scope.findAll({ order: [['scope', 'ASC']] });
+        res.json(scopes);
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+// Create a new scope
+exports.createScope = async (req, res) => {
+    try {
+        const { scope } = req.body;
+        if (!scope) return res.status(400).json({ message: 'scope name is required' });
+
+        const existing = await Scope.findOne({ where: { scope } });
+        if (existing) return res.status(400).json({ message: 'Scope already exists' });
+
+        const newScope = await Scope.create({ scope });
+        res.status(201).json(newScope);
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+// Get all roles (with scope details)
+exports.getAllRoles = async (req, res) => {
+    try {
+        const roles = await Role.findAll({
+            include: [{ model: Scope, attributes: ['scope_id', 'scope'] }],
+            order: [['user_role', 'ASC']]
+        });
+        res.json(roles);
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+// Create a new role and assign to a scope
+exports.createRole = async (req, res) => {
+    try {
+        const { role_name, scope_id, scope_name } = req.body;
+        if (!role_name) return res.status(400).json({ message: 'role_name is required' });
+
+        // Resolve scope
+        let resolvedScopeId = scope_id;
+        if (!resolvedScopeId && scope_name) {
+            const scope = await Scope.findOne({ where: { scope: scope_name } });
+            if (!scope) return res.status(404).json({ message: `Scope '${scope_name}' not found` });
+            resolvedScopeId = scope.scope_id;
+        }
+        if (!resolvedScopeId) return res.status(400).json({ message: 'scope_id or scope_name is required' });
+
+        const existing = await Role.findOne({ where: { user_role: role_name } });
+        if (existing) return res.status(400).json({ message: `Role '${role_name}' already exists` });
+
+        const role = await Role.create({
+            user_role: role_name,
+            scope_id: resolvedScopeId
+        });
+
+        const full = await Role.findByPk(role.role_id, {
+            include: [{ model: Scope, attributes: ['scope'] }]
+        });
+
+        res.status(201).json({ message: `Role '${role_name}' created successfully`, role: full });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+// Update a role's scope
+exports.updateRole = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { role_name, scope_id, scope_name } = req.body;
+
+        const role = await Role.findByPk(id);
+        if (!role) return res.status(404).json({ message: 'Role not found' });
+
+        let resolvedScopeId = scope_id;
+        if (!resolvedScopeId && scope_name) {
+            const scope = await Scope.findOne({ where: { scope: scope_name } });
+            if (!scope) return res.status(404).json({ message: `Scope '${scope_name}' not found` });
+            resolvedScopeId = scope.scope_id;
+        }
+
+        await role.update({
+            user_role: role_name || role.user_role,
+            scope_id: resolvedScopeId || role.scope_id
+        });
+
+        res.json({ message: 'Role updated successfully', role });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+// Delete a role
+exports.deleteRole = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const role = await Role.findByPk(id);
+        if (!role) return res.status(404).json({ message: 'Role not found' });
+
+        await role.destroy();
+        res.json({ message: 'Role deleted successfully' });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
