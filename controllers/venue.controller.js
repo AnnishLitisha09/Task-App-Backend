@@ -755,4 +755,61 @@ exports.getMyVenuesList = async (req, res) => {
     }
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// PUT /api/tasks/venue/:id/status
+// Updates the operational status of a specific venue
+// ─────────────────────────────────────────────────────────────────────────────
+exports.updateVenueStatus = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { status, reason } = req.body;
+        const userId = req.userId;
+
+        const venue = await Venue.findByPk(id);
+        if (!venue) {
+            return res.status(404).json({ message: 'Venue not found' });
+        }
+
+        // Validate Status against ENUM: 'open', 'under maintenance', 'temporarily closed', 'renovation', 'full day booked'
+        const validStatuses = ['open', 'under maintenance', 'temporarily closed', 'renovation', 'full day booked'];
+        const formattedStatus = status.toLowerCase().replace(/_/g, ' ');
+        let effectiveStatus = formattedStatus;
+
+        // Fallbacks for custom UI statuses
+        if (!validStatuses.includes(effectiveStatus)) {
+             if (formattedStatus.includes('maintenance')) effectiveStatus = 'under maintenance';
+             else if (formattedStatus.includes('close')) effectiveStatus = 'temporarily closed';
+             else if (formattedStatus.includes('reserve')) effectiveStatus = 'full day booked';
+             else effectiveStatus = 'open'; // default
+        }
+
+        venue.status = effectiveStatus;
+        await venue.save();
+
+        // Automatically log it in MaintenanceLog to preserve history
+        if (reason) {
+            const { MaintenanceLog } = require('../models');
+            await MaintenanceLog.create({
+                venue_id: id,
+                category: 'Status Change',
+                issue_title: `Status changed to: ${status.toUpperCase()}`,
+                description: reason,
+                status: effectiveStatus === 'open' ? 'completed' : 'in_progress',
+                start_time: new Date()
+            });
+        }
+
+        res.json({
+            success: true,
+            message: 'Venue status updated successfully',
+            venue_id: id,
+            status: venue.status
+        });
+
+    } catch (error) {
+        console.error('Error in updateVenueStatus:', error);
+        res.status(500).json({ message: error.message });
+    }
+};
+
 module.exports = exports;

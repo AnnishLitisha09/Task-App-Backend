@@ -117,14 +117,76 @@ exports.deleteMaintenanceLog = async (req, res) => {
 exports.getMaintenanceLogs = async (req, res) => {
     try {
         const { venue_id, resource_id, date } = req.query;
+        const userId = req.userId;
+        const userRole = req.role; // Assuming verifyToken populates this
+
         const where = {};
-        if (venue_id) where.venue_id = venue_id;
-        if (resource_id) where.resource_id = resource_id;
+        
+        // 1. Authorization Filter: If not Admin, only show venues user manages
+        if (userRole !== 'admin') {
+            const RoleAssignment = require('../models/role_assignment'); // Ensure model is available
+            const assignments = await RoleAssignment.findAll({
+                where: { user_id: userId, venue_id: { [Op.ne]: null } },
+                attributes: ['venue_id']
+            });
+            const managedVenueIds = assignments.map(a => a.venue_id);
+
+            if (managedVenueIds.length === 0) {
+                return res.json({ success: true, logs: [], message: 'No managed venues found for this user.' });
+            }
+
+            // Filter for these venues
+            if (venue_id) {
+                if (!managedVenueIds.includes(parseInt(venue_id))) {
+                    return res.status(403).json({ message: 'Forbidden: You do not manage this venue.' });
+                }
+                where.venue_id = venue_id;
+            } else {
+                // If no specific venue requested, show all managed venues (and their resources)
+                const resources = await Resource.findAll({
+                    where: { venue_id: { [Op.in]: managedVenueIds } },
+                    attributes: ['resource_id']
+                });
+                const managedResourceIds = resources.map(r => r.resource_id);
+
+                where[Op.or] = [
+                    { venue_id: { [Op.in]: managedVenueIds } },
+                    { resource_id: { [Op.in]: managedResourceIds } }
+                ];
+            }
+        } else {
+            // Admin can see everything, or filter by specific venue/resource
+            if (venue_id) where.venue_id = venue_id;
+            if (resource_id) where.resource_id = resource_id;
+        }
+
+        // 2. Date Filter
         if (date) {
-            where.created_at = {
-                [Op.gte]: new Date(date),
-                [Op.lt]: new Date(new Date(date).getTime() + 24 * 60 * 60 * 1000)
-            };
+            const startOfDate = new Date(date);
+            startOfDate.setHours(0, 0, 0, 0);
+            const endOfDate = new Date(date);
+            endOfDate.setHours(23, 59, 59, 999);
+
+            where[Op.or] = [
+                // Created on this date
+                {
+                    created_at: {
+                        [Op.between]: [startOfDate, endOfDate]
+                    }
+                },
+                // OR Active during this date (start_time <= end and end_time >= start)
+                {
+                    [Op.and]: [
+                        { start_time: { [Op.lte]: endOfDate } },
+                        { 
+                            [Op.or]: [
+                                { end_time: null },
+                                { end_time: { [Op.gte]: startOfDate } }
+                            ]
+                        }
+                    ]
+                }
+            ];
         }
 
         const logs = await MaintenanceLog.findAll({
@@ -138,6 +200,7 @@ exports.getMaintenanceLogs = async (req, res) => {
 
         res.json({ success: true, logs });
     } catch (error) {
+        console.error('Error in getMaintenanceLogs:', error);
         res.status(500).json({ success: false, message: error.message });
     }
 };
@@ -146,6 +209,19 @@ exports.getMaintenanceLogs = async (req, res) => {
 exports.getMaintenanceLogsByVenue = async (req, res) => {
     try {
         const { venueId } = req.params;
+        const userId = req.userId;
+        const userRole = req.role;
+
+        // Authorization: Check if user manages this venue (if not admin)
+        if (userRole !== 'admin') {
+            const RoleAssignment = require('../models/role_assignment');
+            const assignment = await RoleAssignment.findOne({
+                where: { user_id: userId, venue_id: venueId }
+            });
+            if (!assignment) {
+                return res.status(403).json({ message: 'Forbidden: You do not manage this venue.' });
+            }
+        }
 
         // 1. Get all resource IDs for this venue
         const resources = await Resource.findAll({

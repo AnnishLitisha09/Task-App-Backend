@@ -29,6 +29,7 @@ router.get('/venues/my-list', verifyToken, venueController.getMyVenuesList);    
 router.get('/venue/:id/details', verifyToken, venueController.getVenueDetails);     // Single venue deep-dive
 router.get('/calendar', verifyToken, calendarController.getUserCalendar);
 router.get('/calendar/venue', verifyToken, calendarController.getVenueCalendar); // NEW: Venue Calendar
+router.put('/venue/:id/status', verifyToken, venueController.updateVenueStatus); // NEW: Update Venue Status
 
 // Task Creation
 router.post('/unified-create', verifyToken, upload.single('file'), taskController.createUnifiedTask);

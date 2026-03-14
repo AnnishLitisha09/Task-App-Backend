@@ -265,6 +265,93 @@ exports.getAllVenues = async (req, res) => {
     }
 };
 
+exports.getMyVenue = async (req, res) => {
+    try {
+        const userId = req.user.user_id;
+        const assignment = await RoleAssignment.findOne({
+            where: { user_id: userId, venue_id: { [Op.not]: null } }
+        });
+
+        if (!assignment) {
+            return res.json(null); // Return null instead of 404 so frontend can handle gracefully
+        }
+
+        const venueId = assignment.venue_id;
+
+        const venue = await Venue.findByPk(venueId, {
+            include: [
+                {
+                    model: RoleAssignment,
+                    required: false,
+                    include: [
+                        {
+                            model: User,
+                            attributes: ['user_id', 'role', 'status'],
+                            include: [
+                                {
+                                    model: RoleUser,
+                                    attributes: ['name', 'email', 'score', 'penalty']
+                                }
+                            ]
+                        },
+                        {
+                            model: Role,
+                            attributes: ['user_role']
+                        }
+                    ]
+                },
+                {
+                    model: Resource,
+                    required: false,
+                    where: { deleted_at: null }
+                }
+            ]
+        });
+
+        if (!venue) {
+            return res.json(null);
+        }
+
+        // Format
+        const venueData = {
+            venue_id: venue.venue_id,
+            name: venue.name,
+            venue_type: venue.venue_type,
+            location: venue.location,
+            description: venue.description,
+            image_url: venue.image_url,
+            created_at: venue.created_at,
+            incharge: null,
+            total_resource_count: venue.Resources ? venue.Resources.reduce((acc, r) => acc + (r.quantity || 0), 0) : 0,
+            available_resources: venue.Resources ? venue.Resources.filter(r => r.status === 'available').map(r => ({
+                resource_id: r.resource_id,
+                name: r.name,
+                quantity: r.quantity,
+                status: r.status
+            })) : []
+        };
+
+        if (venue.RoleAssignments && venue.RoleAssignments.length > 0) {
+            const roleAssignment = venue.RoleAssignments[0];
+            if (roleAssignment.User && roleAssignment.User.RoleUser) {
+                venueData.incharge = {
+                    user_id: roleAssignment.User.user_id,
+                    name: roleAssignment.User.RoleUser.name,
+                    email: roleAssignment.User.RoleUser.email,
+                    role: roleAssignment.Role?.user_role || 'Unknown',
+                    score: roleAssignment.User.RoleUser.score,
+                    penalty: roleAssignment.User.RoleUser.penalty
+                };
+            }
+        }
+
+        res.json(venueData);
+
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
 // Fetch incharge (Role User) for a specific venue
 exports.getVenueIncharge = async (req, res) => {
     try {
@@ -550,8 +637,67 @@ exports.deleteResource = async (req, res) => {
     }
 };
 
-// Assign/Allocate Resource from Master to Venue
-// LOGIC CHANGE: This now ADDS to the Master total when a venue adds a resource.
+const removeResourceFromVenue = async (req, res) => {
+    const t = await Resource.sequelize.transaction();
+    try {
+        const { resource_id, quantity } = req.body; // The specific venue resource record ID
+
+        if (!resource_id || !quantity) {
+            await t.rollback();
+            return res.status(400).json({ success: false, message: 'resource_id and quantity are required' });
+        }
+
+        const qty = parseInt(quantity);
+        if (isNaN(qty) || qty <= 0) {
+            await t.rollback();
+            return res.status(400).json({ success: false, message: 'Valid positive quantity is required' });
+        }
+
+        // 1. Fetch Venue Resource
+        const venueResource = await Resource.findByPk(resource_id, { transaction: t });
+        if (!venueResource || !venueResource.venue_id) {
+            await t.rollback();
+            return res.status(404).json({ success: false, message: 'Venue resource record not found' });
+        }
+
+        if (venueResource.quantity < qty) {
+            await t.rollback();
+            return res.status(400).json({ success: false, message: 'Specified quantity exceeds available venue stock' });
+        }
+
+        // 2. Fetch Master Resource (by name, since that's how they are linked in the current logic)
+        const master = await Resource.findOne({
+            where: { name: venueResource.name, venue_id: null },
+            transaction: t
+        });
+
+        // 3. Update Venue Quantity (or delete if 0)
+        if (venueResource.quantity === qty) {
+            await venueResource.destroy({ transaction: t });
+        } else {
+            await venueResource.update({ quantity: venueResource.quantity - qty }, { transaction: t });
+        }
+
+        // 4. Update Master Total (Subtracting since it was removed/deleted from the venue)
+        if (master) {
+            await master.update({ quantity: Math.max(0, master.quantity - qty) }, { transaction: t });
+        }
+
+        await t.commit();
+        res.json({
+            success: true,
+            message: `Removed ${qty} ${venueResource.name}(s) from venue and updated global total.`,
+            new_venue_quantity: venueResource.quantity - qty
+        });
+
+    } catch (error) {
+        await t.rollback();
+        console.error('DELETION ERROR:', error);
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+exports.removeResourceFromVenue = removeResourceFromVenue;
 exports.assignResourceToVenue = async (req, res) => {
     const t = await Resource.sequelize.transaction();
     try {

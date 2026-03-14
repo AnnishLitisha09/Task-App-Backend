@@ -61,6 +61,7 @@ router.get('/hods/unassigned', resourceController.getUnassignedHODs);
 
 // Venues
 router.get('/venues', resourceController.getAllVenues);
+router.get('/venue/my-venue', resourceController.getMyVenue); // NEW
 router.post('/venues', isAdmin, upload.single('image'), resourceController.addVenue);
 router.put('/venues/:id', isAdmin, upload.single('image'), resourceController.updateVenue);
 router.delete('/venues/:id', isAdmin, resourceController.deleteVenue);
@@ -78,5 +79,6 @@ router.post('/', isAdmin, resourceController.addResource); // Add to master (Adm
 router.put('/:id', isAdmin, resourceController.updateResource); // Update master (Admin Only)
 router.delete('/:id', isAdmin, resourceController.deleteResource); // Delete master (Admin Only)
 router.post('/assign', resourceController.assignResourceToVenue); // Allocation logic
+router.post('/remove-assignment', resourceController.removeResourceFromVenue); // De-allocation logic
 
 module.exports = router;
