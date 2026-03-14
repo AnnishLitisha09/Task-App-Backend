@@ -72,6 +72,8 @@ router.get('/venues/:id/history', maintenanceController.getVenueStatusHistory);
 router.get('/venues/:id/resource-analytics', maintenanceController.getVenueResourceAnalytics);
 router.get('/venues/:venueId/maintenance-logs', maintenanceController.getMaintenanceLogsByVenue); // NEW
 
+const memoryUpload = multer({ storage: multer.memoryStorage() });
+
 // Resources
 router.get('/master', resourceController.getMasterResources); // Master list
 router.get('/venue/:id', resourceController.getResourcesByVenue); // Specific venue resources
@@ -83,5 +85,9 @@ router.post('/remove-assignment', resourceController.removeResourceFromVenue); /
 router.put('/:id/quantity', resourceController.updateResourceQuantity); // Update quantity
 router.post('/:id/report-faulty', resourceController.reportFaultyResource); // Report faulty/damaged
 router.post('/manage-resource', resourceController.manageResource); // Unified management
+
+// Bulk Uploads
+router.post('/bulk', isAdmin, memoryUpload.single('file'), resourceController.bulkCreateResources);
+router.post('/venues/bulk', isAdmin, memoryUpload.single('file'), resourceController.bulkCreateVenues);
 
 module.exports = router;

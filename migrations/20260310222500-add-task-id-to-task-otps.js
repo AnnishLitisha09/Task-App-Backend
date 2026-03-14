@@ -3,18 +3,23 @@
 
 module.exports = {
   up: async (queryInterface, Sequelize) => {
-    await queryInterface.addColumn('task_otps', 'task_id', {
-      type: Sequelize.BIGINT.UNSIGNED,
-      allowNull: true,
-      references: {
-        model: 'tasks',
-        key: 'task_id'
-      },
-      onUpdate: 'CASCADE',
-      onDelete: 'CASCADE'
-    });
+    // Check if task_id already exists before adding
+    const tableDesc = await queryInterface.describeTable('task_otps');
 
-    // Also make assignment_id nullable since we might use task_id instead
+    if (!tableDesc.task_id) {
+      await queryInterface.addColumn('task_otps', 'task_id', {
+        type: Sequelize.BIGINT.UNSIGNED,
+        allowNull: true,
+        references: {
+          model: 'tasks',
+          key: 'task_id'
+        },
+        onUpdate: 'CASCADE',
+        onDelete: 'CASCADE'
+      });
+    }
+
+    // Make assignment_id nullable since we might use task_id instead
     await queryInterface.changeColumn('task_otps', 'assignment_id', {
       type: Sequelize.BIGINT.UNSIGNED,
       allowNull: true

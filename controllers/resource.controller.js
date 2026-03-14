@@ -1,5 +1,6 @@
 const { Department, Venue, RoleAssignment, User, RoleUser, Role, Resource, Faculty, Staff, Scope } = require('../models');
-const { Op } = require('sequelize');
+const { Op, Sequelize } = require('sequelize');
+const xlsx = require('xlsx');
 const fs = require('fs');
 const path = require('path');
 
@@ -1073,5 +1074,202 @@ exports.manageResource = async (req, res) => {
         await t.rollback();
         console.error('Error in manageResource:', error);
         res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+// --- Update Resource Quantity (Incharge/Admin) ---
+exports.updateResourceQuantity = async (req, res) => {
+    try {
+        const { id } = req.params; // resource_id
+        const { quantity } = req.body;
+
+        const resource = await Resource.findByPk(id);
+        if (!resource) return res.status(404).json({ success: false, message: 'Resource not found' });
+
+        await resource.update({ quantity });
+
+        res.json({ success: true, message: 'Quantity updated successfully', resource });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+// --- Report Faulty Resource (Incharge) ---
+exports.reportFaultyResource = async (req, res) => {
+    const t = await Resource.sequelize.transaction();
+    try {
+        const { id } = req.params; // resource_id
+        const { quantity, status, reason } = req.body; // status: 'damaged', 'broken', 'under maintenance'
+
+        if (!['damaged', 'broken', 'under maintenance'].includes(status)) {
+            await t.rollback();
+            return res.status(400).json({ success: false, message: 'Invalid status' });
+        }
+
+        const resource = await Resource.findByPk(id, { transaction: t });
+        if (!resource) {
+            await t.rollback();
+            return res.status(404).json({ success: false, message: 'Resource not found' });
+        }
+
+        if (resource.quantity < quantity) {
+            await t.rollback();
+            return res.status(400).json({ success: false, message: 'Not enough available quantity' });
+        }
+
+        // 1. Subtract from current resource
+        await resource.update({ quantity: resource.quantity - quantity }, { transaction: t });
+
+        // 2. Create/Update a resource entry for the faulty status
+        let faultyResource = await Resource.findOne({
+            where: {
+                venue_id: resource.venue_id,
+                name: resource.name,
+                status: status
+            },
+            transaction: t
+        });
+
+        if (faultyResource) {
+            await faultyResource.update({ quantity: faultyResource.quantity + quantity }, { transaction: t });
+        } else {
+            faultyResource = await Resource.create({
+                venue_id: resource.venue_id,
+                name: resource.name,
+                description: resource.description,
+                quantity: quantity,
+                status: status
+            }, { transaction: t });
+        }
+
+        // 3. Create Maintenance Log
+        const { MaintenanceLog } = require('../models');
+        await MaintenanceLog.create({
+            venue_id: resource.venue_id,
+            resource_id: faultyResource.resource_id,
+            category: 'Fault Reporting',
+            issue_title: `${resource.name} reported as ${status.toUpperCase()}`,
+            description: reason || `Reported ${quantity} items as ${status}`,
+            status: 'pending',
+            start_time: new Date()
+        }, { transaction: t });
+
+        await t.commit();
+        res.json({ success: true, message: 'Resource reported successfully', faultyResource });
+
+    } catch (error) {
+        await t.rollback();
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+// Bulk Create Resources from Excel
+exports.bulkCreateResources = async (req, res) => {
+    if (!req.file) return res.status(400).json({ message: 'No file uploaded' });
+    const t = await Venue.sequelize.transaction({
+        isolationLevel: Sequelize.Transaction.ISOLATION_LEVELS.READ_COMMITTED
+    });
+
+    try {
+        const workbook = xlsx.read(req.file.buffer, { type: 'buffer' });
+        const sheetName = workbook.SheetNames[0];
+        const rows = xlsx.utils.sheet_to_json(workbook.Sheets[sheetName]);
+
+        if (!rows.length) {
+            await t.rollback();
+            return res.status(400).json({ message: 'Empty sheet' });
+        }
+
+        const results = [];
+        for (const row of rows) {
+            const { name, quantity, status, description, venue_name, venue_id } = row;
+
+            try {
+                let vId = venue_id || null;
+                if (!vId && venue_name) {
+                    const venue = await Venue.findOne({ where: { name: venue_name }, transaction: t });
+                    if (venue) vId = venue.venue_id;
+                }
+
+                const resource = await Resource.create({
+                    name,
+                    quantity: quantity || 1,
+                    status: status || 'available',
+                    description: description || '',
+                    venue_id: vId,
+                    created_at: new Date(),
+                    updated_at: new Date()
+                }, { transaction: t });
+
+                results.push({ name: name, status: 'created', id: resource.id });
+            } catch (err) {
+                results.push({ name: name, status: 'failed', reason: err.message });
+            }
+        }
+
+        await t.commit();
+        res.json({ message: 'Resource bulk upload complete', results });
+    } catch (error) {
+        if (t && !t.finished) await t.rollback();
+        res.status(500).json({ message: 'Bulk upload failed', error: error.message });
+    }
+};
+
+// Bulk Create Venues from Excel
+exports.bulkCreateVenues = async (req, res) => {
+    if (!req.file) return res.status(400).json({ message: 'No file uploaded' });
+    const t = await Venue.sequelize.transaction({
+        isolationLevel: Sequelize.Transaction.ISOLATION_LEVELS.READ_COMMITTED
+    });
+
+    try {
+        const workbook = xlsx.read(req.file.buffer, { type: 'buffer' });
+        const sheetName = workbook.SheetNames[0];
+        const rows = xlsx.utils.sheet_to_json(workbook.Sheets[sheetName]);
+
+        if (!rows.length) {
+            await t.rollback();
+            return res.status(400).json({ message: 'Empty sheet' });
+        }
+
+        const results = [];
+        for (const row of rows) {
+            const { name, venue_type, location, status, description, image_url } = row;
+
+            if (!name) {
+                results.push({ name: '(blank)', status: 'skipped', reason: 'Name is required' });
+                continue;
+            }
+
+            try {
+                // Check if venue already exists
+                const existing = await Venue.findOne({ where: { name: name.trim() }, transaction: t });
+
+                if (existing) {
+                    results.push({ name, status: 'skipped', reason: 'Venue already exists' });
+                    continue;
+                }
+
+                const venue = await Venue.create({
+                    name: name.trim(),
+                    venue_type: venue_type || 'others',
+                    location: location || null,
+                    status: status || 'open',
+                    description: description || null,
+                    image_url: image_url || null,
+                    created_at: new Date(),
+                    updated_at: new Date()
+                }, { transaction: t });
+
+                results.push({ name, status: 'created', id: venue.venue_id });
+            } catch (err) {
+                results.push({ name, status: 'failed', reason: err.message });
+            }
+        }
+
+        await t.commit();
+        res.json({ message: 'Venue bulk upload complete', results });
+    } catch (error) {
+        if (t && !t.finished) await t.rollback();
+        res.status(500).json({ message: 'Bulk upload failed', error: error.message });
     }
 };

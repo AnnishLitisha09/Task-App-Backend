@@ -58,6 +58,7 @@ router.post('/staff', userController.createStaff);
 router.post('/role-user', userController.createRoleUser);
 
 // Bulk Creation
+router.post('/bulk', upload.single('file'), userController.bulkCreateUsers); // Unified Bulk Upload
 router.post('/bulk/students', upload.single('file'), userController.bulkCreateUsers);
 router.post('/bulk/faculty', upload.single('file'), userController.bulkCreateUsers);
 
