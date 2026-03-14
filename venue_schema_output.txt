@@ -1,8 +1,0 @@
-venue_id: Nullable=NO, Type=bigint unsigned
-name: Nullable=NO, Type=varchar(100)
-venue_type: Nullable=YES, Type=enum('class','auditorium','seminar hall','conference room','others')
-location: Nullable=YES, Type=varchar(100)
-created_at: Nullable=NO, Type=datetime
-updated_at: Nullable=NO, Type=datetime
-description: Nullable=YES, Type=text
-image_url: Nullable=YES, Type=varchar(255)
