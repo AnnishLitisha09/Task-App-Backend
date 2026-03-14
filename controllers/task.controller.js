@@ -161,6 +161,7 @@ const normalizeTaskPayload = async (body) => {
     // Normalization of booleans
     if (typeof payload.requires_approval === 'string') payload.requires_approval = (payload.requires_approval === 'true');
     else if (payload.approver == 1 || payload.approver === '1' || payload.approver === 'true') payload.requires_approval = true;
+    else if (payload.approver_id) payload.requires_approval = true; // NEW: If ID is given, assume approval is needed
     else payload.requires_approval = !!payload.requires_approval;
 
     if (typeof payload.is_approved === 'string') payload.is_approved = payload.is_approved === 'true';
@@ -1177,7 +1178,11 @@ exports.createUnifiedTask = async (req, res) => {
         validateTaskType(task_type_data, priority);
 
         // --- PRE-CALCULATE ASSIGNEES ---
-        let finalAssigneeIds = [...assignee_ids];
+        // Ensure payload.assignee_ids is an array and stays in sync
+        if (!payload.assignee_ids) payload.assignee_ids = [];
+        if (!Array.isArray(payload.assignee_ids)) payload.assignee_ids = [payload.assignee_ids];
+        
+        let finalAssigneeIds = [...payload.assignee_ids];
 
         if (assign_to_groups && Array.isArray(assign_to_groups)) {
             for (const group of assign_to_groups) {
@@ -1242,7 +1247,11 @@ exports.createUnifiedTask = async (req, res) => {
                     }
                     if (excelUserId) {
                         const numericId = parseInt(excelUserId);
-                        if (!isNaN(numericId) && !finalAssigneeIds.includes(numericId)) finalAssigneeIds.push(numericId);
+                        if (!isNaN(numericId) && !finalAssigneeIds.includes(numericId)) {
+                            finalAssigneeIds.push(numericId);
+                            // Also update payload so it persists in Approval Request
+                            if (!payload.assignee_ids.includes(numericId)) payload.assignee_ids.push(numericId);
+                        }
                     }
                 }
             } catch (e) { console.error('Excel processing error:', e); }
@@ -1253,12 +1262,18 @@ exports.createUnifiedTask = async (req, res) => {
             for (const sub of sub_tasks) {
                 if (sub.assignee_id) {
                     const sid = parseInt(sub.assignee_id);
-                    if (!isNaN(sid) && !finalAssigneeIds.includes(sid)) finalAssigneeIds.push(sid);
+                    if (!isNaN(sid) && !finalAssigneeIds.includes(sid)) {
+                        finalAssigneeIds.push(sid);
+                        if (!payload.assignee_ids.includes(sid)) payload.assignee_ids.push(sid);
+                    }
                 }
                 if (sub.assignee_ids && Array.isArray(sub.assignee_ids)) {
                     sub.assignee_ids.forEach(sid => {
                         const numericId = parseInt(sid);
-                        if (!isNaN(numericId) && !finalAssigneeIds.includes(numericId)) finalAssigneeIds.push(numericId);
+                        if (!isNaN(numericId) && !finalAssigneeIds.includes(numericId)) {
+                            finalAssigneeIds.push(numericId);
+                            if (!payload.assignee_ids.includes(numericId)) payload.assignee_ids.push(numericId);
+                        }
                     });
                 }
             }

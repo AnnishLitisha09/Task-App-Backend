@@ -95,8 +95,15 @@ exports.login = async (req, res) => {
             const uniqueScopes = [...new Set(scopes)];
 
             if (uniqueMgmtRoles.length > 0) {
-                specificRole = `${baseRole} / ${uniqueMgmtRoles.join(', ')}`;
-                allRoles = [...new Set([baseRole, ...uniqueMgmtRoles])];
+                // Remove 'Role-user' from allRoles if we have specific roles
+                const filteredRoles = uniqueMgmtRoles.filter(r => r.toLowerCase() !== 'role-user');
+                if (filteredRoles.length > 0) {
+                    specificRole = filteredRoles.join(', ');
+                    allRoles = [...new Set(filteredRoles)];
+                } else {
+                    specificRole = baseRole;
+                    allRoles = [baseRole];
+                }
             }
             if (uniqueScopes.length > 0) {
                 scopeDetails = uniqueScopes.join(', ');
@@ -201,8 +208,15 @@ exports.googleLogin = async (req, res) => {
             const uniqueScopes = [...new Set(scopes)];
 
             if (uniqueMgmtRoles.length > 0) {
-                specificRole = `${baseRole} / ${uniqueMgmtRoles.join(', ')}`;
-                allRoles = [...new Set([baseRole, ...uniqueMgmtRoles])];
+                // Remove 'Role-user' from allRoles if we have specific roles
+                const filteredRoles = uniqueMgmtRoles.filter(r => r.toLowerCase() !== 'role-user');
+                if (filteredRoles.length > 0) {
+                    specificRole = filteredRoles.join(', ');
+                    allRoles = [...new Set(filteredRoles)];
+                } else {
+                    specificRole = baseRole;
+                    allRoles = [baseRole];
+                }
             }
             if (uniqueScopes.length > 0) {
                 scopeDetails = uniqueScopes.join(', ');
