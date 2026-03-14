@@ -1,7 +1,7 @@
 const { User, Student, Faculty, Staff, RoleUser, Department, RoleAssignment, Role, AuthAccount, Venue, TaskAssign } = require('../models');
 const xlsx = require('xlsx');
 const bcrypt = require('bcryptjs');
-const { Op } = require('sequelize');
+const { Op, Sequelize } = require('sequelize');
 
 
 // Helper to create base user
@@ -237,119 +237,161 @@ exports.createRoleUser = async (req, res) => {
     }
 };
 
-// Bulk Create from Excel
+// Enhanced Bulk Create from Excel
 exports.bulkCreateUsers = async (req, res) => {
     if (!req.file) return res.status(400).json({ message: 'No file uploaded' });
-    const t = await User.sequelize.transaction();
+    
+    // Use READ COMMITTED isolation level to avoid heavy gap locks in MySQL bulk operations
+    const t = await User.sequelize.transaction({
+        isolationLevel: Sequelize.Transaction.ISOLATION_LEVELS.READ_COMMITTED
+    });
 
     try {
         const workbook = xlsx.read(req.file.buffer, { type: 'buffer' });
         const sheetName = workbook.SheetNames[0];
         const rows = xlsx.utils.sheet_to_json(workbook.Sheets[sheetName]);
-        const { type } = req.body; // 'student', 'faculty', 'staff'
 
-        if (!rows.length) return res.status(400).json({ message: 'Empty sheet' });
+        if (!rows.length) {
+            await t.rollback();
+            return res.status(400).json({ message: 'Empty sheet' });
+        }
 
         const results = [];
+        const { Department, Role, RoleAssignment, Venue } = require('../models');
 
         for (const row of rows) {
+            const {
+                user_type, reg_no, name, email, department_id, department_name,
+                year, c_gpa, score, penalty, faculty_id, faculty_email,
+                faculty_reg_no, designation, type, manager_email,
+                role_name, roleName, venue_id, venue_name
+            } = row;
+
+            if (!email || !name || !user_type) {
+                results.push({ email: email || 'N/A', status: 'failed', reason: 'Missing required fields' });
+                continue;
+            }
+
             try {
-                // Determine logic based on type
-                if (type === 'student') {
-                    // Check faculty
-                    let facultyId = null;
-                    if (row.faculty_email) {
-                        const faculty = await Faculty.findOne({ where: { email: row.faculty_email } });
-                        if (faculty) facultyId = faculty.id;
-                    }
-                    else if (row.faculty_reg_no) {
-                        const faculty = await Faculty.findOne({ where: { reg_no: row.faculty_reg_no } });
-                        if (faculty) facultyId = faculty.id;
+                const lowerType = user_type.toLowerCase();
+                
+                // 1. Existence check with transaction
+                let existing = null;
+                if (lowerType === 'student') {
+                    existing = await Student.findOne({ 
+                        where: { [Op.or]: [{ reg_no: reg_no || '' }, { email }] },
+                        transaction: t 
+                    });
+                } else if (lowerType === 'faculty') {
+                    existing = await Faculty.findOne({ 
+                        where: { [Op.or]: [{ reg_no: reg_no || '' }, { email }] },
+                        transaction: t 
+                    });
+                } else if (lowerType === 'staff' || lowerType === 'role-user') {
+                    const Model = lowerType === 'staff' ? Staff : RoleUser;
+                    existing = await Model.findOne({ where: { email }, transaction: t });
+                }
+
+                if (existing) {
+                    results.push({ email: email, status: 'skipped', reason: 'Profile already exists' });
+                    continue;
+                }
+
+                // 2. Resolve Department
+                let deptId = department_id || null;
+                if (!deptId && department_name) {
+                    const dept = await Department.findOne({ where: { name: department_name }, transaction: t });
+                    if (dept) deptId = dept.department_id;
+                    else throw new Error(`Department '${department_name}' not found`);
+                }
+
+                // 3. Resolve Venue
+                let vId = venue_id || null;
+                if (!vId && venue_name) {
+                    const venue = await Venue.findOne({ where: { name: venue_name }, transaction: t });
+                    if (venue) vId = venue.venue_id;
+                    else throw new Error(`Venue '${venue_name}' not found`);
+                }
+
+                // 4. Create Base User
+                const user = await createBaseUser(lowerType, t);
+
+                // 5. Create Profile
+                if (lowerType === 'student') {
+                    let fId = faculty_id || null;
+                    if (!fId) {
+                        if (faculty_email) {
+                            const fac = await Faculty.findOne({ where: { email: faculty_email }, transaction: t });
+                            if (fac) fId = fac.id;
+                        } else if (faculty_reg_no) {
+                            const fac = await Faculty.findOne({ where: { reg_no: faculty_reg_no }, transaction: t });
+                            if (fac) fId = fac.id;
+                        }
                     }
 
-                    // Check Dept
-                    let deptId = row.department_id;
-                    if (!deptId && row.department_name) {
-                        const dept = await Department.findOne({ where: { name: row.department_name } });
-                        if (dept) deptId = dept.department_id;
-                    }
-
-                    if (!deptId) throw new Error(`Department not found for student ${row.name}`);
-
-                    const user = await createBaseUser('student', t);
                     await Student.create({
-                        user_id: user.user_id,
-                        reg_no: row.reg_no,
-                        name: row.name,
-                        email: row.email,
-                        department_id: deptId,
-                        year: row.year,
-                        // section removed
-                        c_gpa: row.c_gpa || 0.0,
-                        faculty_id: facultyId || null,
-                        score: row.score || 0,
-                        penalty: row.penalty || 0,
-                        created_at: new Date(),
-                        updated_at: new Date()
+                        user_id: user.user_id, reg_no, name, email, department_id: deptId,
+                        year: year || 1, c_gpa: c_gpa || 0.0, score: score || 0,
+                        penalty: penalty || 0, faculty_id: fId
                     }, { transaction: t });
-                    await createAuthAccount(user.user_id, row.email, t);
-                    results.push({ email: row.email, status: 'created' });
 
-                } else if (type === 'faculty') {
-                    let deptId = row.department_id;
-                    if (!deptId && row.department_name) {
-                        const dept = await Department.findOne({ where: { name: row.department_name } });
-                        if (dept) deptId = dept.department_id;
-                    }
-                    if (!deptId) throw new Error(`Department not found for faculty ${row.name}`);
-
-                    const user = await createBaseUser('faculty', t);
+                } else if (lowerType === 'faculty') {
                     await Faculty.create({
-                        user_id: user.user_id,
-                        reg_no: row.reg_no,
-                        name: row.name,
-                        email: row.email,
-                        department_id: deptId,
-                        type: row.type || null, // Add type
-                        created_at: new Date(),
-                        updated_at: new Date()
+                        user_id: user.user_id, reg_no, name, email,
+                        department_id: deptId, type: type || designation || null
                     }, { transaction: t });
-                    await createAuthAccount(user.user_id, row.email, t);
-                    results.push({ email: row.email, status: 'created' });
 
-                } else if (type === 'staff') {
+                } else if (lowerType === 'staff') {
                     let managerId = null;
-                    if (row.manager_email) {
-                        const manager = await Staff.findOne({ where: { email: row.manager_email } });
+                    if (manager_email) {
+                        const manager = await Staff.findOne({ where: { email: manager_email }, transaction: t });
                         if (manager) managerId = manager.user_id;
                     }
+                    await Staff.create({ user_id: user.user_id, manager_id: managerId, name, email, designation }, { transaction: t });
 
-                    const user = await createBaseUser('staff', t);
-                    await Staff.create({
-                        user_id: user.user_id,
-                        manager_id: managerId,
-                        name: row.name,
-                        email: row.email,
-                        designation: row.designation,
-                        created_at: new Date(),
-                        updated_at: new Date()
-                    }, { transaction: t });
-                    await createAuthAccount(user.user_id, row.email, t);
-                    results.push({ email: row.email, status: 'created' });
+                } else if (lowerType === 'role-user') {
+                    await RoleUser.create({ user_id: user.user_id, name, email }, { transaction: t });
                 }
+
+                // 6. Create Auth Account
+                await createAuthAccount(user.user_id, email, name, t);
+
+                // 7. Role Assignment
+                const effectiveRole = role_name || roleName;
+                if (effectiveRole) {
+                    const role = await Role.findOne({ where: { user_role: effectiveRole }, transaction: t });
+                    if (!role) throw new Error(`Role '${effectiveRole}' not found`);
+
+                    if (effectiveRole === 'HOD' && deptId) {
+                        await RoleAssignment.destroy({ where: { role_id: role.role_id, department_id: deptId }, transaction: t });
+                    }
+                    if (effectiveRole === 'INCHARGE' && vId) {
+                        await RoleAssignment.destroy({ where: { role_id: role.role_id, venue_id: vId }, transaction: t });
+                    }
+
+                    await RoleAssignment.create({
+                        user_id: user.user_id, role_id: role.role_id,
+                        department_id: (effectiveRole === 'HOD' ? deptId : null),
+                        venue_id: vId || null
+                    }, { transaction: t });
+                }
+
+                results.push({ email: email, status: 'created', user_id: user.user_id });
             } catch (err) {
-                results.push({ email: row.email, status: 'failed', reason: err.message });
+                results.push({ email: email, status: 'failed', reason: err.message });
                 throw err;
             }
         }
 
         await t.commit();
-        res.json({ message: 'Bulk creation successful', results });
+        res.json({ message: 'Bulk creation complete', results });
     } catch (error) {
-        await t.rollback();
-        res.status(500).json({ message: 'Bulk creation failed', error: error.message });
+        if (t && !t.finished) await t.rollback();
+        console.error('Bulk creation error:', error);
+        res.status(500).json({ message: 'Bulk creation failed', error: error.message, type: error.name });
     }
 };
+
 
 exports.deleteUser = async (req, res) => {
     const t = await User.sequelize.transaction();

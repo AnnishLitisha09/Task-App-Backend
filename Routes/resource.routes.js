@@ -72,6 +72,8 @@ router.get('/venues/:id/history', maintenanceController.getVenueStatusHistory);
 router.get('/venues/:id/resource-analytics', maintenanceController.getVenueResourceAnalytics);
 router.get('/venues/:venueId/maintenance-logs', maintenanceController.getMaintenanceLogsByVenue); // NEW
 
+const memoryUpload = multer({ storage: multer.memoryStorage() });
+
 // Resources
 router.get('/master', resourceController.getMasterResources); // Master list
 router.get('/venue/:id', resourceController.getResourcesByVenue); // Specific venue resources
@@ -80,5 +82,9 @@ router.put('/:id', isAdmin, resourceController.updateResource); // Update master
 router.delete('/:id', isAdmin, resourceController.deleteResource); // Delete master (Admin Only)
 router.post('/assign', resourceController.assignResourceToVenue); // Allocation logic
 router.post('/remove-assignment', resourceController.removeResourceFromVenue); // De-allocation logic
+
+// Bulk Uploads
+router.post('/bulk', isAdmin, memoryUpload.single('file'), resourceController.bulkCreateResources);
+router.post('/venues/bulk', isAdmin, memoryUpload.single('file'), resourceController.bulkCreateVenues);
 
 module.exports = router;

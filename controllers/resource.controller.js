@@ -1,5 +1,6 @@
 const { Department, Venue, RoleAssignment, User, RoleUser, Role, Resource, Faculty, Staff, Scope } = require('../models');
-const { Op } = require('sequelize');
+const { Op, Sequelize } = require('sequelize');
+const xlsx = require('xlsx');
 const fs = require('fs');
 const path = require('path');
 
@@ -950,5 +951,102 @@ exports.getVenueUsageReport = async (req, res) => {
         });
     } catch (error) {
         res.status(500).json({ message: error.message });
+    }
+};
+// Bulk Create Resources from Excel
+exports.bulkCreateResources = async (req, res) => {
+    if (!req.file) return res.status(400).json({ message: 'No file uploaded' });
+    const t = await Venue.sequelize.transaction({
+        isolationLevel: Sequelize.Transaction.ISOLATION_LEVELS.READ_COMMITTED
+    });
+
+    try {
+        const workbook = xlsx.read(req.file.buffer, { type: 'buffer' });
+        const sheetName = workbook.SheetNames[0];
+        const rows = xlsx.utils.sheet_to_json(workbook.Sheets[sheetName]);
+
+        if (!rows.length) {
+            await t.rollback();
+            return res.status(400).json({ message: 'Empty sheet' });
+        }
+
+        const results = [];
+        for (const row of rows) {
+            const { name, quantity, status, description, venue_name, venue_id } = row;
+
+            try {
+                let vId = venue_id || null;
+                if (!vId && venue_name) {
+                    const venue = await Venue.findOne({ where: { name: venue_name }, transaction: t });
+                    if (venue) vId = venue.venue_id;
+                }
+
+                const resource = await Resource.create({
+                    name,
+                    quantity: quantity || 1,
+                    status: status || 'available',
+                    description: description || '',
+                    venue_id: vId,
+                    created_at: new Date(),
+                    updated_at: new Date()
+                }, { transaction: t });
+
+                results.push({ name: name, status: 'created', id: resource.id });
+            } catch (err) {
+                results.push({ name: name, status: 'failed', reason: err.message });
+            }
+        }
+
+        await t.commit();
+        res.json({ message: 'Resource bulk upload complete', results });
+    } catch (error) {
+        if (t && !t.finished) await t.rollback();
+        res.status(500).json({ message: 'Bulk upload failed', error: error.message });
+    }
+};
+
+// Bulk Create Venues from Excel
+exports.bulkCreateVenues = async (req, res) => {
+    if (!req.file) return res.status(400).json({ message: 'No file uploaded' });
+    const t = await Venue.sequelize.transaction({
+        isolationLevel: Sequelize.Transaction.ISOLATION_LEVELS.READ_COMMITTED
+    });
+
+    try {
+        const workbook = xlsx.read(req.file.buffer, { type: 'buffer' });
+        const sheetName = workbook.SheetNames[0];
+        const rows = xlsx.utils.sheet_to_json(workbook.Sheets[sheetName]);
+
+        if (!rows.length) {
+            await t.rollback();
+            return res.status(400).json({ message: 'Empty sheet' });
+        }
+
+        const results = [];
+        for (const row of rows) {
+            const { name, venue_type, location, status, description } = row;
+
+            try {
+                const venue = await Venue.create({
+                    name,
+                    venue_type: venue_type || 'class',
+                    location,
+                    status: status || 'open',
+                    description: description || '',
+                    created_at: new Date(),
+                    updated_at: new Date()
+                }, { transaction: t });
+
+                results.push({ name: name, status: 'created', id: venue.venue_id });
+            } catch (err) {
+                results.push({ name: name, status: 'failed', reason: err.message });
+            }
+        }
+
+        await t.commit();
+        res.json({ message: 'Venue bulk upload complete', results });
+    } catch (error) {
+        if (t && !t.finished) await t.rollback();
+        res.status(500).json({ message: 'Bulk upload failed', error: error.message });
     }
 };
