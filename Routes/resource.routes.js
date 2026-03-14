@@ -82,6 +82,8 @@ router.put('/:id', isAdmin, resourceController.updateResource); // Update master
 router.delete('/:id', isAdmin, resourceController.deleteResource); // Delete master (Admin Only)
 router.post('/assign', resourceController.assignResourceToVenue); // Allocation logic
 router.post('/remove-assignment', resourceController.removeResourceFromVenue); // De-allocation logic
+router.put('/:id/quantity', resourceController.updateResourceQuantity); // Update quantity
+router.post('/:id/report-faulty', resourceController.reportFaultyResource); // Report faulty/damaged
 
 // Bulk Uploads
 router.post('/bulk', isAdmin, memoryUpload.single('file'), resourceController.bulkCreateResources);

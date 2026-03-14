@@ -328,11 +328,12 @@ exports.getMyVenue = async (req, res) => {
             created_at: venue.created_at,
             incharge: null,
             total_resource_count: venue.Resources ? venue.Resources.reduce((acc, r) => acc + (r.quantity || 0), 0) : 0,
-            available_resources: venue.Resources ? venue.Resources.filter(r => r.status === 'available').map(r => ({
+            all_resources: venue.Resources ? venue.Resources.map(r => ({
                 resource_id: r.resource_id,
                 name: r.name,
                 quantity: r.quantity,
-                status: r.status
+                status: r.status,
+                description: r.description
             })) : []
         };
 
@@ -953,6 +954,92 @@ exports.getVenueUsageReport = async (req, res) => {
         res.status(500).json({ message: error.message });
     }
 };
+
+// --- Update Resource Quantity (Incharge/Admin) ---
+exports.updateResourceQuantity = async (req, res) => {
+    try {
+        const { id } = req.params; // resource_id
+        const { quantity } = req.body;
+
+        const resource = await Resource.findByPk(id);
+        if (!resource) return res.status(404).json({ success: false, message: 'Resource not found' });
+
+        await resource.update({ quantity });
+
+        res.json({ success: true, message: 'Quantity updated successfully', resource });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+// --- Report Faulty Resource (Incharge) ---
+exports.reportFaultyResource = async (req, res) => {
+    const t = await Resource.sequelize.transaction();
+    try {
+        const { id } = req.params; // resource_id
+        const { quantity, status, reason } = req.body; // status: 'damaged', 'broken', 'under maintenance'
+
+        if (!['damaged', 'broken', 'under maintenance'].includes(status)) {
+            await t.rollback();
+            return res.status(400).json({ success: false, message: 'Invalid status' });
+        }
+
+        const resource = await Resource.findByPk(id, { transaction: t });
+        if (!resource) {
+            await t.rollback();
+            return res.status(404).json({ success: false, message: 'Resource not found' });
+        }
+
+        if (resource.quantity < quantity) {
+            await t.rollback();
+            return res.status(400).json({ success: false, message: 'Not enough available quantity' });
+        }
+
+        // 1. Subtract from current resource
+        await resource.update({ quantity: resource.quantity - quantity }, { transaction: t });
+
+        // 2. Create/Update a resource entry for the faulty status
+        let faultyResource = await Resource.findOne({
+            where: {
+                venue_id: resource.venue_id,
+                name: resource.name,
+                status: status
+            },
+            transaction: t
+        });
+
+        if (faultyResource) {
+            await faultyResource.update({ quantity: faultyResource.quantity + quantity }, { transaction: t });
+        } else {
+            faultyResource = await Resource.create({
+                venue_id: resource.venue_id,
+                name: resource.name,
+                description: resource.description,
+                quantity: quantity,
+                status: status
+            }, { transaction: t });
+        }
+
+        // 3. Create Maintenance Log
+        const { MaintenanceLog } = require('../models');
+        await MaintenanceLog.create({
+            venue_id: resource.venue_id,
+            resource_id: faultyResource.resource_id,
+            category: 'Fault Reporting',
+            issue_title: `${resource.name} reported as ${status.toUpperCase()}`,
+            description: reason || `Reported ${quantity} items as ${status}`,
+            status: 'pending',
+            start_time: new Date()
+        }, { transaction: t });
+
+        await t.commit();
+        res.json({ success: true, message: 'Resource reported successfully', faultyResource });
+
+    } catch (error) {
+        await t.rollback();
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
 // Bulk Create Resources from Excel
 exports.bulkCreateResources = async (req, res) => {
     if (!req.file) return res.status(400).json({ message: 'No file uploaded' });
@@ -1024,7 +1111,7 @@ exports.bulkCreateVenues = async (req, res) => {
 
         const results = [];
         for (const row of rows) {
-            const { name, venue_type, location, status, description } = row;
+            const { name, venue_type, location, status, description, image_url } = row;
 
             try {
                 const venue = await Venue.create({
@@ -1033,6 +1120,7 @@ exports.bulkCreateVenues = async (req, res) => {
                     location,
                     status: status || 'open',
                     description: description || '',
+                    image_url: image_url || null,
                     created_at: new Date(),
                     updated_at: new Date()
                 }, { transaction: t });
