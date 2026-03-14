@@ -24,7 +24,7 @@ module.exports = (sequelize, DataTypes) => {
             allowNull: true
         },
         category: {
-            type: DataTypes.ENUM('electrical', 'technical', 'infrastructure', 'maintenance'),
+            type: DataTypes.STRING(100), // Changed from ENUM to STRING for flexibility
             allowNull: false
         },
         cost: {

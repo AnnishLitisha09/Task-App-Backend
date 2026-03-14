@@ -1,5 +1,5 @@
 'use strict';
-const { MaintenanceLog, Venue, Resource, ResourceUsageLog, User, Task, TaskType, TaskAssign } = require('../models');
+const { MaintenanceLog, Venue, Resource, ResourceUsageLog, User, Task, TaskType, TaskAssign, RoleAssignment } = require('../models');
 const { Op, literal } = require('sequelize');
 
 // Helper: format YYYY-MM-DD
@@ -24,6 +24,24 @@ exports.addMaintenanceLog = async (req, res) => {
             start_time,
             end_time
         } = req.body;
+
+        const userId = req.userId;
+        const userRole = req.userRole;
+
+        // Authorization Check: Only Admin or the assigned Venue Incharge can create logs
+        if (userRole !== 'admin' && userRole !== 'ADMIN') {
+            const hasAssignment = await RoleAssignment.findOne({
+                where: {
+                    user_id: userId,
+                    venue_id: venue_id
+                }
+            });
+
+            if (!hasAssignment) {
+                await t.rollback();
+                return res.status(403).json({ message: 'Unauthorized: You are not assigned to this venue.' });
+            }
+        }
 
         const log = await MaintenanceLog.create({
             venue_id,

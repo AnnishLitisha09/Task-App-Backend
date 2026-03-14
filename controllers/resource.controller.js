@@ -190,11 +190,15 @@ exports.getUnassignedHODs = async (req, res) => {
 
 exports.getAllVenues = async (req, res) => {
     try {
+        const userId = req.userId;
+        const userRole = req.userRole;
+
         const venues = await Venue.findAll({
             include: [
                 {
                     model: RoleAssignment,
-                    required: false, // LEFT JOIN - allows venues without incharge
+                    required: (userRole !== 'admin' && userRole !== 'ADMIN'), 
+                    where: (userRole !== 'admin' && userRole !== 'ADMIN') ? { user_id: userId } : {},
                     include: [
                         {
                             model: User,
@@ -267,7 +271,7 @@ exports.getAllVenues = async (req, res) => {
 
 exports.getMyVenue = async (req, res) => {
     try {
-        const userId = req.user.user_id;
+        const userId = req.userId;
         const assignment = await RoleAssignment.findOne({
             where: { user_id: userId, venue_id: { [Op.not]: null } }
         });
