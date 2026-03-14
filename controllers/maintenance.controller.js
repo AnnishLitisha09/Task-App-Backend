@@ -515,6 +515,9 @@ exports.getVenueStatusHistory = async (req, res) => {
                 venue_id: id,
                 category: 'Status Change'
             },
+            include: [
+                { model: Resource, attributes: ['name'] }
+            ],
             order: [['created_at', 'DESC']],
             limit: 20 // Last 20 status changes
         });
@@ -523,11 +526,11 @@ exports.getVenueStatusHistory = async (req, res) => {
         const history = logs.map(l => ({
             log_id: l.log_id,
             category: l.category,
-            status: l.category === 'Status Change' ? l.issue_title.split(': ')[1] || 'Status Update' : 'Maintenance',
+            status: l.category === 'Status Change' ? (l.issue_title.includes(': ') ? l.issue_title.split(': ')[1] : l.issue_title) : 'Maintenance',
             issue_title: l.issue_title,
             description: l.description,
             resource_name: l.Resource ? l.Resource.name : null,
-            created_at: l.created_at,
+            created_at: l.created_at || l.createdAt,
             start_time: l.start_time,
             end_time: l.end_time
         }));
