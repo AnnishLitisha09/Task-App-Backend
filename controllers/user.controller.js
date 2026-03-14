@@ -163,7 +163,12 @@ exports.createStaff = async (req, res) => {
 exports.createRoleUser = async (req, res) => {
     const t = await User.sequelize.transaction();
     try {
-        const { name, email, roleName, department_id, venue_id } = req.body;
+        const { name, email, roleName, scope, department_id, venue_id } = req.body;
+
+        if (!name || !email) {
+            await t.rollback();
+            return res.status(400).json({ message: 'Name and email are required' });
+        }
 
         const existing = await RoleUser.findOne({ where: { email } });
         if (existing) {
@@ -185,41 +190,40 @@ exports.createRoleUser = async (req, res) => {
 
         // Unified Creation + Assignment
         if (roleName) {
-            const role = await Role.findOne({ where: { user_role: roleName } });
-            if (!role) {
-                throw new Error(`Role '${roleName}' not found in system`);
+            // Map scope name to ID if needed
+            const SCOPE_MAP = { infrastructure: 1, institutional: 2, departmental: 3 };
+            const scopeId = SCOPE_MAP[scope?.toLowerCase()] || 2; // Default to institutional
+
+            const [role] = await Role.findOrCreate({
+                where: { user_role: roleName },
+                defaults: { user_role: roleName, scope_id: scopeId },
+                transaction: t
+            });
+
+            const effectiveScopeName = scope?.toLowerCase() || 'institutional';
+
+            // Role-specific validation
+            if (effectiveScopeName === 'departmental' && !department_id) {
+                throw new Error(`Role '${roleName}' requires a department selection`);
+            }
+            if (effectiveScopeName === 'infrastructure' && !venue_id) {
+                throw new Error(`Role '${roleName}' requires a venue selection`);
             }
 
-            // HOD Logic
-            if (roleName === 'HOD') {
-                if (!department_id) throw new Error('Department ID is required for HOD assignment');
-
-                // Enforce single HOD: Remove existing HOD for this department
-                await RoleAssignment.destroy({
-                    where: {
-                        role_id: role.role_id,
-                        department_id: department_id
-                    },
-                    transaction: t
-                });
-            }
-
-            // INCHARGE Logic: Enforce single incharge per venue
-            if (roleName === 'INCHARGE' && venue_id) {
-                await RoleAssignment.destroy({
-                    where: {
-                        role_id: role.role_id,
-                        venue_id: venue_id
-                    },
-                    transaction: t
-                });
+            // Enforce single holder per context
+            if (effectiveScopeName === 'departmental') {
+                await RoleAssignment.destroy({ where: { role_id: role.role_id, department_id }, transaction: t });
+            } else if (effectiveScopeName === 'infrastructure') {
+                await RoleAssignment.destroy({ where: { role_id: role.role_id, venue_id }, transaction: t });
+            } else {
+                await RoleAssignment.destroy({ where: { role_id: role.role_id }, transaction: t });
             }
 
             await RoleAssignment.create({
                 user_id: user.user_id,
                 role_id: role.role_id,
-                department_id: department_id || null,
-                venue_id: venue_id || null,
+                department_id: effectiveScopeName === 'departmental' ? department_id : null,
+                venue_id: effectiveScopeName === 'infrastructure' ? venue_id : null,
                 created_at: new Date(),
                 updated_at: new Date()
             }, { transaction: t });
@@ -232,8 +236,13 @@ exports.createRoleUser = async (req, res) => {
             role: roleName || 'No specific role assigned'
         });
     } catch (error) {
-        await t.rollback();
-        res.status(500).json({ message: error.message });
+        if (t) await t.rollback();
+        console.error('CreateRoleUser Error:', error);
+        res.status(500).json({ 
+            message: error.name === 'SequelizeUniqueConstraintError' 
+                ? 'User with this email already exists' 
+                : error.message 
+        });
     }
 };
 
