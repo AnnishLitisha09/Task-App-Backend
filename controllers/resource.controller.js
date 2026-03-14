@@ -326,6 +326,7 @@ exports.getMyVenue = async (req, res) => {
             description: venue.description,
             image_url: venue.image_url,
             created_at: venue.created_at,
+            current_status: venue.status || 'open',
             incharge: null,
             all_resources: venue.Resources ? venue.Resources.map(r => ({
                 resource_id: r.resource_id,
@@ -1271,5 +1272,6 @@ exports.bulkCreateVenues = async (req, res) => {
     } catch (error) {
         if (t && !t.finished) await t.rollback();
         res.status(500).json({ message: 'Bulk upload failed', error: error.message });
+
     }
 };
