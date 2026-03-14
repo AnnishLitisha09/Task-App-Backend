@@ -1431,6 +1431,7 @@ exports.createUnifiedTask = async (req, res) => {
 
             // 4. Handle Sub-Tasks (Child Tasks)
             if (is_package && sub_tasks && Array.isArray(sub_tasks)) {
+                let sequenceOrder = 1;
                 for (const sub of sub_tasks) {
                     const childTask = await Task.create({
                         title: sub.title || `Sub-task for ${title}`,
@@ -1447,6 +1448,7 @@ exports.createUnifiedTask = async (req, res) => {
                         is_approved: requires_approval ? false : true,
                         approver_id: requires_approval ? approver_id : null,
                         creator_id: userId,
+                        sequence_order: sequenceOrder++,
                         origin_type: origin_type || 'directive',
                         status: requires_approval ? 'Pending Approval' : 'Active'
                     }, { transaction: t });
@@ -1458,6 +1460,7 @@ exports.createUnifiedTask = async (req, res) => {
                         end_date: sub.end_date || oDate,
                         start_time: sub.start_time || task_type_data.start_time || null,
                         end_time: sub.end_time || task_type_data.end_time || null,
+                        max_duration_hours: sub.max_duration_hours || null,
                         venue_id: sub.venue_id || venue_id || null,
                         recurrence: 'none'
                     }, { transaction: t });
@@ -1494,6 +1497,15 @@ exports.createUnifiedTask = async (req, res) => {
 
                             let finalChildStatus = childAutoAccept ? 'accepted' : 'pending';
                             let finalChildAcceptedAt = childAutoAccept ? new Date() : null;
+
+                            // Determine if sub-task should be queued (sequential logic for non-students)
+                            const isStudent = roleMap[sid] === 'student';
+
+                            // SEQUENTIAL LOGIC: Only the first sub-task is active/pending; others are 'queued' for non-students
+                            if (childTask.sequence_order > 1 && !isStudent) {
+                                finalChildStatus = 'queued';
+                                finalChildAcceptedAt = null;
+                            }
 
                             if (childAutoAccept) {
                                 // 1. Daily Task Limit Check
@@ -1561,12 +1573,14 @@ exports.createUnifiedTask = async (req, res) => {
                                 accepted_at: finalChildAcceptedAt
                             });
 
-                            await Notification.create({
-                                user_id: sid,
-                                title: 'New Sub-task Assigned',
-                                msg: `You have been assigned a sub-task: ${sub.title} within ${title}`,
-                                type: 'task_created'
-                            }, { transaction: t });
+                            if (finalChildStatus !== 'queued') {
+                                await Notification.create({
+                                    user_id: sid,
+                                    title: 'New Sub-task Assigned',
+                                    msg: `You have been assigned a sub-task: ${sub.title} within ${title}`,
+                                    type: 'task_created'
+                                }, { transaction: t });
+                            }
                         }
 
                         if (childAssignments.length > 0) {
@@ -2120,7 +2134,8 @@ exports.getUserTaskStats = async (req, res) => {
                         model: TaskPackageClosure,
                         required: false,
                         include: [{ model: TaskClosure, attributes: ['name'] }]
-                    }
+                    },
+                    { model: TaskOTP, required: false } // Eager load OTPs
                 ]
             }],
             order: [['submitted_time', 'DESC']]
@@ -2146,46 +2161,11 @@ exports.getUserTaskStats = async (req, res) => {
             const task = a.Task;
             const closures = task.TaskPackageClosures || [];
 
-            // --- FULLY COMPLETED CHECK ---
-            let isFullyCompleted = true;
-
-            // Check 1: If is_document is required, proof must be submitted
-            if (task.is_document && (!a.proof || a.proof.trim() === '')) {
-                isFullyCompleted = false;
-            }
-
-            // Check 2: If closure methods are required, check each one
-            if (isFullyCompleted && closures.length > 0) {
-                for (const closure of closures) {
-                    const closureName = closure.TaskClosure?.name?.toLowerCase();
-                    if (!closureName) continue;
-
-                    if (closureName === 'document' || closureName === 'image') {
-                        // Must have proof file submitted
-                        if (!a.proof || a.proof.trim() === '') {
-                            isFullyCompleted = false;
-                            break;
-                        }
-                    } else if (closureName === 'otp') {
-                        // Must have a verified OTP record
-                        const otpRecord = await TaskOTP.findOne({
-                            where: { assignment_id: a.id, is_used: true }
-                        });
-                        if (!otpRecord) {
-                            isFullyCompleted = false;
-                            break;
-                        }
-                    }
-                }
-            }
-
-            if (!isFullyCompleted) continue;
-            // --- End of check ---
-
             const baseScore = parseFloat(task.score || 0);
             const earnedScore = parseFloat(a.earned_score || 0);
             const penalty = parseFloat(a.penalty_applied || 0);
 
+            // Accumulate actual counts for tracking (regardless of detail filtering)
             totalBaseScore += baseScore;
             totalPenalty += penalty;
             totalEarnedScore += earnedScore;
@@ -2200,18 +2180,23 @@ exports.getUserTaskStats = async (req, res) => {
                 }
             }
 
-            taskDetails.push({
-                task_id: a.task_id,
-                title: task.title,
-                status: a.status,
-                base_score: baseScore,
-                earned_score: earnedScore,
-                penalty_applied: penalty,
-                submitted_time: a.submitted_time,
-                proof: a.proof || null,
-                required_closures: closures.map(c => c.TaskClosure?.name).filter(Boolean),
-                submission_type: penalty > 0 ? 'Late Submission' : 'Perfect Submission'
-            });
+            // User requirement: Fetch details if they gained score OR there was a penalty.
+            // "if 0 score for some task then not fetch that 0 score task" 
+            // We interpret this as: exclude tasks that had 0 base score AND no penalty.
+            if (baseScore > 0 || penalty > 0) {
+                taskDetails.push({
+                    task_id: a.task_id,
+                    title: task.title,
+                    status: a.status,
+                    base_score: baseScore,
+                    earned_score: earnedScore,
+                    penalty_applied: penalty,
+                    submitted_time: a.submitted_time,
+                    proof: a.proof || null,
+                    required_closures: closures.map(c => c.TaskClosure?.name).filter(Boolean),
+                    submission_type: penalty > 0 ? 'Late Submission' : 'Perfect Submission'
+                });
+            }
         }
 
         const last7Days = Object.keys(dailyStats).map(date => ({

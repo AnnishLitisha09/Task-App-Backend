@@ -1,6 +1,11 @@
 const { Task, TaskType, TaskAssign, TaskOTP, User, Notification, TaskPackageClosure, TaskClosure } = require('../models');
 const { Op, literal } = require('sequelize');
 
+let isProcessingStartReminder = false;
+let isProcessingOtpSummary = false;
+let isProcessingDocSummary = false;
+let isProcessingStudentStatus = false;
+
 /**
  * Helper to create a notification
  */
@@ -23,6 +28,8 @@ const sendNotification = async (userId, title, msg, type = 'general') => {
  * This runs every minute.
  */
 const runStart10MinReminderJob = async () => {
+    if (isProcessingStartReminder) return;
+    isProcessingStartReminder = true;
     try {
         const now = new Date();
         const istOffset = 330 * 60 * 1000;
@@ -53,8 +60,8 @@ const runStart10MinReminderJob = async () => {
                 await sendNotification(task.faculty_id, "Task Starting Soon", msg);
             }
         }
-    } catch (error) {
-        console.error("10 MIN REMINDER CRON ERROR:", error);
+    } finally {
+        isProcessingStartReminder = false;
     }
 };
 
@@ -67,6 +74,8 @@ const runStart10MinReminderJob = async () => {
  * Here we explicitly look for tasks that started 15 mins ago OR ended 15 mins ago.
  */
 const runOtpProgressSummaryJob = async () => {
+    if (isProcessingOtpSummary) return;
+    isProcessingOtpSummary = true;
     try {
         const now = new Date();
         const istOffset = 330 * 60 * 1000;
@@ -131,8 +140,8 @@ const runOtpProgressSummaryJob = async () => {
                 await sendNotification(task.faculty_id, "END OTP Progress", msg);
             }
         }
-    } catch (error) {
-        console.error("OTP PROGRESS SUMMARY CRON ERROR:", error);
+    } finally {
+        isProcessingOtpSummary = false;
     }
 };
 
@@ -142,6 +151,8 @@ const runOtpProgressSummaryJob = async () => {
  * Compiles a list: submitted document, only submitted OTP, missed entirely.
  */
 const runDocumentSummaryJob = async () => {
+    if (isProcessingDocSummary) return;
+    isProcessingDocSummary = true;
     try {
         const now = new Date();
         const istOffset = 330 * 60 * 1000;
@@ -151,30 +162,35 @@ const runDocumentSummaryJob = async () => {
         // Find tasks ending today with is_document = true OR with a document closure via TaskPackageClosure
         const completedDocsTasks = await Task.findAll({
             where: { is_deleted: false, status: { [Op.ne]: 'Inactive' } },
-            include: [{
-                model: TaskType,
-                required: true,
-                where: { end_date: dateStr }
-            }, {
-                model: TaskAssign,
-                include: [
-                    { model: User, attributes: ['user_id', 'role'], include: [require('../models').Student] },
-                    { model: TaskOTP, required: false }
-                ]
-            }]
+            include: [
+                {
+                    model: TaskType,
+                    required: true,
+                    where: { end_date: dateStr }
+                }, 
+                {
+                    model: TaskAssign,
+                    include: [
+                        { model: User, attributes: ['user_id', 'role'], include: [require('../models').Student] },
+                        { model: TaskOTP, required: false }
+                    ]
+                },
+                {
+                    model: TaskPackageClosure,
+                    required: false,
+                    include: [{ model: TaskClosure, attributes: ['name'] }]
+                }
+            ]
         });
 
         for (const task of completedDocsTasks) {
             // Check if document was required:
             // Either task.is_document is true, OR there are closures indicating 'document' or 'image'
-            const isDocsReq = task.is_document === true; // Simplified check since packages might also have is_document set.
+            const isDocsReq = task.is_document === true; 
             if (!isDocsReq) {
-                // Check task closures
-                const closures = await TaskPackageClosure.findAll({
-                    where: { task_id: task.task_id },
-                    include: [{ model: TaskClosure, attributes: ['name'] }]
-                });
-                const needsDocs = closures.some(c => ['document', 'image'].includes(c.TaskClosure.name));
+                // Check task closures from eager-loaded data
+                const closures = task.TaskPackageClosures || [];
+                const needsDocs = closures.some(c => ['document', 'image'].includes(c.TaskClosure?.name));
                 if (!needsDocs) continue; // Skip tasks without document requirements
             }
 
@@ -206,8 +222,8 @@ const runDocumentSummaryJob = async () => {
                 await sendNotification(task.faculty_id, "End-Of-Day Documentation Summary", msg);
             }
         }
-    } catch (error) {
-        console.error("DOCUMENT SUMMARY CRON ERROR:", error);
+    } finally {
+        isProcessingDocSummary = false;
     }
 };
 
@@ -217,6 +233,8 @@ const runDocumentSummaryJob = async () => {
  * Runs every minute.
  */
 const runPreTaskStudentStatusJob = async () => {
+    if (isProcessingStudentStatus) return;
+    isProcessingStudentStatus = true;
     try {
         const now = new Date();
         const istOffset = 330 * 60 * 1000;
@@ -268,8 +286,8 @@ const runPreTaskStudentStatusJob = async () => {
                 }
             }
         }
-    } catch (error) {
-        console.error("PRE-TASK STUDENT STATUS CRON ERROR:", error);
+    } finally {
+        isProcessingStudentStatus = false;
     }
 };
 

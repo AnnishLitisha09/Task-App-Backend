@@ -14,7 +14,7 @@ module.exports = (sequelize, DataTypes) => {
     id: { type: DataTypes.BIGINT.UNSIGNED, autoIncrement: true, primaryKey: true },
     task_id: { type: DataTypes.BIGINT.UNSIGNED, allowNull: false },
     user_id: { type: DataTypes.BIGINT.UNSIGNED, allowNull: false },
-    status: { type: DataTypes.ENUM('pending', 'accepted', 'in_progress', 'completed', 'rejected', 'frozen', 'escalated', 'not_completed'), defaultValue: 'pending' },
+    status: { type: DataTypes.ENUM('pending', 'accepted', 'in_progress', 'completed', 'rejected', 'frozen', 'escalated', 'not_completed', 'queued'), defaultValue: 'pending' },
     reason: { type: DataTypes.TEXT, allowNull: true },
     proof: { type: DataTypes.STRING(255), allowNull: true },
     submitted_time: { type: DataTypes.DATE, allowNull: true },

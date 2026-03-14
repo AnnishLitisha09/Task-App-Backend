@@ -172,17 +172,28 @@ exports.checkMorningAcknowledgment = async () => {
                 status: { [Op.in]: ['pending', 'accepted'] }
             },
             attributes: ['user_id', 'task_id'],
-            include: [{
-                model: Task,
-                attributes: ['task_id', 'title'],
-                required: true
-                // Note: In a production system, you'd filter TaskType start_date here
-            }]
+            include: [
+                {
+                    model: Task,
+                    attributes: ['task_id', 'title'],
+                    required: true
+                },
+                {
+                    model: User,
+                    attributes: ['user_id', 'role']
+                }
+            ]
         });
 
         if (activeAssignments.length === 0) return { count: 0 };
 
         const userIdsWithTasks = [...new Set(activeAssignments.map(a => a.user_id))];
+
+        // Map users for easy access
+        const userMap = {};
+        activeAssignments.forEach(a => {
+            if (a.User) userMap[a.user_id] = a.User;
+        });
 
         // 2. Identify users on approved leave for today (Exempt)
         const approvedLeaves = await Leave.findAll({
@@ -209,6 +220,7 @@ exports.checkMorningAcknowledgment = async () => {
         const TaskEscalation = require('../models').TaskEscalation;
 
         let escalationCount = 0;
+        const supervisorCache = {}; // Cache to avoid N+1 queries
 
         // 4. Check each user with tasks
         for (const userId of userIdsWithTasks) {
@@ -219,11 +231,11 @@ exports.checkMorningAcknowledgment = async () => {
             if (acknowledgedUserIds.has(userId)) continue;
 
             // Find supervisor for this user according to hierarchy
-            const supervisorId = await getSupervisor(userId);
+            const supervisorId = await getSupervisor(userId, supervisorCache);
             if (!supervisorId) continue; // No one to escalate to? Skip or fallback to admin
 
             // Get user details to check for student role
-            const user = await User.findByPk(userId);
+            const user = userMap[userId];
             const isStudent = user && user.role && user.role.toLowerCase() === 'student';
 
             // Escalate/Update all tasks for this user

@@ -55,6 +55,45 @@ exports.closeTask = async (req, res) => {
                 action: is_completed ? 'complete' : 'reject_on_close',
                 details: `Task closed with status: ${is_completed ? 'completed' : 'rejected'}`
             }, { transaction: t });
+
+            // SEQUENTIAL LOGIC: If completed and part of a package, trigger next sub-task
+            if (is_completed && task.parent_task_id) {
+                const nextSubTask = await Task.findOne({
+                    where: { 
+                        parent_task_id: task.parent_task_id, 
+                        sequence_order: task.sequence_order + 1,
+                        is_deleted: false
+                    }
+                });
+
+                if (nextSubTask) {
+                    const nextAssignment = await TaskAssign.findOne({
+                        where: { task_id: nextSubTask.task_id, user_id: userId, status: 'queued' }
+                    });
+
+                    if (nextAssignment) {
+                        const Notification = require('../models').Notification;
+                        
+                        // Move to pending (or accepted if mandatory/staff? for now pending is safer)
+                        // Actually, if it was queued, we should probably follow the same auto-accept logic or just move to pending
+                        await nextAssignment.update({ status: 'pending' }, { transaction: t });
+
+                        await Notification.create({
+                            user_id: userId,
+                            title: 'Next Sub-task Available',
+                            msg: `Sub-task "${nextSubTask.title}" is now available for you.`,
+                            type: 'task_created'
+                        }, { transaction: t });
+
+                        await TaskLog.create({
+                            task_id: nextSubTask.task_id,
+                            user_id: userId,
+                            action: 'unqueued',
+                            details: `Sub-task unqueued after completion of sequence ${task.sequence_order}.`
+                        }, { transaction: t });
+                    }
+                }
+            }
         } else {
             // Still log that the task itself was updated
             await TaskLog.create({

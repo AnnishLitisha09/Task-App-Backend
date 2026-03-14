@@ -3,6 +3,49 @@ const { Task, TaskAssign, User, TaskType, TaskEscalation, Notification, TaskLog 
 const { Op } = require('sequelize');
 const { getSupervisor } = require('../utils/hierarchy');
 
+const getWorkingMinutes = (start, end) => {
+    if (start >= end) return 0;
+
+    let totalMins = 0;
+    const startDate = new Date(start);
+    const endDate = new Date(end);
+
+    const workStartMins = 8 * 60 + 45; // 8:45 AM
+    const workEndMins = 16 * 60;       // 4:00 PM (16:00)
+
+    let current = new Date(startDate);
+    current.setSeconds(0, 0);
+    
+    // Normalize iterator to start of day
+    let d = new Date(current);
+    d.setHours(0, 0, 0, 0);
+
+    const targetEnd = new Date(endDate);
+    targetEnd.setSeconds(0, 0);
+
+    while (d <= targetEnd) {
+        if (d.getDay() !== 0) { // Not Sunday
+            const dayStart = new Date(d);
+            dayStart.setHours(8, 45, 0, 0); // 8:45 AM
+            const dayEnd = new Date(d);
+            dayEnd.setHours(16, 0, 0, 0);  // 4:00 PM (16:00)
+
+            const effectiveStart = current > dayStart ? current : dayStart;
+            const effectiveEnd = targetEnd < dayEnd ? targetEnd : dayEnd;
+
+            if (effectiveStart < effectiveEnd) {
+                totalMins += (effectiveEnd - effectiveStart) / 60000;
+            }
+        }
+        d.setDate(d.getDate() + 1);
+        current = new Date(d); 
+    }
+
+    return Math.floor(totalMins);
+};
+
+let isProcessingEscalations = false;
+
 /**
  * Main Escalation Engine
  * Checks for:
@@ -10,6 +53,11 @@ const { getSupervisor } = require('../utils/hierarchy');
  * 2. Overdue Tasks (Not completed 1 hour after end time)
  */
 const processAllEscalations = async () => {
+    if (isProcessingEscalations) {
+        console.log('[CRON] Escalation Engine already running, skipping this minute');
+        return;
+    }
+    isProcessingEscalations = true;
     try {
         if (new Date().getDay() === 0) return; // Skip Sunday
 
@@ -22,14 +70,19 @@ const processAllEscalations = async () => {
 
         console.log(`[CRON] Escalation Engine Running at ${localTimeStr}`);
 
+        const supervisorCache = {}; // Cache to avoid N+1 queries during this run
+
         // Trigger 1: UNACCEPTED tasks (status 'pending' and start_time passed)
         const unaccepted = await TaskAssign.findAll({
             where: { status: 'pending' },
-            include: [{
-                model: Task,
-                where: { is_deleted: false },
-                include: [{ model: TaskType }]
-            }]
+            include: [
+                {
+                    model: Task,
+                    where: { is_deleted: false },
+                    include: [{ model: TaskType }]
+                },
+                { model: User, attributes: ['user_id', 'role'] }
+            ]
         });
 
         for (const a of unaccepted) {
@@ -41,7 +94,7 @@ const processAllEscalations = async () => {
 
             if (taskStartStr < todayStr || (taskStartStr === todayStr && localTimeStr > taskStartTime)) {
                 // STUDENT CHECK: Students are marked as rejected instead of escalated
-                const user = await User.findByPk(a.user_id);
+                const user = a.User;
                 if (user && user.role && user.role.toLowerCase() === 'student') {
                     await a.update({ status: 'rejected', reason: 'Not Accepted by Start Time' });
                     await TaskLog.create({
@@ -53,38 +106,21 @@ const processAllEscalations = async () => {
                     continue;
                 }
 
-                await escalateAssignment(a, 'Task Not Accepted by Start Time');
+                await escalateAssignment(a, 'Task Not Accepted by Start Time', supervisorCache);
                 continue;
             }
 
             // --- 6 working hours acceptance rule for non-students ---
-            const user = await User.findByPk(a.user_id);
+            const user = a.User;
             if (user && user.role && user.role.toLowerCase() !== 'student') {
                 const assignedAt = new Date(a.created_at); // Assignment time
                 const istAssignedAt = new Date(assignedAt.getTime() + (assignedAt.getTimezoneOffset() * 60000) + istOffset);
                 
-                const getWorkingMinutes = (start, end) => {
-                    let totalMins = 0;
-                    let current = new Date(start);
-                    while (current < end) {
-                        if (current.getDay() !== 0) {
-                            const currentH = current.getHours();
-                            const currentM = current.getMinutes();
-                            const timeInMins = currentH * 60 + currentM;
-                            const workStartMins = 8 * 60 + 45; // 8:45 AM
-                            const workEndMins = 16 * 60;       // 4:00 PM
-                            if (timeInMins >= workStartMins && timeInMins < workEndMins) totalMins++;
-                        }
-                        current.setMinutes(current.getMinutes() + 1);
-                    }
-                    return totalMins;
-                };
-
                 const elapsedWorkingMins = getWorkingMinutes(istAssignedAt, localNow);
                 const SIX_HOURS_IN_MINS = 6 * 60;
                 
                 if (elapsedWorkingMins >= SIX_HOURS_IN_MINS) {
-                    await escalateAssignment(a, 'Task Not Accepted within 6 Working Hours (8:45 AM - 4:00 PM)');
+                    await escalateAssignment(a, 'Task Not Accepted within 6 Working Hours (8:45 AM - 4:00 PM)', supervisorCache);
                 }
             }
         }
@@ -92,11 +128,14 @@ const processAllEscalations = async () => {
         // Trigger 2: OVERDUE tasks
         const ongoing = await TaskAssign.findAll({
             where: { status: { [Op.in]: ['accepted', 'in_progress'] } },
-            include: [{
-                model: Task,
-                where: { is_deleted: false },
-                include: [{ model: TaskType }]
-            }]
+            include: [
+                {
+                    model: Task,
+                    where: { is_deleted: false },
+                    include: [{ model: TaskType }]
+                },
+                { model: User, attributes: ['user_id', 'role'] }
+            ]
         });
 
         for (const a of ongoing) {
@@ -109,7 +148,7 @@ const processAllEscalations = async () => {
             if (!taskEndTime) continue;
 
             // Student Check: No escalation at 1 hour for students
-            const user = await User.findByPk(a.user_id);
+            const user = a.User;
             const isStudent = user && user.role && user.role.toLowerCase() === 'student';
 
             // Standard Escalation Check (Non-Students)
@@ -119,7 +158,7 @@ const processAllEscalations = async () => {
                 const currentMinutes = localNow.getHours() * 60 + localNow.getMinutes();
 
                 if (taskEndStr < todayStr || (taskEndStr === todayStr && currentMinutes > endMinutes)) {
-                    await escalateAssignment(a, 'Task Overdue (1 Hour Buffer Passed)');
+                    await escalateAssignment(a, 'Task Overdue (Not completed 1 hour after end time)', supervisorCache);
                     continue; // Skip 24hr check if already escalated
                 }
             }
@@ -139,6 +178,42 @@ const processAllEscalations = async () => {
                         details: `Student task marked not_completed: No submission within 24 hours of end time.`
                     });
                 }
+            }
+        }
+
+
+        // Trigger 4: Sub-task TIMEOUT (max_duration_hours in working hours)
+        const subTasksWithTimeout = await TaskAssign.findAll({
+            where: { status: { [Op.in]: ['accepted', 'in_progress'] } },
+            include: [
+                {
+                    model: Task,
+                    where: { is_deleted: false, parent_task_id: { [Op.ne]: null } },
+                    include: [{ 
+                        model: TaskType,
+                        where: { max_duration_hours: { [Op.ne]: null } }
+                    }]
+                },
+                { model: User, attributes: ['user_id', 'role'] }
+            ]
+        });
+
+        for (const a of subTasksWithTimeout) {
+            // Skip students
+            const user = a.User;
+            if (user && user.role && user.role.toLowerCase() === 'student') continue;
+
+            const tt = a.Task?.TaskTypes?.[0];
+            if (!tt || !tt.max_duration_hours) continue;
+
+            const acceptedAt = a.accepted_at ? new Date(a.accepted_at) : new Date(a.created_at);
+            const istAcceptedAt = new Date(acceptedAt.getTime() + (acceptedAt.getTimezoneOffset() * 60000) + istOffset);
+            
+            const elapsedWorkingMins = getWorkingMinutes(istAcceptedAt, localNow);
+            const maxMins = parseFloat(tt.max_duration_hours) * 60;
+
+            if (elapsedWorkingMins > maxMins) {
+                await escalateAssignment(a, `Sub-task timeout: Exceeded ${tt.max_duration_hours} working hours`, supervisorCache);
             }
         }
 
@@ -168,15 +243,17 @@ const processAllEscalations = async () => {
 
     } catch (error) {
         console.error('[CRON ERROR] Escalation Engine:', error);
+    } finally {
+        isProcessingEscalations = false;
     }
 };
 
 /**
  * Internal helper to handle the escalation of a single assignment
  */
-const escalateAssignment = async (assign, reason) => {
+const escalateAssignment = async (assign, reason, cache = null) => {
     try {
-        const supervisorId = await getSupervisor(assign.user_id);
+        const supervisorId = await getSupervisor(assign.user_id, cache);
         if (!supervisorId) return;
 
         // 1. Move status to escalated
@@ -215,7 +292,7 @@ const escalateAssignment = async (assign, reason) => {
     }
 };
 
-// Schedule: Every 15 minutes
-cron.schedule('*/15 * * * *', processAllEscalations);
+// Schedule: Every minute
+cron.schedule('* * * * *', processAllEscalations);
 
-module.exports = { processAllEscalations };
+module.exports = { processAllEscalations, getWorkingMinutes };

@@ -49,6 +49,10 @@ module.exports = (sequelize, DataTypes) => {
       type: DataTypes.TIME,
       allowNull: true
     },
+    max_duration_hours: {
+      type: DataTypes.DECIMAL(10, 2),
+      allowNull: true
+    },
     time_quota_hours: {
       type: DataTypes.DECIMAL(10, 2),
       allowNull: true

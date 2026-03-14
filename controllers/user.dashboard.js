@@ -1,4 +1,4 @@
-﻿const { User, Student, Faculty, Staff, RoleUser, RoleAssignment, Role, Department, Task, TaskType, TaskAssign, TaskLog } = require('../models');
+const { User, Student, Faculty, Staff, RoleUser, RoleAssignment, Role, Department, Task, TaskType, TaskAssign, TaskLog } = require('../models');
 
 // ... (existing getAllUsersWithDetails function) ...
 
@@ -1065,18 +1065,33 @@ exports.getStudentDashboard = async (req, res) => {
             }]
         });
 
+        // Pre-fetch acceptance counts for Bidding tasks to avoid N+1 queries
+        const biddingTaskIds = pendingAssignments
+            .filter(a => a.Task?.TaskTypes?.[0]?.task_name === 'Bidding / Nomination Task')
+            .map(a => a.Task.task_id);
+
+        const biddingCounts = {};
+        if (biddingTaskIds.length > 0) {
+            const counts = await TaskAssign.findAll({
+                where: {
+                    task_id: { [Op.in]: biddingTaskIds },
+                    status: { [Op.in]: ['accepted', 'completed', 'in_progress'] }
+                },
+                attributes: ['task_id', [require('sequelize').fn('COUNT', require('sequelize').col('id')), 'count']],
+                group: ['task_id']
+            });
+            counts.forEach(c => {
+                biddingCounts[c.task_id] = parseInt(c.get('count'));
+            });
+        }
+
         const pendingApprovals = [];
         for (const a of pendingAssignments) {
             const taskType = a.Task.TaskTypes?.[0];
 
             // Filter out Bidding tasks that have reached max acceptances
             if (taskType?.task_name === 'Bidding / Nomination Task' && taskType.max_acceptances) {
-                const acceptedCount = await TaskAssign.count({
-                    where: {
-                        task_id: a.Task.task_id,
-                        status: { [Op.in]: ['accepted', 'completed', 'in_progress'] }
-                    }
-                });
+                const acceptedCount = biddingCounts[a.Task.task_id] || 0;
                 if (acceptedCount >= taskType.max_acceptances) {
                     continue; // Skip, slot is full
                 }
