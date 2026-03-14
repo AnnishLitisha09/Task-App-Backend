@@ -439,11 +439,13 @@ exports.acknowledgeGeneral = async (req, res) => {
         }
 
         const today = `${localNow.getFullYear()}-${String(localNow.getMonth() + 1).padStart(2, '0')}-${String(localNow.getDate()).padStart(2, '0')}`;
+        
+        const taskId = req.body.task_id || null;
 
-        // Create or update general acknowledgment record (task_id is NULL)
+        // Create or update acknowledgment record
         const [ack, created] = await TaskAcknowledgment.findOrCreate({
             where: {
-                task_id: null,
+                task_id: taskId,
                 user_id: targetUserId,
                 acknowledge_date: today
             },
@@ -468,6 +470,18 @@ exports.acknowledgeGeneral = async (req, res) => {
 
     } catch (error) {
         console.error('Error in acknowledgeGeneral:', error);
+        res.status(500).json({ message: error.message });
+    }
+};
+
+exports.getTaskAcknowledgments = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const acks = await TaskAcknowledgment.findAll({
+            where: { task_id: id }
+        });
+        res.json(acks);
+    } catch (error) {
         res.status(500).json({ message: error.message });
     }
 };

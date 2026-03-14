@@ -34,6 +34,7 @@ router.put('/venue/:id/status', verifyToken, venueController.updateVenueStatus);
 // Task Creation
 router.post('/unified-create', verifyToken, upload.single('file'), taskController.createUnifiedTask);
 router.put('/:id', verifyToken, taskController.updateTask);
+router.put('/:id/approve', verifyToken, taskController.approveTask);
 router.delete('/:id', verifyToken, taskController.deleteTask);
 router.delete('/assignment/:id', verifyToken, taskController.deleteAssignment);
 
@@ -63,6 +64,7 @@ router.post('/acknowledge', verifyToken, taskAcknowledgment.acknowledgeTodaysTas
 router.post('/acknowledge-general', verifyToken, taskAcknowledgment.acknowledgeGeneral);
 router.get('/acknowledgments/history', verifyToken, taskAcknowledgment.getAcknowledgmentHistory);
 router.get('/acknowledgments/unacknowledged-report', verifyToken, taskAcknowledgment.getUnacknowledgedUsersReport); // Admin report
+router.get('/:id/acknowledgments', verifyToken, taskAcknowledgment.getTaskAcknowledgments);
 
 // Fetch APIs
 router.get('/', verifyToken, taskController.getAllTasks);

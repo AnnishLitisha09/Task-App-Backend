@@ -684,6 +684,39 @@ exports.getTasksAssignedToUser = async (req, res) => {
     }
 };
 
+// Approve or Reject Task
+exports.approveTask = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { is_approved } = req.body;
+        const adminRole = req.userRole;
+
+        if (adminRole !== 'admin') {
+            return res.status(403).json({ message: 'Only admins can approve tasks directly' });
+        }
+
+        const task = await Task.findByPk(id);
+        if (!task) return res.status(404).json({ message: 'Task not found' });
+
+        await task.update({ 
+            is_approved: is_approved,
+            status: is_approved ? 'Active' : 'Review',
+            approver_id: req.userId 
+        });
+
+        await TaskLog.create({
+            task_id: id,
+            user_id: req.userId,
+            action: is_approved ? 'approve' : 'reject',
+            details: `Task ${is_approved ? 'approved' : 'rejected'} by admin.`
+        });
+
+        res.json({ message: `Task ${is_approved ? 'approved' : 'rejected'} successfully`, is_approved });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
 // Submit Task Proof
 exports.submitTaskProof = async (req, res) => {
     try {
