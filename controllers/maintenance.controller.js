@@ -28,6 +28,11 @@ exports.addMaintenanceLog = async (req, res) => {
         const userId = req.userId;
         const userRole = req.userRole;
 
+        // ONE-TIME DB FIX (Truncation issue)
+        try {
+            await MaintenanceLog.sequelize.query("ALTER TABLE maintenance_logs MODIFY category VARCHAR(100) NOT NULL;");
+        } catch (dbErr) {}
+
         // Authorization Check: Only Admin or the assigned Venue Incharge can create logs
         if (userRole !== 'admin' && userRole !== 'ADMIN') {
             const hasAssignment = await RoleAssignment.findOne({
@@ -142,7 +147,6 @@ exports.getMaintenanceLogs = async (req, res) => {
         
         // 1. Authorization Filter: If not Admin, only show venues user manages
         if (userRole !== 'admin') {
-            const RoleAssignment = require('../models/role_assignment'); // Ensure model is available
             const assignments = await RoleAssignment.findAll({
                 where: { user_id: userId, venue_id: { [Op.ne]: null } },
                 attributes: ['venue_id']
@@ -232,7 +236,6 @@ exports.getMaintenanceLogsByVenue = async (req, res) => {
 
         // Authorization: Check if user manages this venue (if not admin)
         if (userRole !== 'admin') {
-            const RoleAssignment = require('../models/role_assignment');
             const assignment = await RoleAssignment.findOne({
                 where: { user_id: userId, venue_id: venueId }
             });

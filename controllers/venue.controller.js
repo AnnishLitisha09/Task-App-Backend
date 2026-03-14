@@ -211,6 +211,20 @@ exports.getVenueDashboard = async (req, res) => {
                 // rejected tasks are intentionally excluded from dashboard
             });
 
+            // Calculate operational/booking status
+            let current_status = venue.status || 'open';
+            if (current_status === 'open') {
+                if (bookedTasks.length === 0 && pendingRequests.length === 0) {
+                    current_status = 'free';
+                } else if (bookedTasks.length > 0 && pendingRequests.length === 0) {
+                    current_status = 'fully_booked';
+                } else if (bookedTasks.length > 0) {
+                    current_status = 'partially_booked';
+                } else {
+                    current_status = 'requests_pending';
+                }
+            }
+
             // Lifetime accepted assignments for this venue
             const totalAcceptedAssignments = await TaskAssign.count({
                 include: [{
@@ -228,6 +242,7 @@ exports.getVenueDashboard = async (req, res) => {
                 name: venue.name,
                 type: venue.venue_type,
                 location: venue.location,
+                current_status: current_status,
                 incharges,
                 stats: {
                     total_tasks_accepted: totalAcceptedAssignments,
@@ -658,7 +673,8 @@ exports.getManagedVenuesDetails = async (req, res) => {
                 type: venue.venue_type,
                 location: venue.location,
                 photo: venue.image_url || null,
-                current_status: currentStatus,
+                current_status: venue.status || currentStatus,
+                booking_status: currentStatus,
                 overall_total_tasks: totalTaskCount,
                 new_requests_pending_count: pendingRequests.length,
                 today: {
@@ -768,6 +784,13 @@ exports.updateVenueStatus = async (req, res) => {
         const venue = await Venue.findByPk(id);
         if (!venue) {
             return res.status(404).json({ message: 'Venue not found' });
+        }
+
+        // ONE-TIME DB FIX (Truncation issue)
+        try {
+            await Venue.sequelize.query("ALTER TABLE maintenance_logs MODIFY category VARCHAR(100) NOT NULL;");
+        } catch (dbErr) {
+            // Silently fail if already altered or permission issue
         }
 
         // Validate Status against ENUM: 'open', 'under maintenance', 'temporarily closed', 'renovation', 'full day booked'
