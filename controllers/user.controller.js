@@ -329,10 +329,15 @@ exports.bulkCreateUsers = async (req, res) => {
                         }
                     }
 
+                    const initialNetScore = parseFloat(score || 0);
+                    const initialPenalty = parseFloat(penalty || 0);
+                    
                     await Student.create({
                         user_id: user.user_id, reg_no, name, email, department_id: deptId,
-                        year: year || 1, c_gpa: c_gpa || 0.0, score: score || 0,
-                        penalty: penalty || 0, faculty_id: fId
+                        year: year || 1, c_gpa: c_gpa || 0.0, score: initialNetScore,
+                        penalty: initialPenalty, 
+                        total_score: initialNetScore + initialPenalty, // Gross Score
+                        faculty_id: fId
                     }, { transaction: t });
 
                 } else if (lowerType === 'faculty') {
