@@ -82,5 +82,6 @@ router.post('/assign', resourceController.assignResourceToVenue); // Allocation 
 router.post('/remove-assignment', resourceController.removeResourceFromVenue); // De-allocation logic
 router.put('/:id/quantity', resourceController.updateResourceQuantity); // Update quantity
 router.post('/:id/report-faulty', resourceController.reportFaultyResource); // Report faulty/damaged
+router.post('/manage-resource', resourceController.manageResource); // Unified management
 
 module.exports = router;

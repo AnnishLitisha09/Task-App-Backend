@@ -326,14 +326,33 @@ exports.getMyVenue = async (req, res) => {
             image_url: venue.image_url,
             created_at: venue.created_at,
             incharge: null,
-            total_resource_count: venue.Resources ? venue.Resources.reduce((acc, r) => acc + (r.quantity || 0), 0) : 0,
             all_resources: venue.Resources ? venue.Resources.map(r => ({
                 resource_id: r.resource_id,
                 name: r.name,
                 quantity: r.quantity,
                 status: r.status,
                 description: r.description
-            })) : []
+            })) : [],
+            grouped_resources: (() => {
+                const grouped = {};
+                (venue.Resources || []).forEach(r => {
+                    if (!grouped[r.name]) {
+                        grouped[r.name] = {
+                            name: r.name,
+                            description: r.description,
+                            total_quantity: 0,
+                            items: []
+                        };
+                    }
+                    grouped[r.name].total_quantity += (r.quantity || 0);
+                    grouped[r.name].items.push({
+                        resource_id: r.resource_id,
+                        status: r.status,
+                        quantity: r.quantity
+                    });
+                });
+                return Object.values(grouped);
+            })()
         };
 
         if (venue.RoleAssignments && venue.RoleAssignments.length > 0) {
@@ -954,88 +973,105 @@ exports.getVenueUsageReport = async (req, res) => {
     }
 };
 
-// --- Update Resource Quantity (Incharge/Admin) ---
-exports.updateResourceQuantity = async (req, res) => {
-    try {
-        const { id } = req.params; // resource_id
-        const { quantity } = req.body;
-
-        const resource = await Resource.findByPk(id);
-        if (!resource) return res.status(404).json({ success: false, message: 'Resource not found' });
-
-        await resource.update({ quantity });
-
-        res.json({ success: true, message: 'Quantity updated successfully', resource });
-    } catch (error) {
-        res.status(500).json({ success: false, message: error.message });
-    }
-};
-
-// --- Report Faulty Resource (Incharge) ---
-exports.reportFaultyResource = async (req, res) => {
+// --- Unified Manage Resource (Incharge/Admin) ---
+exports.manageResource = async (req, res) => {
     const t = await Resource.sequelize.transaction();
     try {
-        const { id } = req.params; // resource_id
-        const { quantity, status, reason } = req.body; // status: 'damaged', 'broken', 'under maintenance'
+        const { venue_id, name, new_total_quantity, faulty_report } = req.body;
+        // faulty_report: { quantity, status, reason }
 
-        if (!['damaged', 'broken', 'under maintenance'].includes(status)) {
+        if (!venue_id || !name) {
             await t.rollback();
-            return res.status(400).json({ success: false, message: 'Invalid status' });
+            return res.status(400).json({ success: false, message: 'venue_id and name are required' });
         }
 
-        const resource = await Resource.findByPk(id, { transaction: t });
-        if (!resource) {
-            await t.rollback();
-            return res.status(404).json({ success: false, message: 'Resource not found' });
-        }
-
-        if (resource.quantity < quantity) {
-            await t.rollback();
-            return res.status(400).json({ success: false, message: 'Not enough available quantity' });
-        }
-
-        // 1. Subtract from current resource
-        await resource.update({ quantity: resource.quantity - quantity }, { transaction: t });
-
-        // 2. Create/Update a resource entry for the faulty status
-        let faultyResource = await Resource.findOne({
-            where: {
-                venue_id: resource.venue_id,
-                name: resource.name,
-                status: status
-            },
+        // 1. Get all records for this resource in this venue
+        const resources = await Resource.findAll({
+            where: { venue_id, name },
             transaction: t
         });
 
-        if (faultyResource) {
-            await faultyResource.update({ quantity: faultyResource.quantity + quantity }, { transaction: t });
-        } else {
-            faultyResource = await Resource.create({
-                venue_id: resource.venue_id,
-                name: resource.name,
-                description: resource.description,
-                quantity: quantity,
-                status: status
+        let availableResource = resources.find(r => r.status === 'available');
+        
+        // Ensure available resource exists
+        if (!availableResource) {
+            availableResource = await Resource.create({
+                venue_id,
+                name,
+                quantity: 0,
+                status: 'available'
+            }, { transaction: t });
+            resources.push(availableResource);
+        }
+
+        const currentTotal = resources.reduce((sum, r) => sum + (r.quantity || 0), 0);
+
+        // 2. Adjust Total Quantity first if provided
+        if (new_total_quantity !== undefined) {
+            const diff = new_total_quantity - currentTotal;
+            const newAvailableQty = availableResource.quantity + diff;
+            
+            if (newAvailableQty < 0) {
+                await t.rollback();
+                return res.status(400).json({ 
+                    success: false, 
+                    message: `Total quantity cannot be reduced below current faulty/in-use items (${currentTotal - availableResource.quantity})` 
+                });
+            }
+            await availableResource.update({ quantity: newAvailableQty }, { transaction: t });
+        }
+
+        // 3. Handle Faulty Report if provided
+        if (faulty_report && faulty_report.quantity > 0) {
+            const { quantity, status, reason } = faulty_report;
+            
+            if (!['damaged', 'broken', 'under maintenance'].includes(status)) {
+                await t.rollback();
+                return res.status(400).json({ success: false, message: 'Invalid faulty status' });
+            }
+
+            // Fresh check of available quantity after potential adjustment
+            if (availableResource.quantity < quantity) {
+                await t.rollback();
+                return res.status(400).json({ success: false, message: 'Not enough available quantity to report faulty items' });
+            }
+
+            // Move from available
+            await availableResource.update({ quantity: availableResource.quantity - quantity }, { transaction: t });
+
+            // Create/Update faulty entry
+            let targetResource = resources.find(r => r.status === status);
+            if (targetResource) {
+                await targetResource.update({ quantity: targetResource.quantity + quantity }, { transaction: t });
+            } else {
+                targetResource = await Resource.create({
+                    venue_id,
+                    name,
+                    description: availableResource.description,
+                    quantity,
+                    status
+                }, { transaction: t });
+            }
+
+            // Create Maintenance Log
+            const { MaintenanceLog } = require('../models');
+            await MaintenanceLog.create({
+                venue_id,
+                resource_id: targetResource.resource_id,
+                category: 'Fault Reporting',
+                issue_title: `${name} reported as ${status.toUpperCase()}`,
+                description: reason || `Reported ${quantity} items as ${status}`,
+                status: 'pending',
+                start_time: new Date()
             }, { transaction: t });
         }
 
-        // 3. Create Maintenance Log
-        const { MaintenanceLog } = require('../models');
-        await MaintenanceLog.create({
-            venue_id: resource.venue_id,
-            resource_id: faultyResource.resource_id,
-            category: 'Fault Reporting',
-            issue_title: `${resource.name} reported as ${status.toUpperCase()}`,
-            description: reason || `Reported ${quantity} items as ${status}`,
-            status: 'pending',
-            start_time: new Date()
-        }, { transaction: t });
-
         await t.commit();
-        res.json({ success: true, message: 'Resource reported successfully', faultyResource });
+        res.json({ success: true, message: 'Resource managed successfully' });
 
     } catch (error) {
         await t.rollback();
+        console.error('Error in manageResource:', error);
         res.status(500).json({ success: false, message: error.message });
     }
 };
