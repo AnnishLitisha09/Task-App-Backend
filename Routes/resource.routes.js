@@ -68,7 +68,7 @@ router.delete('/venues/:id', isAdmin, resourceController.deleteVenue);
 router.get('/venue/:venueId/incharge', resourceController.getVenueIncharge);
 router.put('/venues/:id/incharge', isAdmin, resourceController.assignVenueIncharge);
 router.get('/venues/:id/extended-details', maintenanceController.getVenueExtendedDetails);
-router.get('/venues/:id/history', maintenanceController.getVenueStatusHistory);
+router.get('/venues/:id/status-history', maintenanceController.getVenueStatusHistory);
 router.get('/venues/:id/resource-analytics', maintenanceController.getVenueResourceAnalytics);
 router.get('/venues/:venueId/maintenance-logs', maintenanceController.getMaintenanceLogsByVenue); // NEW
 
