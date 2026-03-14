@@ -214,9 +214,9 @@ exports.getVenueDashboard = async (req, res) => {
             // Calculate operational/booking status
             let current_status = venue.status || 'open';
             if (current_status === 'open') {
-                if (bookedTasks.length === 0 && pendingRequests.length === 0) {
+                if (bookedTasks.length === 0 && pendingTasksForDay.length === 0) {
                     current_status = 'free';
-                } else if (bookedTasks.length > 0 && pendingRequests.length === 0) {
+                } else if (bookedTasks.length > 0 && pendingTasksForDay.length === 0) {
                     current_status = 'fully_booked';
                 } else if (bookedTasks.length > 0) {
                     current_status = 'partially_booked';

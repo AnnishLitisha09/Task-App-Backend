@@ -61,7 +61,7 @@ router.post('/approval-requests/:requestId/reject', verifyToken, taskAcceptance.
 router.get('/today/unacknowledged', verifyToken, taskAcknowledgment.getTodaysUnacknowledgedTasks);
 router.post('/acknowledge', verifyToken, taskAcknowledgment.acknowledgeTodaysTasks);
 router.post('/acknowledge-general', verifyToken, taskAcknowledgment.acknowledgeGeneral);
-router.get('/acknowledgments', verifyToken, taskAcknowledgment.getAcknowledgmentHistory);
+router.get('/acknowledgments/history', verifyToken, taskAcknowledgment.getAcknowledgmentHistory);
 router.get('/acknowledgments/unacknowledged-report', verifyToken, taskAcknowledgment.getUnacknowledgedUsersReport); // Admin report
 
 // Fetch APIs
