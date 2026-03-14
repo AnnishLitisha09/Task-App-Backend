@@ -704,14 +704,22 @@ exports.getManagedVenuesDetails = async (req, res) => {
 exports.getMyVenuesList = async (req, res) => {
     try {
         const userId = req.userId;
+        const userRole = req.userRole?.toLowerCase();
 
-        // 1. Identify venue IDs this user is incharge of
-        const userAssignments = await RoleAssignment.findAll({
-            where: { user_id: userId, venue_id: { [Op.ne]: null } },
-            attributes: ['venue_id']
-        });
+        let assignedVenueIds = [];
 
-        const assignedVenueIds = [...new Set(userAssignments.map(a => a.venue_id))];
+        if (userRole === 'admin') {
+            // Admins can see all venues
+            const allVenues = await Venue.findAll({ attributes: ['venue_id'] });
+            assignedVenueIds = allVenues.map(v => v.venue_id);
+        } else {
+            // 1. Identify venue IDs this user is incharge of
+            const userAssignments = await RoleAssignment.findAll({
+                where: { user_id: userId, venue_id: { [Op.ne]: null } },
+                attributes: ['venue_id']
+            });
+            assignedVenueIds = [...new Set(userAssignments.map(a => a.venue_id))];
+        }
 
         if (assignedVenueIds.length === 0) {
             return res.json({
