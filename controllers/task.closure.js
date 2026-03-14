@@ -1,4 +1,4 @@
-const { Task, TaskAssign, TaskClosure, TaskPackageClosure, User, TaskLog } = require('../models');
+const { Task, TaskAssign, TaskClosure, TaskPackageClosure, User, TaskLog, Student, Faculty, Staff, RoleUser, TaskType } = require('../models');
 
 // Close Task
 exports.closeTask = async (req, res) => {
@@ -38,16 +38,58 @@ exports.closeTask = async (req, res) => {
 
         // Update assignment if user is assigned
         const assignment = await TaskAssign.findOne({
-            where: { task_id: taskId, user_id: userId }
+            where: { task_id: taskId, user_id: userId },
+            transaction: t
         });
 
         if (assignment) {
+            let penalty = 0;
+            let earnedScore = 0;
+            
+            if (is_completed) {
+                const taskWithTypes = await Task.findByPk(taskId, {
+                    include: [{ model: TaskType }],
+                    transaction: t
+                });
+                const taskType = taskWithTypes.TaskTypes?.[0];
+                const now = new Date();
+                const deadline = taskType?.end_date ? new Date(taskType.end_date) : null;
+
+                if (deadline && now > deadline) {
+                    const diffMs = now - deadline;
+                    const diffHours = Math.ceil(diffMs / (1000 * 60 * 60));
+                    penalty = diffHours * parseFloat(task.penalty_per_hour || 0);
+                }
+                earnedScore = parseFloat(task.score || 0) - penalty;
+            }
+
             await assignment.update({
                 status: is_completed ? 'completed' : 'rejected',
                 proof: proof || null,
                 reason: reason || null,
-                submitted_time: new Date()
+                submitted_time: new Date(),
+                earned_score: is_completed ? earnedScore : 0,
+                penalty_applied: is_completed ? penalty : 0
             }, { transaction: t });
+
+            // Update User Profile Scores
+            if (is_completed) {
+                const user = await User.findByPk(userId, { transaction: t });
+                let profile = null;
+
+                if (user.role === 'student') profile = await Student.findOne({ where: { user_id: userId }, transaction: t });
+                else if (user.role === 'faculty') profile = await Faculty.findOne({ where: { user_id: userId }, transaction: t });
+                else if (user.role === 'role-user') profile = await RoleUser.findOne({ where: { user_id: userId }, transaction: t });
+                else if (user.role === 'staff') profile = await Staff.findOne({ where: { user_id: userId }, transaction: t });
+
+                if (profile) {
+                    await profile.update({
+                        score: parseFloat(profile.score || 0) + earnedScore,
+                        penalty: parseFloat(profile.penalty || 0) + penalty,
+                        total_score: parseFloat(profile.total_score || 0) + parseFloat(task.score || 0)
+                    }, { transaction: t });
+                }
+            }
 
             await TaskLog.create({
                 task_id: taskId,

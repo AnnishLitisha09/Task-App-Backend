@@ -71,4 +71,10 @@ router.get('/dashboard/faculty/leaderboard', userDashboard.getFacultyLeaderboard
 router.post('/assign-role', userController.assignRole);
 router.put('/students/:id/faculty', userController.updateStudentFaculty);
 
+// Authority Allocation
+router.get('/authority/roles', userController.getAvailableRoles);        // Get roles grouped by scope
+router.get('/authority/all', userController.getAllAuthorities);           // Get all assignments
+router.post('/authority/assign', userController.assignAuthority);        // Assign authority
+router.delete('/authority/remove', userController.removeAuthority);      // Remove authority
+
 module.exports = router;

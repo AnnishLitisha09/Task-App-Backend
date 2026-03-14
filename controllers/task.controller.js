@@ -2119,7 +2119,8 @@ exports.getUserTaskStats = async (req, res) => {
 
         const profileTotalScore = profile ? parseFloat(profile.total_score || 0) : 0;
         const profileNetScore = profile ? parseFloat(profile.score || 0) : 0;
-        const profileTotalPenalty = profile ? parseFloat(profile.penalty || 0) : 0;
+        // Fix: Use Math.max between profile.penalty and (total - net) to catch hidden penalties
+        const profileTotalPenalty = profile ? Math.max(parseFloat(profile.penalty || 0), profileTotalScore - profileNetScore) : 0;
 
         // Fetch all assignments for the user
         const assignments = await TaskAssign.findAll({
@@ -2129,13 +2130,12 @@ exports.getUserTaskStats = async (req, res) => {
                 where: { is_deleted: false },
                 include: [
                     { model: TaskType },
-                    // Include required closures for the task
                     {
                         model: TaskPackageClosure,
                         required: false,
                         include: [{ model: TaskClosure, attributes: ['name'] }]
                     },
-                    { model: TaskOTP, required: false } // Eager load OTPs
+                    { model: TaskOTP, required: false }
                 ]
             }],
             order: [['submitted_time', 'DESC']]
@@ -2150,9 +2150,9 @@ exports.getUserTaskStats = async (req, res) => {
             dailyStats[dateStr] = 0;
         }
 
-        let totalBaseScore = 0;
-        let totalPenalty = 0;
-        let totalEarnedScore = 0;
+        let tasksBaseSum = 0;
+        let tasksEarnedSum = 0;
+        let tasksPenaltySum = 0;
         const taskDetails = [];
 
         for (const a of assignments) {
@@ -2165,10 +2165,9 @@ exports.getUserTaskStats = async (req, res) => {
             const earnedScore = parseFloat(a.earned_score || 0);
             const penalty = parseFloat(a.penalty_applied || 0);
 
-            // Accumulate actual counts for tracking (regardless of detail filtering)
-            totalBaseScore += baseScore;
-            totalPenalty += penalty;
-            totalEarnedScore += earnedScore;
+            tasksBaseSum += baseScore;
+            tasksEarnedSum += earnedScore;
+            tasksPenaltySum += penalty;
 
             if (a.submitted_time) {
                 const d = new Date(a.submitted_time);
@@ -2180,9 +2179,6 @@ exports.getUserTaskStats = async (req, res) => {
                 }
             }
 
-            // User requirement: Fetch details if they gained score OR there was a penalty.
-            // "if 0 score for some task then not fetch that 0 score task" 
-            // We interpret this as: exclude tasks that had 0 base score AND no penalty.
             if (baseScore > 0 || penalty > 0) {
                 taskDetails.push({
                     task_id: a.task_id,
@@ -2197,6 +2193,28 @@ exports.getUserTaskStats = async (req, res) => {
                     submission_type: penalty > 0 ? 'Late Submission' : 'Perfect Submission'
                 });
             }
+        }
+
+        // ACCOUNT FOR LEGACY/INITIAL SCORES (Discrepancy Check)
+        // If profile sums > task sums, it means there was an initial balance from bulk upload
+        const initialBase = Math.max(0, profileTotalScore - tasksBaseSum);
+        // Note: earned score captures the net including initial penalty if any
+        const initialEarned = Math.max(0, profileNetScore - tasksEarnedSum);
+        const initialPenalty = Math.max(0, profileTotalPenalty - tasksPenaltySum);
+
+        if (initialBase > 0 || initialPenalty > 0 || initialEarned > 0) {
+            taskDetails.push({
+                task_id: 0,
+                title: "Opening Balance / Initial Credits",
+                status: "completed",
+                base_score: initialBase,
+                earned_score: initialEarned,
+                penalty_applied: initialPenalty,
+                submitted_time: profile?.created_at || null,
+                proof: null,
+                required_closures: [],
+                submission_type: "Initial/Bulk Upload"
+            });
         }
 
         const last7Days = Object.keys(dailyStats).map(date => ({
