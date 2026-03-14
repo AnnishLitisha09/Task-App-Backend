@@ -154,8 +154,13 @@ const normalizeTaskPayload = async (body) => {
         payload.task_type_data.task_name = 'Bidding / Nomination Task';
     }
 
+    // Consolidate approver_id and approverId
+    if (payload.approverId && !payload.approver_id) payload.approver_id = payload.approverId;
+    if (payload.approver_id) payload.approver_id = parseInt(payload.approver_id) || null;
+
     // Normalization of booleans
     if (typeof payload.requires_approval === 'string') payload.requires_approval = (payload.requires_approval === 'true');
+    else if (payload.approver == 1 || payload.approver === '1' || payload.approver === 'true') payload.requires_approval = true;
     else payload.requires_approval = !!payload.requires_approval;
 
     if (typeof payload.is_approved === 'string') payload.is_approved = payload.is_approved === 'true';
@@ -1131,7 +1136,7 @@ exports.createUnifiedTask = async (req, res) => {
             return res.status(400).json({ message: 'Missing required task or type fields' });
         }
 
-        if (is_approved && !approver_id) {
+        if (requires_approval && !approver_id) {
             await t.rollback();
             return res.status(400).json({ message: 'Approver ID is required when task needs approval' });
         }
@@ -1313,7 +1318,7 @@ exports.createUnifiedTask = async (req, res) => {
                 max_acceptances: task_type_data.max_acceptances || null
             }, { transaction: t });
 
-            // 3. Parent Task Assignment (to main assignees) - ONLY if not waiting for approval
+            // 4. Parent Task Assignment (to main assignees) - ONLY if not waiting for approval
             if (!requires_approval && finalAssigneeIds.length > 0) {
                 const assignments = [];
                 for (const assigneeId of finalAssigneeIds) {
@@ -1688,7 +1693,7 @@ exports.createUnifiedTask = async (req, res) => {
 
             // 1. Create Approval Request
             const savedRequest = await TaskApprovalRequest.create({
-                approver_id: parseInt(approver_id),
+                approver_id: approver_id,
                 creator_id: userId,
                 task_payload: payload,
                 task_id: createdTaskIds[0],
@@ -1696,17 +1701,8 @@ exports.createUnifiedTask = async (req, res) => {
                 status: 'pending'
             }, { transaction: t });
 
-            // 2. Assign the Approver to the task (so it shows in their list)
-            for (const tId of createdTaskIds) {
-                await TaskAssign.create({
-                    task_id: tId,
-                    user_id: parseInt(approver_id),
-                    status: 'pending' // Pending until they approve the request
-                }, { transaction: t });
-            }
-
             await Notification.create({
-                user_id: parseInt(approver_id),
+                user_id: approver_id,
                 title: 'Task Approval Required',
                 msg: `A new task "${title}" requires your approval.`,
                 type: 'task_approval_request'
