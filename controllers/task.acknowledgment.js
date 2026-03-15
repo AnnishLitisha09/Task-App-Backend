@@ -404,6 +404,34 @@ exports.getUnacknowledgedUsersReport = async (req, res) => {
     }
 };
 
+// Check if current user has acknowledged today's awareness
+exports.getGeneralAcknowledgmentStatus = async (req, res) => {
+    try {
+        const userId = req.userId;
+        const now = new Date();
+        const istOffset = 330 * 60 * 1000;
+        const localNow = new Date(now.getTime() + (now.getTimezoneOffset() * 60000) + istOffset);
+        const today = `${localNow.getFullYear()}-${String(localNow.getMonth() + 1).padStart(2, '0')}-${String(localNow.getDate()).padStart(2, '0')}`;
+
+        const ack = await TaskAcknowledgment.findOne({
+            where: {
+                task_id: null,
+                user_id: userId,
+                acknowledge_date: today,
+                acknowledged_at: { [Op.ne]: null }
+            }
+        });
+
+        res.json({
+            acknowledged: !!ack,
+            date: today,
+            acknowledged_at: ack ? ack.acknowledged_at : null
+        });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
 // General daily acknowledgement (Morning Awareness)
 exports.acknowledgeGeneral = async (req, res) => {
     try {
