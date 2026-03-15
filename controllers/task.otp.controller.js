@@ -231,6 +231,19 @@ exports.verifyOTP = async (req, res) => {
 
         // 3. Process based on Type
         if (otpRecord.otp_type === 'START') {
+            // --- NEW: Deadline Check ---
+            if (taskType && taskType.end_date && taskType.end_time) {
+                const deadlineStr = `${taskType.end_date}T${taskType.end_time}`;
+                const deadline = new Date(deadlineStr);
+                if (new Date() > deadline) {
+                    await t.rollback();
+                    return res.status(400).json({
+                        success: false,
+                        message: "Activity window has passed. This task is marked as missed."
+                    });
+                }
+            }
+
             await assignment.update({ status: 'in_progress' }, { transaction: t });
             await TaskLog.create({
                 task_id: task.task_id,
