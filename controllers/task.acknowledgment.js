@@ -320,10 +320,12 @@ exports.cleanupOldAcknowledgments = async () => {
     }
 };
 
-// Get report of users who haven't acknowledged today (Admin only)
+// Get report of users acknowledgment status (Admin only)
 exports.getUnacknowledgedUsersReport = async (req, res) => {
     try {
-        const today = new Date().toISOString().split('T')[0];
+        const { date, status } = req.query; // date in YYYY-MM-DD format
+        const targetDate = date || new Date().toISOString().split('T')[0];
+        const includeAcknowledged = status === 'all' || status === 'acknowledged';
 
         // 1. Get all active users who are not admins
         const users = await User.findAll({
@@ -340,61 +342,76 @@ exports.getUnacknowledgedUsersReport = async (req, res) => {
             ]
         });
 
-        // 2. Get all acknowledgments for today
-        const todaysAcks = await TaskAcknowledgment.findAll({
-            where: { acknowledge_date: today, acknowledged_at: { [Op.ne]: null } },
-            attributes: ['user_id']
+        // 2. Get all acknowledgments for target date
+        const targetAcks = await TaskAcknowledgment.findAll({
+            where: { 
+                acknowledge_date: targetDate, 
+                acknowledged_at: { [Op.ne]: null },
+                task_id: null // Focus on morning awareness
+            },
+            attributes: ['user_id', 'acknowledged_at']
         });
 
-        const acknowledgedUserIds = new Set(todaysAcks.map(a => a.user_id));
+        const ackMap = new Map();
+        targetAcks.forEach(a => ackMap.set(a.user_id, a.acknowledged_at));
 
-        // 3. Filter unacknowledged users and categorize
+        // 3. Categorize
         const report = {
-            date: today,
-            student: [],
-            faculty: [],
-            staff: [],
-            hod: [],
-            principal: [],
-            incharge: [],
-            others: []
+            date: targetDate,
+            acknowledged: [],
+            unacknowledged: {
+                student: [],
+                faculty: [],
+                staff: [],
+                hod: [],
+                principal: [],
+                incharge: [],
+                others: []
+            },
+            total_users: users.length
         };
 
         for (const user of users) {
-            if (!acknowledgedUserIds.has(user.user_id)) {
-                const details = user.Student || user.Faculty || user.Staff || user.RoleUser;
-                const userData = {
-                    user_id: user.user_id,
-                    role: user.role,
-                    name: details?.name || 'Unknown',
-                    email: details?.email || 'Unknown',
-                    department_id: details?.department_id || null,
-                    year: details?.year || null,
-                    designation: details?.designation || null
-                };
+            const details = user.Student || user.Faculty || user.Staff || user.RoleUser;
+            const userData = {
+                user_id: user.user_id,
+                role: user.role,
+                name: details?.name || 'Unknown',
+                email: details?.email || 'Unknown',
+                department_id: details?.department_id || null,
+                year: details?.year || null,
+                designation: details?.designation || null,
+                acknowledged_at: ackMap.get(user.user_id) || null
+            };
 
+            if (ackMap.has(user.user_id)) {
+                report.acknowledged.push(userData);
+            } else {
                 // Specific categorization for role-users
                 if (user.role === 'role-user') {
                     const roles = user.RoleAssignments?.map(ra => ra.Role?.user_role?.toLowerCase()) || [];
-                    if (roles.includes('hod')) report.hod.push(userData);
-                    else if (roles.includes('principal')) report.principal.push(userData);
-                    else if (roles.includes('incharge')) report.incharge.push(userData);
-                    else report.others.push(userData);
+                    if (roles.includes('hod')) report.unacknowledged.hod.push(userData);
+                    else if (roles.includes('principal')) report.unacknowledged.principal.push(userData);
+                    else if (roles.includes('incharge')) report.unacknowledged.incharge.push(userData);
+                    else report.unacknowledged.others.push(userData);
                 } else if (user.role === 'student') {
-                    report.student.push(userData);
+                    report.unacknowledged.student.push(userData);
                 } else if (user.role === 'faculty') {
-                    report.faculty.push(userData);
+                    report.unacknowledged.faculty.push(userData);
                 } else if (user.role === 'staff') {
-                    report.staff.push(userData);
+                    report.unacknowledged.staff.push(userData);
                 }
             }
         }
 
         res.json({
             success: true,
-            total_unacknowledged:
-                report.student.length + report.faculty.length + report.staff.length +
-                report.hod.length + report.principal.length + report.incharge.length + report.others.length,
+            total_acknowledged: report.acknowledged.length,
+            total_unacknowledged: 
+                report.unacknowledged.student.length + report.unacknowledged.faculty.length + 
+                report.unacknowledged.staff.length + report.unacknowledged.hod.length + 
+                report.unacknowledged.principal.length + report.unacknowledged.incharge.length + 
+                report.unacknowledged.others.length,
             report
         });
 
@@ -456,8 +473,15 @@ exports.acknowledgeGeneral = async (req, res) => {
         const startWindow = 6 * 60 + 30; // 390
         const endWindow = 8 * 60 + 45;   // 525
 
-        // Bypass time check ONLY for Admin
-        if (adminRole !== 'admin') {
+        // Determine target date
+        let targetDate = `${localNow.getFullYear()}-${String(localNow.getMonth() + 1).padStart(2, '0')}-${String(localNow.getDate()).padStart(2, '0')}`;
+        
+        // Bypass checks ONLY for Admin
+        if (adminRole === 'admin') {
+            if (req.body.date) {
+                targetDate = req.body.date;
+            }
+        } else {
             if (totalMinutes < startWindow || totalMinutes > endWindow) {
                 return res.status(400).json({
                     success: false,
@@ -465,8 +489,6 @@ exports.acknowledgeGeneral = async (req, res) => {
                 });
             }
         }
-
-        const today = `${localNow.getFullYear()}-${String(localNow.getMonth() + 1).padStart(2, '0')}-${String(localNow.getDate()).padStart(2, '0')}`;
         
         const taskId = req.body.task_id || null;
 
@@ -475,7 +497,7 @@ exports.acknowledgeGeneral = async (req, res) => {
             where: {
                 task_id: taskId,
                 user_id: targetUserId,
-                acknowledge_date: today
+                acknowledge_date: targetDate
             },
             defaults: {
                 acknowledged_at: new Date()
@@ -483,7 +505,8 @@ exports.acknowledgeGeneral = async (req, res) => {
         });
 
         if (!created && !ack.acknowledged_at) {
-            await ack.update({ acknowledged_at: new Date() });
+            ack.acknowledged_at = new Date();
+            await ack.save();
         }
 
         res.json({
