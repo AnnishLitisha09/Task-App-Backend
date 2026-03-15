@@ -286,6 +286,17 @@ const escalateAssignment = async (assign, reason, cache = null) => {
             type: 'task_escalation'
         });
 
+        // 5. Notify Creator (if different from Supervisor)
+        const taskCreatorId = assign.Task?.creator_id;
+        if (taskCreatorId && taskCreatorId !== supervisorId) {
+            await Notification.create({
+                user_id: taskCreatorId,
+                title: 'Task Escalation Notification',
+                msg: `Notice: Task "${assign.Task.title}" assigned to User ${assign.user_id} has been escalated. Reason: ${reason}`,
+                type: 'task_escalation'
+            });
+        }
+
         console.log(`[ESCALATION] Task ${assign.task_id} for User ${assign.user_id} escalated to Supervisor ${supervisorId}`);
     } catch (err) {
         console.error(`Error escalating assignment ${assign.id}:`, err);

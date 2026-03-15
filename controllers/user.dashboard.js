@@ -264,6 +264,9 @@ exports.getAllUsersWithDetails = async (req, res) => {
 // HOD Dashboard: Department stats, faculty, schedule, and pending approvals
 // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 exports.getHodDashboard = async (req, res) => {
+    const profileMap = {};
+    const getName = (id) => profileMap[id]?.name || `User #${id}`;
+    const getRole = (id) => profileMap[id]?.role || "N/A";
     try {
         const userId = req.userId;
         const { Op, literal } = require('sequelize');
@@ -365,23 +368,35 @@ exports.getHodDashboard = async (req, res) => {
             order: [['created_at', 'DESC']]
         });
 
-        // 4b. Department-wide Escalations (Tasks assigned to dept members with status 'escalated')
-        const deptEscalations = await TaskAssign.findAll({
-            where: {
-                user_id: { [Op.in]: deptUserIds.length > 0 ? deptUserIds : [0] },
-                status: 'escalated'
-            },
-            include: [
-                { model: Task, include: [{ model: TaskType }] },
-                { model: User, attributes: ['user_id', 'role'] }
-            ]
+        // 4b. Escalations for Tasks created by this creator (ONLY)
+        const escalatedAssigns = await TaskAssign.findAll({
+            where: { status: { [Op.in]: ['escalated', 'rejected'] } },
+            include: [{
+                model: Task,
+                where: {
+                    is_deleted: false,
+                    creator_id: userId
+                },
+                include: [{ model: TaskType }]
+            }, {
+                model: User,
+                attributes: ['user_id', 'role']
+            }]
         });
 
-        // Batch fetch names for creators and assignees
+        const escalatedTaskIds = [...new Set(escalatedAssigns.map(ea => ea.task_id))];
+
+        // Fetch ALL assignments for these tasks to build the requested summary
+        const allAssignsForEscalated = await TaskAssign.findAll({
+            where: { task_id: { [Op.in]: escalatedTaskIds.length > 0 ? escalatedTaskIds : [0] } },
+            attributes: ['task_id', 'status', 'user_id']
+        });
+
+        // Map and group stats and names
         const involvedUserIds = [...new Set([
             ...awaitingMyApproval.map(t => t.creator_id),
             ...assignedPending.map(ap => ap.Task?.creator_id).filter(id => id),
-            ...deptEscalations.map(e => e.user_id)
+            ...escalatedAssigns.map(ea => ea.user_id)
         ])];
 
         const usersWithProfiles = await User.findAll({
@@ -394,10 +409,19 @@ exports.getHodDashboard = async (req, res) => {
             ]
         });
 
-        const profileNameMap = {};
         usersWithProfiles.forEach(u => {
             const p = u.Student || u.Faculty || u.Staff || u.RoleUser;
-            profileNameMap[u.user_id] = p ? p.name : `User #${u.user_id}`;
+            let displayRole = u.role.charAt(0).toUpperCase() + u.role.slice(1);
+            if (displayRole.toLowerCase() === 'role-user') {
+                if (u.Faculty) displayRole = "Faculty";
+                else if (u.Staff) displayRole = "Staff";
+                else if (u.Student) displayRole = "Student";
+                else displayRole = "Incharge";
+            }
+            profileMap[u.user_id] = {
+                name: p ? p.name : `User #${u.user_id}`,
+                role: displayRole
+            };
         });
 
         const formattedAwaiting = awaitingMyApproval.map(t => ({
@@ -405,7 +429,7 @@ exports.getHodDashboard = async (req, res) => {
             title: t.title,
             category: t.category,
             priority: t.priority,
-            requested_by: profileNameMap[t.creator_id],
+            requested_by: getName(t.creator_id),
             requested_at: t.created_at,
             timing: t.TaskTypes?.[0] ? `${t.TaskTypes[0].start_date} ${t.TaskTypes[0].start_time}` : 'N/A'
         }));
@@ -418,35 +442,46 @@ exports.getHodDashboard = async (req, res) => {
                 category: t.category,
                 priority: t.priority,
                 assigned_at: ap.created_at,
-                assigned_by: profileNameMap[t.creator_id],
+                assigned_by: getName(t.creator_id),
                 timing: t.TaskTypes?.[0] ? `${t.TaskTypes[0].start_date} ${t.TaskTypes[0].start_time}` : 'N/A'
             };
         });
 
-        // 4b. Group Escalations by Task
+        // 4b. Group Escalations by Task with Summary
         const escalationGroups = {};
-        deptEscalations.forEach(e => {
-            const t = e.Task;
+        escalatedAssigns.forEach(ea => {
+            const t = ea.Task;
             if (!t) return;
+            const tt = t.TaskTypes?.[0];
+
             if (!escalationGroups[t.task_id]) {
-                const tt = t.TaskTypes?.[0];
+                const allAssigns = allAssignsForEscalated.filter(a => a.task_id === t.task_id);
+                
                 escalationGroups[t.task_id] = {
                     task_id: t.task_id,
                     title: t.title,
                     timing: tt ? `${tt.start_date} ${tt.start_time}` : 'N/A',
-                    escalated_assignees: []
+                    stats: {
+                        total_assignees: allAssigns.length,
+                        accepted_count: allAssigns.filter(a => a.status === 'accepted').length,
+                        pending_count: allAssigns.filter(a => a.status === 'pending').length,
+                        rejected_count: allAssigns.filter(a => a.status === 'rejected').length,
+                        escalated_count: allAssigns.filter(a => a.status === 'escalated').length
+                    },
+                    escalated_assignees: [] 
                 };
             }
             escalationGroups[t.task_id].escalated_assignees.push({
-                user_id: e.user_id,
-                name: profileNameMap[e.user_id],
-                role: e.User?.role || 'N/A'
+                user_id: ea.user_id,
+                name: getName(ea.user_id),
+                role: getRole(ea.user_id),
+                status: ea.status
             });
         });
 
         const formattedEscalations = Object.values(escalationGroups).map(group => ({
             ...group,
-            summary: `${group.escalated_assignees.length} assignee(s) escalated`
+            summary: `${group.stats.escalated_count} escalated, ${group.stats.rejected_count} rejected out of ${group.stats.total_assignees} total assignees (${group.stats.accepted_count} accepted, ${group.stats.pending_count} pending)`
         }));
 
         // 5. Today's Department Schedule (Tasks assigned to Me or Dept Members that are ACCEPTED)
@@ -485,7 +520,7 @@ exports.getHodDashboard = async (req, res) => {
 
         // Ensure creator names for schedule
         const schedCreatorIds = [...new Set(todaysTasks.map(t => t.creator_id))];
-        const missingSchedNames = schedCreatorIds.filter(id => !profileNameMap[id]);
+        const missingSchedNames = schedCreatorIds.filter(id => !profileMap[id]);
         if (missingSchedNames.length > 0) {
             const extraRes = await User.findAll({
                 where: { user_id: { [Op.in]: missingSchedNames } },
@@ -498,7 +533,17 @@ exports.getHodDashboard = async (req, res) => {
             });
             extraRes.forEach(u => {
                 const p = u.Student || u.Faculty || u.Staff || u.RoleUser;
-                profileNameMap[u.user_id] = p ? p.name : `User #${u.user_id}`;
+                let displayRole = u.role.charAt(0).toUpperCase() + u.role.slice(1);
+                if (displayRole.toLowerCase() === 'role-user') {
+                    if (u.Faculty) displayRole = "Faculty";
+                    else if (u.Staff) displayRole = "Staff";
+                    else if (u.Student) displayRole = "Student";
+                    else displayRole = "Incharge";
+                }
+                profileMap[u.user_id] = {
+                    name: p ? p.name : `User #${u.user_id}`,
+                    role: displayRole
+                };
             });
         }
 
@@ -508,7 +553,7 @@ exports.getHodDashboard = async (req, res) => {
             return {
                 task_id: t.task_id,
                 title: t.title,
-                creator_name: profileNameMap[t.creator_id] || "Creator",
+                creator_name: getName(t.creator_id),
                 timing: isLongTask ? '08:45:00 - 16:30:00' : (tt ? `${tt.start_time} - ${tt.end_time}` : 'N/A')
             };
         });
@@ -530,7 +575,7 @@ exports.getHodDashboard = async (req, res) => {
 
         // Ensure creator names for history
         const historyCreatorIds = [...new Set(deptTasks.map(t => t.creator_id))];
-        const missingHistoryNames = historyCreatorIds.filter(id => !profileNameMap[id]);
+        const missingHistoryNames = historyCreatorIds.filter(id => !profileMap[id]);
         if (missingHistoryNames.length > 0) {
             const extraRes = await User.findAll({
                 where: { user_id: { [Op.in]: missingHistoryNames } },
@@ -543,7 +588,17 @@ exports.getHodDashboard = async (req, res) => {
             });
             extraRes.forEach(c => {
                 const p = c.Student || c.Faculty || c.Staff || c.RoleUser;
-                profileNameMap[c.user_id] = p ? p.name : `User #${c.user_id}`;
+                let displayRole = c.role.charAt(0).toUpperCase() + c.role.slice(1);
+                if (displayRole.toLowerCase() === 'role-user') {
+                    if (c.Faculty) displayRole = "Faculty";
+                    else if (c.Staff) displayRole = "Staff";
+                    else if (c.Student) displayRole = "Student";
+                    else displayRole = "Incharge";
+                }
+                profileMap[c.user_id] = {
+                    name: p ? p.name : `User #${c.user_id}`,
+                    role: displayRole
+                };
             });
         }
 
@@ -552,7 +607,7 @@ exports.getHodDashboard = async (req, res) => {
             title: t.title,
             category: t.category,
             priority: t.priority,
-            creator_name: profileNameMap[t.creator_id] || "Creator",
+            creator_name: getName(t.creator_id),
             created_at: t.created_at,
             timing: t.TaskTypes?.[0] ? `${t.TaskTypes[0].start_date} ${t.TaskTypes[0].start_time}` : 'N/A'
         }));

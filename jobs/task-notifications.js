@@ -228,11 +228,11 @@ const runDocumentSummaryJob = async () => {
 };
 
 /**
- * Pre-Task Student Status Notification: Notify creator 2 hours before a task starts
- * about the acceptance status of student assignees.
+ * Pre-Task Creator Summary Notification: Notify creator 2 hours before a task starts
+ * about the overall status of all assignees (Accepted, Rejected, Pending, Escalated).
  * Runs every minute.
  */
-const runPreTaskStudentStatusJob = async () => {
+const runPreTaskCreatorSummaryJob = async () => {
     if (isProcessingStudentStatus) return;
     isProcessingStudentStatus = true;
     try {
@@ -265,24 +265,25 @@ const runPreTaskStudentStatusJob = async () => {
         });
 
         for (const task of tasksStartingSoon) {
-            // Filter only student assignments
-            const studentAssigns = task.TaskAssigns.filter(a => a.User && a.User.role && a.User.role.toLowerCase() === 'student');
+            const allAssigns = task.TaskAssigns || [];
             
-            if (studentAssigns.length > 0) {
-                const totalStudents = studentAssigns.length;
-                const acceptedCount = studentAssigns.filter(a => a.status === 'accepted').length;
-                const pendingCount = studentAssigns.filter(a => a.status === 'pending').length;
-                const rejectedCount = studentAssigns.filter(a => a.status === 'rejected').length;
+            if (allAssigns.length > 0) {
+                const totalAssignees = allAssigns.length;
+                const acceptedCount = allAssigns.filter(a => a.status === 'accepted').length;
+                const pendingCount = allAssigns.filter(a => a.status === 'pending').length;
+                const rejectedCount = allAssigns.filter(a => a.status === 'rejected').length;
+                const escalatedCount = allAssigns.filter(a => a.status === 'escalated').length;
 
-                let msg = `Assignee Status Update for "${task.title}" (Starts in 2 Hours):\n`;
-                msg += `- Total Students: ${totalStudents}\n`;
+                let msg = `Assignee Status Summary for "${task.title}" (Starts in 2 Hours):\n`;
+                msg += `- Total Assignees: ${totalAssignees}\n`;
                 msg += `- Accepted: ${acceptedCount}\n`;
                 msg += `- Pending: ${pendingCount}\n`;
-                msg += `- Rejected: ${rejectedCount}`;
+                msg += `- Rejected: ${rejectedCount}\n`;
+                msg += `- Escalated: ${escalatedCount}`;
 
-                await sendNotification(task.creator_id, "Pre-Task Assignee Status", msg);
+                await sendNotification(task.creator_id, "Pre-Task Status Summary", msg);
                 if (task.is_faculty && task.faculty_id) {
-                    await sendNotification(task.faculty_id, "Pre-Task Assignee Status", msg);
+                    await sendNotification(task.faculty_id, "Pre-Task Status Summary", msg);
                 }
             }
         }
@@ -295,5 +296,5 @@ module.exports = {
     runStart10MinReminderJob,
     runOtpProgressSummaryJob,
     runDocumentSummaryJob,
-    runPreTaskStudentStatusJob
+    runPreTaskCreatorSummaryJob
 };

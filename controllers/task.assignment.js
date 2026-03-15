@@ -1,4 +1,4 @@
-const { Task, TaskAssign, User, Student, Faculty, Staff, RoleUser, RoleAssignment, Role, TaskType } = require('../models');
+const { Task, TaskAssign, User, Student, Faculty, Staff, RoleUser, RoleAssignment, Role, TaskType, Notification } = require('../models');
 const XLSX = require('xlsx');
 const { checkTaskOverlap } = require('../utils/task-utils');
 
@@ -104,6 +104,16 @@ exports.assignTaskToUser = async (req, res) => {
             accepted_at: isStaff ? new Date() : null
         });
 
+        // Notify if non-student
+        if (assignee && assignee.role !== 'student') {
+            await Notification.create({
+                user_id: assigneeId,
+                title: 'New Task Assigned',
+                msg: `You have been assigned a new task: ${task.title}`,
+                type: 'task_created'
+            });
+        }
+
         res.json({ message: 'Task assigned successfully' });
 
     } catch (error) {
@@ -144,6 +154,16 @@ exports.assignToAllHODs = async (req, res) => {
         }));
 
         await TaskAssign.bulkCreate(assignments, { ignoreDuplicates: true });
+
+        // Notify all HODs (all are non-students)
+        for (const hodId of hodUserIds) {
+            await Notification.create({
+                user_id: hodId,
+                title: 'New Task Assigned',
+                msg: `You have been assigned a new task: ${task.title}`,
+                type: 'task_created'
+            });
+        }
 
         res.json({ message: `Task assigned to ${hodUserIds.length} HODs successfully` });
 
@@ -188,6 +208,16 @@ exports.assignToAllFaculty = async (req, res) => {
         }));
 
         await TaskAssign.bulkCreate(assignments, { ignoreDuplicates: true });
+
+        // Notify all Faculty (all are non-students)
+        for (const f of faculties) {
+            await Notification.create({
+                user_id: f.user_id,
+                title: 'New Task Assigned',
+                msg: `You have been assigned a new task: ${task.title}`,
+                type: 'task_created'
+            });
+        }
 
         res.json({ message: `Task assigned to ${faculties.length} faculty members successfully` });
 
@@ -308,6 +338,19 @@ exports.bulkAssignByExcel = async (req, res) => {
         }
 
         await TaskAssign.bulkCreate(assignments, { ignoreDuplicates: true });
+
+        // Notify non-students
+        for (const assign of assignments) {
+            const assignee = await User.findByPk(assign.user_id);
+            if (assignee && assignee.role !== 'student') {
+                await Notification.create({
+                    user_id: assign.user_id,
+                    title: 'New Task Assigned',
+                    msg: `You have been assigned a new task: ${task.title}`,
+                    type: 'task_created'
+                });
+            }
+        }
 
         res.json({
             message: `Task assigned to ${assignments.length} users`,

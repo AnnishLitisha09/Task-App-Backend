@@ -1475,12 +1475,14 @@ exports.createUnifiedTask = async (req, res) => {
                             accepted_at: finalAcceptedAt
                         });
 
-                        await Notification.create({
-                            user_id: assigneeId,
-                            title: 'New Task Assigned',
-                            msg: `You have been assigned a new task: ${title}`,
-                            type: 'task_created'
-                        }, { transaction: t });
+                        if (assigneeRole !== 'student') {
+                            await Notification.create({
+                                user_id: assigneeId,
+                                title: 'New Task Assigned',
+                                msg: `You have been assigned a new task: ${title}`,
+                                type: 'task_created'
+                            }, { transaction: t });
+                        }
                     }
                 }
                 if (assignments.length > 0) {
@@ -3929,51 +3931,60 @@ exports.getDailyTaskReport = async (req, res) => {
 exports.getMyEscalations = async (req, res) => {
     try {
         const userId = req.userId;
-        const { unread } = req.query;
-        const { TaskEscalation, Task, User, TaskType } = require('../models');
+        const { Task, TaskAssign, User, TaskType } = require('../models');
         const { Op } = require('sequelize');
 
-        const whereCondition = {
-            [Op.or]: [
-                { creator_id: userId },
-                { rejected_user_id: userId }
-            ]
-        };
-
-        if (unread === 'true') {
-            whereCondition.is_read = false;
-        }
-
-        const escalations = await TaskEscalation.findAll({
-            where: whereCondition,
+        // 1. Find tasks created by user that have escalated or rejected assignments
+        const escalatedTasks = await Task.findAll({
+            where: { creator_id: userId, is_deleted: false },
             include: [
-                {
-                    model: Task,
-                    include: [{ model: TaskType }]
-                },
-                { model: User, as: 'Creator', attributes: ['user_id', 'role'] },
-                { model: User, as: 'RejectedUser', attributes: ['user_id', 'role'] }
-            ],
-            order: [['created_at', 'DESC']]
+                { model: TaskType },
+                { 
+                    model: TaskAssign,
+                    where: { status: { [Op.in]: ['escalated', 'rejected'] } },
+                    required: true,
+                    include: [{ model: User, attributes: ['user_id', 'role'] }]
+                }
+            ]
         });
 
+        const taskGroups = [];
+        
+        for (const task of escalatedTasks) {
+            const tt = task.TaskTypes?.[0];
+
+            // Fetch ALL assignments for this task to provide the full summary counts
+            const allAssigns = await TaskAssign.findAll({
+                where: { task_id: task.task_id }
+            });
+
+            const stats = {
+                total_assignees: allAssigns.length,
+                accepted_count: allAssigns.filter(a => a.status === 'accepted').length,
+                pending_count: allAssigns.filter(a => a.status === 'pending').length,
+                rejected_count: allAssigns.filter(a => a.status === 'rejected').length,
+                escalated_count: allAssigns.filter(a => a.status === 'escalated').length
+            };
+
+            taskGroups.push({
+                task_id: task.task_id,
+                title: task.title,
+                timing: `${tt.start_date} ${tt.start_time}`,
+                priority: task.priority,
+                stats: stats,
+                summary: `${stats.escalated_count} escalated, ${stats.rejected_count} rejected out of ${stats.total_assignees} total assignees (${stats.accepted_count} accepted, ${stats.pending_count} pending)`,
+                escalated_assignees: task.TaskAssigns.map(ea => ({
+                    user_id: ea.user_id,
+                    role: ea.User?.role,
+                    status: ea.status,
+                    reason: ea.reason
+                }))
+            });
+        }
+
         res.json({
-            count: escalations.length,
-            escalations: escalations.map(e => ({
-                id: e.id,
-                task_id: e.task_id,
-                task_title: e.Task?.title,
-                reason: e.reason,
-                message: e.msg,
-                status: e.status,
-                is_read: e.is_read,
-                created_at: e.created_at,
-                involved_users: {
-                    to_user: e.Creator?.user_id,
-                    from_user: e.RejectedUser?.user_id
-                },
-                can_resolve: e.creator_id == userId && e.status === 'pending'
-            }))
+            count: taskGroups.length,
+            escalations: taskGroups
         });
     } catch (error) {
         console.error(`[Escalation] Error: ${error.message}`);
