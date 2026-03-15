@@ -2497,6 +2497,67 @@ exports.getPendingProofTasks = async (req, res) => {
     }
 };
 
+// 1.5. Get Verification Tasks (For Managers to review other's submissions)
+exports.getVerificationTasks = async (req, res) => {
+    try {
+        const userId = req.userId;
+        const { Op } = require('sequelize');
+        const { Task, TaskAssign, User, Student, Faculty, Staff, RoleUser } = require('../models');
+
+        // Assignments where status is 'completed' AND proof exists
+        // Filter by tasks where current user is creator or assigned faculty
+        const assignments = await TaskAssign.findAll({
+            where: {
+                status: 'completed',
+                proof: { [Op.not]: null }
+            },
+            include: [
+                {
+                    model: Task,
+                    where: {
+                        [Op.or]: [
+                            { creator_id: userId },
+                            { faculty_id: userId }
+                        ]
+                    },
+                    attributes: ['task_id', 'title', 'description', 'is_document']
+                },
+                {
+                    model: User,
+                    attributes: ['user_id', 'role'],
+                    include: [
+                        { model: Student, attributes: ['name'], required: false },
+                        { model: Faculty, attributes: ['name'], required: false },
+                        { model: Staff, attributes: ['name'], required: false },
+                        { model: RoleUser, attributes: ['name'], required: false }
+                    ]
+                }
+            ],
+            order: [['submitted_time', 'DESC']]
+        });
+
+        const formatted = assignments.map(a => {
+            const userDetails = a.User?.Student || a.User?.Faculty || a.User?.Staff || a.User?.RoleUser;
+            return {
+                assignment_id: a.id,
+                task_id: a.Task.task_id,
+                title: a.Task.title,
+                description: a.Task.description,
+                assignee_name: userDetails?.name || 'Unknown',
+                assignee_role: a.User?.role || 'Unknown',
+                submitted_time: a.submitted_time,
+                proof: a.proof,
+                status: a.status
+            };
+        });
+
+        res.json(formatted);
+    } catch (error) {
+        console.error('Error in getVerificationTasks:', error);
+        res.status(500).json({ message: error.message });
+    }
+};
+
 // 2. Get Tasks Assigned Today
 exports.getTasksAssignedToday = async (req, res) => {
     try {
@@ -4196,6 +4257,60 @@ exports.notifyPendingAssignees = async (req, res) => {
 
     } catch (error) {
         console.error('Error in notifyPendingAssignees:', error);
+        res.status(500).json({ message: error.message });
+    }
+};
+
+// Review Task Proof (Approve/Reject)
+exports.reviewTaskProof = async (req, res) => {
+    const t = await Task.sequelize.transaction();
+    try {
+        const { id: assignmentId } = req.params;
+        const { status, reason } = req.body; // status: 'approved' or 'rejected'
+        const userId = req.userId;
+
+        const assignment = await TaskAssign.findByPk(assignmentId, {
+            include: [{ model: Task }]
+        });
+
+        if (!assignment) {
+            await t.rollback();
+            return res.status(404).json({ message: 'Assignment not found' });
+        }
+
+        // Only creator or faculty can review
+        const isManager = assignment.Task.creator_id == userId || assignment.Task.faculty_id == userId;
+        if (!isManager && req.userRole !== 'admin') {
+            await t.rollback();
+            return res.status(403).json({ message: 'Permission denied: Only managers can review proofs' });
+        }
+
+        if (status === 'approved') {
+            await assignment.update({
+                status: 'completed',
+                reason: reason || 'Proof approved'
+            }, { transaction: t });
+        } else {
+            // Rejection: move back to 'accepted' or 'in_progress' so they can resubmit
+            await assignment.update({
+                status: 'accepted',
+                proof: null,
+                reason: reason || 'Proof rejected'
+            }, { transaction: t });
+        }
+
+        await TaskLog.create({
+            task_id: assignment.task_id,
+            user_id: userId,
+            action: `proof_${status}`,
+            details: `Proof ${status} by manager ${userId}. Reason: ${reason || 'N/A'}`
+        }, { transaction: t });
+
+        await t.commit();
+        res.json({ message: `Proof successfully ${status}` });
+
+    } catch (error) {
+        if (t) await t.rollback();
         res.status(500).json({ message: error.message });
     }
 };
