@@ -260,8 +260,18 @@ exports.verifyOTP = async (req, res) => {
 
             const earnedScore = parseFloat(task.score || 0) - penalty;
 
+            let proof = null;
+            if (req.file) {
+                // If it's a local file upload (via multer)
+                proof = `${req.protocol}://${req.get('host')}/uploads/${req.file.filename}`;
+            } else if (req.body.proof) {
+                // If proof URL search passed as string
+                proof = req.body.proof;
+            }
+
             await assignment.update({
                 status: 'completed',
+                proof: proof,
                 submitted_time: now,
                 earned_score: earnedScore,
                 penalty_applied: penalty
