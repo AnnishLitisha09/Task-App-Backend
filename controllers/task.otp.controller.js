@@ -232,8 +232,9 @@ exports.verifyOTP = async (req, res) => {
         // 3. Process based on Type
         if (otpRecord.otp_type === 'START') {
             // --- NEW: Deadline Check ---
-            if (taskType && taskType.end_date && taskType.end_time) {
-                const deadlineStr = `${taskType.end_date}T${taskType.end_time}`;
+            if (taskType && taskType.end_date) {
+                const timeStr = taskType.end_time || '23:59:59';
+                const deadlineStr = `${taskType.end_date}T${timeStr}`;
                 const deadline = new Date(deadlineStr);
                 if (new Date() > deadline) {
                     await t.rollback();

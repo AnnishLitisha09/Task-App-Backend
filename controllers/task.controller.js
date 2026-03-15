@@ -748,8 +748,9 @@ exports.startActivity = async (req, res) => {
         const taskType = assignment.Task.TaskTypes && assignment.Task.TaskTypes[0];
 
         // Deadline check
-        if (taskType && taskType.end_date && taskType.end_time) {
-            const deadline = new Date(`${taskType.end_date}T${taskType.end_time}`);
+        if (taskType && taskType.end_date) {
+            const timeStr = taskType.end_time || '23:59:59';
+            const deadline = new Date(`${taskType.end_date}T${timeStr}`);
             if (new Date() > deadline) {
                 return res.status(400).json({ message: "Activity window has passed. This task is marked as missed." });
             }
@@ -3578,7 +3579,14 @@ exports.pauseTask = async (req, res) => {
 
         if (task.is_paused) return res.status(400).json({ message: 'Task is already paused' });
 
-        await task.update({ is_paused: true });
+        await task.update({ is_paused: true, status: 'PAUSED' });
+        
+        // Update all active assignments to 'paused'
+        const { TaskAssign } = require('../models');
+        await TaskAssign.update(
+            { status: 'paused' },
+            { where: { task_id: id, status: 'in_progress' } }
+        );
 
         await TaskLog.create({
             task_id: id,
@@ -3604,7 +3612,14 @@ exports.resumeTask = async (req, res) => {
 
         if (!task.is_paused) return res.status(400).json({ message: 'Task is not paused' });
 
-        await task.update({ is_paused: false });
+        await task.update({ is_paused: false, status: 'RESUMED' });
+        
+        // Update all paused assignments back to 'in_progress'
+        const { TaskAssign } = require('../models');
+        await TaskAssign.update(
+            { status: 'in_progress' },
+            { where: { task_id: id, status: 'paused' } }
+        );
 
         await TaskLog.create({
             task_id: id,
