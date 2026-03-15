@@ -1476,6 +1476,12 @@ exports.getAllUsersByDepartment = async (req, res) => {
             hods: {},
             staff: []
         };
+        console.log(`[getAllUsersByDepartment] INITIALIZED RESULT. Type check:`, {
+            students: typeof result.students,
+            faculty: typeof result.faculty,
+            hods: typeof result.hods,
+            staff: Array.isArray(result.staff) ? 'array' : typeof result.staff
+        });
 
         // 2. For each department, fetch students, faculty, and HODs
         for (const dept of departments) {
@@ -1526,12 +1532,22 @@ exports.getAllUsersByDepartment = async (req, res) => {
             }
         }
 
-        // 3. Get all staff (grouped by designation)
+        // 3. Get generic staff (not tied to department in current schema)
         const staff = await Staff.findAll({
-            attributes: ['user_id', 'name', 'email', 'designation'],
-            order: [['designation', 'ASC'], ['name', 'ASC']]
+            attributes: ['user_id', 'id', 'name', 'email', 'designation', 'score', 'total_score', 'penalty'],
+            order: [['name', 'ASC']]
         });
         result.staff = staff;
+
+        console.log(`[getAllUsersByDepartment] FINAL RESULT SUMMARY:`, {
+            deptCount: departments.length,
+            studentDeptBuckets: Object.keys(result.students).length,
+            facultyDeptBuckets: Object.keys(result.faculty).length,
+            hodDeptBuckets: Object.keys(result.hods).length,
+            staffCount: result.staff.length,
+            resultType: typeof result,
+            isResultArray: Array.isArray(result)
+        });
 
         res.json(result);
     } catch (error) {

@@ -331,8 +331,8 @@ exports.getHodDashboard = async (req, res) => {
             ...students.map(s => s.user_id)
         ];
 
-        // 4. Pending Approvals for this HOD
-        const pendingApprovals = await Task.findAll({
+        // 4. Tasks Awaiting Approval from this HOD (as Approver)
+        const awaitingMyApproval = await Task.findAll({
             where: {
                 approver_id: userId,
                 is_approved: false,
@@ -344,6 +344,22 @@ exports.getHodDashboard = async (req, res) => {
                     model: TaskType,
                     required: false,
                     attributes: ['start_date', 'start_time', 'end_time']
+                }
+            ],
+            order: [['created_at', 'DESC']]
+        });
+        
+        // 4a. Tasks Assigned TO this HOD (as Assignee) that are PENDING
+        const assignedPending = await TaskAssign.findAll({
+            where: {
+                user_id: userId,
+                status: 'pending'
+            },
+            include: [
+                { 
+                    model: Task, 
+                    where: { is_deleted: false },
+                    include: [{ model: TaskType, required: false }]
                 }
             ],
             order: [['created_at', 'DESC']]
@@ -363,7 +379,8 @@ exports.getHodDashboard = async (req, res) => {
 
         // Batch fetch names for creators and assignees
         const involvedUserIds = [...new Set([
-            ...pendingApprovals.map(t => t.creator_id),
+            ...awaitingMyApproval.map(t => t.creator_id),
+            ...assignedPending.map(ap => ap.Task?.creator_id).filter(id => id),
             ...deptEscalations.map(e => e.user_id)
         ])];
 
@@ -383,7 +400,7 @@ exports.getHodDashboard = async (req, res) => {
             profileNameMap[u.user_id] = p ? p.name : `User #${u.user_id}`;
         });
 
-        const formattedPending = pendingApprovals.map(t => ({
+        const formattedAwaiting = awaitingMyApproval.map(t => ({
             task_id: t.task_id,
             title: t.title,
             category: t.category,
@@ -393,26 +410,49 @@ exports.getHodDashboard = async (req, res) => {
             timing: t.TaskTypes?.[0] ? `${t.TaskTypes[0].start_date} ${t.TaskTypes[0].start_time}` : 'N/A'
         }));
 
-        const formattedEscalations = deptEscalations.map(e => {
-            const t = e.Task;
-            const tt = t.TaskTypes?.[0];
+        const formattedAssignedToMe = assignedPending.map(ap => {
+            const t = ap.Task;
             return {
                 task_id: t.task_id,
                 title: t.title,
-                assignee_name: profileNameMap[e.user_id],
-                status: e.status,
-                timing: tt ? `${tt.start_date} ${tt.start_time}` : 'N/A'
+                category: t.category,
+                priority: t.priority,
+                assigned_at: ap.created_at,
+                assigned_by: profileNameMap[t.creator_id],
+                timing: t.TaskTypes?.[0] ? `${t.TaskTypes[0].start_date} ${t.TaskTypes[0].start_time}` : 'N/A'
             };
         });
 
-        // 5. Today's Department Schedule (Assigned to OR Created by Dept Members Today)
+        // 4b. Group Escalations by Task
+        const escalationGroups = {};
+        deptEscalations.forEach(e => {
+            const t = e.Task;
+            if (!t) return;
+            if (!escalationGroups[t.task_id]) {
+                const tt = t.TaskTypes?.[0];
+                escalationGroups[t.task_id] = {
+                    task_id: t.task_id,
+                    title: t.title,
+                    timing: tt ? `${tt.start_date} ${tt.start_time}` : 'N/A',
+                    escalated_assignees: []
+                };
+            }
+            escalationGroups[t.task_id].escalated_assignees.push({
+                user_id: e.user_id,
+                name: profileNameMap[e.user_id],
+                role: e.User?.role || 'N/A'
+            });
+        });
+
+        const formattedEscalations = Object.values(escalationGroups).map(group => ({
+            ...group,
+            summary: `${group.escalated_assignees.length} assignee(s) escalated`
+        }));
+
+        // 5. Today's Department Schedule (Tasks assigned to Me or Dept Members that are ACCEPTED)
         const todaysTasks = await Task.findAll({
             where: {
-                is_deleted: false,
-                [Op.or]: [
-                    { creator_id: { [Op.in]: deptUserIds.length > 0 ? deptUserIds : [0] } },
-                    deptUserIds.length > 0 ? literal(`EXISTS (SELECT 1 FROM task_assign ta WHERE ta.task_id = \`Task\`.\`task_id\` AND ta.user_id IN (${deptUserIds.join(',')}))`) : { [Op.raw]: '1=0' }
-                ]
+                is_deleted: false
             },
             include: [{
                 model: TaskType,
@@ -425,6 +465,18 @@ exports.getHodDashboard = async (req, res) => {
                                 literal(`DATE(start_date) <= '${effectiveTodayStr}'`),
                                 literal(`DATE(end_date) >= '${effectiveTodayStr}'`)
                             ]
+                        }
+                    ]
+                }
+            }, {
+                model: TaskAssign,
+                required: true,
+                where: {
+                    [Op.or]: [
+                        { user_id: userId, status: 'accepted' },
+                        { 
+                            user_id: { [Op.in]: deptUserIds.length > 0 ? deptUserIds : [0] },
+                            status: 'accepted'
                         }
                     ]
                 }
@@ -518,8 +570,10 @@ exports.getHodDashboard = async (req, res) => {
                 total_students: studentCount,
                 total_faculty: facultyCount
             },
-            pending_approvals_count: formattedPending.length,
-            pending_approvals: formattedPending,
+            assigned_to_me: formattedAssignedToMe,
+            assigned_to_me_count: formattedAssignedToMe.length,
+            awaiting_my_approval: formattedAwaiting,
+            awaiting_my_approval_count: formattedAwaiting.length,
             escalated_tasks_count: formattedEscalations.length,
             escalated_tasks: formattedEscalations,
             todays_schedule_count: schedule.length,

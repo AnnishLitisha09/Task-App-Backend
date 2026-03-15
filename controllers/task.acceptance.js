@@ -47,19 +47,26 @@ exports.acceptTask = async (req, res) => {
                 const taskDateStr = new Date(taskType.start_date).toISOString().split('T')[0];
 
                 if (taskDateStr > localDateStr) {
-                    // Task is for a future date. Check if it's tomorrow AND if it's past 7 PM today
+                    // Task is for a future date. Check if it's tomorrow OR if it's Monday and today is Saturday
                     const localTomorrow = new Date(localNow);
                     localTomorrow.setDate(localTomorrow.getDate() + 1);
-                    const tYear = localTomorrow.getFullYear();
-                    const tMonth = String(localTomorrow.getMonth() + 1).padStart(2, '0');
-                    const tDay = String(localTomorrow.getDate()).padStart(2, '0');
-                    const localTomorrowStr = `${tYear}-${tMonth}-${tDay}`;
+                    const localTomorrowStr = localTomorrow.toISOString().split('T')[0];
 
-                    if (taskDateStr === localTomorrowStr) {
+                    const localMonday = new Date(localNow);
+                    const daysUntilMonday = (8 - localNow.getDay()) % 7 || 7; // If today is Sat (6), daysRef = 2
+                    localMonday.setDate(localNow.getDate() + daysUntilMonday);
+                    const localMondayStr = localMonday.toISOString().split('T')[0];
+
+                    const isTomorrow = (taskDateStr === localTomorrowStr);
+                    const isSaturdayToMonday = (localNow.getDay() === 6 && taskDateStr === localMondayStr);
+
+                    if (isTomorrow || isSaturdayToMonday) {
                         if (localNow.getHours() < 19) {
                             return res.status(403).json({
                                 message: 'Task Not Yet Available',
-                                details: 'Students can only accept tomorrow\'s tasks after 7:00 PM today.'
+                                details: isSaturdayToMonday 
+                                    ? 'Monday tasks only become available on Saturday after 07:00 PM.'
+                                    : 'Task only becomes available after 07:00 PM today.'
                             });
                         }
                     } else {
@@ -159,6 +166,50 @@ exports.acceptTask = async (req, res) => {
             status: 'accepted',
             accepted_at: new Date()
         });
+
+        // --- NEW: Auto-accept Remaining Days in Series ---
+        try {
+            const task = assignment.Task;
+            if (task) {
+                // Find other pending assignments for the same user, title, and creator
+                // This mimics a "series" since recurring tasks share these traits
+                const otherAssignments = await TaskAssign.findAll({
+                    where: {
+                        user_id: userId,
+                        status: 'pending'
+                    },
+                    include: [{
+                        model: Task,
+                        where: {
+                            title: task.title,
+                            creator_id: task.creator_id,
+                            is_deleted: false,
+                            task_id: { [Op.ne]: taskId }
+                        }
+                    }]
+                });
+
+                if (otherAssignments.length > 0) {
+                    for (const other of otherAssignments) {
+                        await other.update({
+                            status: 'accepted',
+                            accepted_at: new Date(),
+                            reason: 'Auto-accepted via recurring series approval'
+                        });
+                        
+                        await TaskLog.create({
+                            task_id: other.task_id,
+                            user_id: userId,
+                            action: 'accept',
+                            details: `Task auto-accepted as part of series following acceptance of Task ID ${taskId}`
+                        });
+                    }
+                }
+            }
+        } catch (seriesError) {
+            console.error('Error in auto-accepting series:', seriesError);
+            // Non-blocking error
+        }
 
         // 4. Log Action
         await TaskLog.create({

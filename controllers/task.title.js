@@ -40,12 +40,13 @@ exports.getAllTaskTitles = async (req, res) => {
         const where = {};
 
         // Automatic Filtering by Token Role
-        if (userRole === 'student') {
+        if (userRole === 'admin') {
+            // Admin sees absolutely everything
+        } else if (userRole === 'student') {
             // Students only see "student" and "all" roles
             where.target_role = { [Op.or]: ['student', 'all'] };
         } else {
-            // Faculty, Staff, and Admin see everything except student-specific tasks
-            // or we can explicitly show 'faculty', 'staff', 'admin', 'all'
+            // Faculty, Staff, and others see everything except student-specific tasks
             where.target_role = { [Op.or]: ['faculty', 'staff', 'admin', 'all'] };
         }
 
@@ -125,17 +126,17 @@ exports.bulkUploadTaskTitles = async (req, res) => {
             });
 
             if (existing) {
-                if (existing.deletedAt) {
+                if (existing.deleted_at) { // Use underscored field name as per model
                     await existing.restore();
-                    await existing.update({ target_role: target_role.toLowerCase() });
+                    await existing.update({ target_role: target_role.toLowerCase().trim() });
                     results.success++;
                 } else {
                     results.skipped++;
                 }
             } else {
                 await TaskTitle.create({
-                    task_title: task_title.trim(),
-                    target_role: target_role.toLowerCase()
+                    task_title: task_title.toString().trim(),
+                    target_role: target_role.toString().toLowerCase().trim()
                 });
                 results.success++;
             }

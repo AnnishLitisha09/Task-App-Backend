@@ -242,9 +242,9 @@ exports.checkMorningAcknowledgment = async () => {
             const userTasks = activeAssignments.filter(a => a.user_id === userId);
             for (const assign of userTasks) {
                 if (isStudent) {
-                    // Logic for students: Mark as rejected/absent, no formal escalation
+                    // Logic for students: Mark as rejected/absent if no ack by 10:45 AM (2 working hours)
                     await TaskAssign.update(
-                        { status: 'rejected', reason: 'Absent (No Acknowledgement)' },
+                        { status: 'rejected', reason: 'Absent (No Acknowledgement by 10:45 AM)' },
                         { where: { id: assign.id } }
                     );
                     
@@ -252,7 +252,7 @@ exports.checkMorningAcknowledgment = async () => {
                         task_id: assign.task_id,
                         user_id: userId,
                         action: 'absence_auto_reject',
-                        details: `Task auto-rejected (marked absent): Missing daily acknowledgement by 08:45 AM.`
+                        details: `Task auto-rejected (marked absent): Missing daily acknowledgement by 10:45 AM (2 working hours into day).`
                     });
                 } else {
                     // Standard logic: Update assignment status and mark task escalated
@@ -268,8 +268,8 @@ exports.checkMorningAcknowledgment = async () => {
                     // 2. Create formal escalation record for the supervisor
                     await TaskEscalation.create({
                         task_id: assign.task_id,
-                        reason: 'No Acknowledgement by 08:45 AM',
-                        msg: `User did not acknowledge daily morning awareness for task "${assign.Task.title}".`,
+                        reason: 'No Acknowledgement by 10:45 AM',
+                        msg: `User did not acknowledge daily morning awareness for task "${assign.Task.title}" within 2 working hours.`,
                         creator_id: supervisorId, // "To" the supervisor
                         rejected_user_id: userId, // "From" the failing user
                         status: 'pending'
@@ -280,7 +280,7 @@ exports.checkMorningAcknowledgment = async () => {
                         task_id: assign.task_id,
                         user_id: userId,
                         action: 'escalation',
-                        details: `Task escalated to User ${supervisorId}: Missing daily acknowledgement by 08:45 AM.`
+                        details: `Task escalated to User ${supervisorId}: Missing daily acknowledgement by 10:45 AM (2 working hours).`
                     });
                 }
                 escalationCount++;
@@ -424,16 +424,16 @@ exports.acknowledgeGeneral = async (req, res) => {
         const minute = localNow.getMinutes();
         const totalMinutes = hour * 60 + minute;
 
-        // Window: 06:30 (390 mins) to 08:45 (525 mins)
+        // Window: 06:30 (390 mins) to 10:45 (645 mins) - Extended for 2h working window rule
         const startWindow = 6 * 60 + 30; // 390
-        const endWindow = 8 * 60 + 45;   // 525
+        const endWindow = 10 * 60 + 45;  // 645
 
         // Bypass time check ONLY for Admin
         if (adminRole !== 'admin') {
             if (totalMinutes < startWindow || totalMinutes > endWindow) {
                 return res.status(400).json({
                     success: false,
-                    message: `Acknowledgement is only allowed between 06:30 AM and 08:45 AM. Current time is ${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}.`
+                    message: `Acknowledgement is only allowed between 06:30 AM and 10:45 AM. Current time is ${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}.`
                 });
             }
         }

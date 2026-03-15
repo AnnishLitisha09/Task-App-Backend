@@ -78,16 +78,27 @@ exports.login = async (req, res) => {
             { expiresIn: "1d" }
         );
 
-        let baseRole = account.User.role.charAt(0).toUpperCase() + account.User.role.slice(1);
-        let specificRole = baseRole;
+        let displayBaseRole = account.User.role.charAt(0).toUpperCase() + account.User.role.slice(1);
+        if (displayBaseRole.toLowerCase() === 'role-user') {
+            if (account.Faculty) displayBaseRole = "Faculty";
+            else if (account.Staff) displayBaseRole = "Staff";
+            else if (account.Student) displayBaseRole = "Student";
+            else displayBaseRole = "User"; // Fallback
+        }
+
+        let specificRole = displayBaseRole;
         let scopeDetails = 'N/A';
-        let allRoles = [baseRole];
+        let allRoles = [displayBaseRole];
 
         // Aggregate all unique Roles and Scopes
         if (account.User.RoleAssignments && account.User.RoleAssignments.length > 0) {
             const mgmtRoles = account.User.RoleAssignments.map(ra => {
                 let name = ra.Role?.user_role || '';
-                return name.toLowerCase().includes("incharge") ? "Incharge" : name;
+                // Map 'role-user' or anything including 'incharge' to 'Incharge'
+                if (name.toLowerCase() === 'role-user' || name.toLowerCase().includes("incharge")) {
+                    return "Incharge";
+                }
+                return name;
             }).filter(Boolean);
 
             const uniqueMgmtRoles = [...new Set(mgmtRoles)];
@@ -95,20 +106,18 @@ exports.login = async (req, res) => {
             const uniqueScopes = [...new Set(scopes)];
 
             if (uniqueMgmtRoles.length > 0) {
-                // Remove 'Role-user' from allRoles if we have specific roles
-                const filteredRoles = uniqueMgmtRoles.filter(r => r.toLowerCase() !== 'role-user');
-                if (filteredRoles.length > 0) {
-                    specificRole = filteredRoles.join(', ');
-                    allRoles = [...new Set(filteredRoles)];
-                } else {
-                    specificRole = baseRole;
-                    allRoles = [baseRole];
-                }
+                // Include both base role and all assigned management roles
+                allRoles = [...new Set([displayBaseRole, ...uniqueMgmtRoles])];
+                specificRole = uniqueMgmtRoles.join(', ');
             }
             if (uniqueScopes.length > 0) {
                 scopeDetails = uniqueScopes.join(', ');
             }
         }
+
+        // Final Filter: Never show "Role-user" in all_roles
+        allRoles = allRoles.filter(r => r && r.toLowerCase() !== 'role-user');
+        if (allRoles.length === 0) allRoles = [displayBaseRole];
 
         const userName = account.Student?.name || account.Faculty?.name || account.Staff?.name || account.RoleUser?.name || "User";
 
@@ -191,16 +200,27 @@ exports.googleLogin = async (req, res) => {
             { expiresIn: "1d" }
         );
 
-        let baseRole = account.User.role.charAt(0).toUpperCase() + account.User.role.slice(1);
-        let specificRole = baseRole;
+        let displayBaseRole = account.User.role.charAt(0).toUpperCase() + account.User.role.slice(1);
+        if (displayBaseRole.toLowerCase() === 'role-user') {
+            if (account.Faculty) displayBaseRole = "Faculty";
+            else if (account.Staff) displayBaseRole = "Staff";
+            else if (account.Student) displayBaseRole = "Student";
+            else displayBaseRole = "User";
+        }
+
+        let specificRole = displayBaseRole;
         let scopeDetails = 'N/A';
-        let allRoles = [baseRole];
+        let allRoles = [displayBaseRole];
 
         // Aggregate all unique Roles and Scopes
         if (account.User.RoleAssignments && account.User.RoleAssignments.length > 0) {
             const mgmtRoles = account.User.RoleAssignments.map(ra => {
                 let name = ra.Role?.user_role || '';
-                return name.toLowerCase().includes("incharge") ? "Incharge" : name;
+                // Map 'role-user' or anything including 'incharge' to 'Incharge'
+                if (name.toLowerCase() === 'role-user' || name.toLowerCase().includes("incharge")) {
+                    return "Incharge";
+                }
+                return name;
             }).filter(Boolean);
 
             const uniqueMgmtRoles = [...new Set(mgmtRoles)];
@@ -208,20 +228,18 @@ exports.googleLogin = async (req, res) => {
             const uniqueScopes = [...new Set(scopes)];
 
             if (uniqueMgmtRoles.length > 0) {
-                // Remove 'Role-user' from allRoles if we have specific roles
-                const filteredRoles = uniqueMgmtRoles.filter(r => r.toLowerCase() !== 'role-user');
-                if (filteredRoles.length > 0) {
-                    specificRole = filteredRoles.join(', ');
-                    allRoles = [...new Set(filteredRoles)];
-                } else {
-                    specificRole = baseRole;
-                    allRoles = [baseRole];
-                }
+                // Include both base role and all assigned management roles
+                allRoles = [...new Set([displayBaseRole, ...uniqueMgmtRoles])];
+                specificRole = uniqueMgmtRoles.join(', ');
             }
             if (uniqueScopes.length > 0) {
                 scopeDetails = uniqueScopes.join(', ');
             }
         }
+
+        // Final Filter: Never show "Role-user" in all_roles
+        allRoles = allRoles.filter(r => r && r.toLowerCase() !== 'role-user');
+        if (allRoles.length === 0) allRoles = [displayBaseRole];
 
         const userName = account.Student?.name || account.Faculty?.name || account.Staff?.name || account.RoleUser?.name || "User";
 

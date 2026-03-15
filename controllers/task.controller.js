@@ -275,15 +275,17 @@ exports.createTask = async (req, res) => {
 exports.getAllTasks = async (req, res) => {
     try {
         const { task_title_id } = req.query;
+        const { limit, offset, page } = getPagination(req.query);
         const where = { is_deleted: false };
         if (task_title_id) where.task_title_id = task_title_id;
 
         const tasks = await Task.findAndCountAll({
             where,
-            attributes: ['task_id', 'title', 'description', 'category', 'priority', 'score', 'penalty_per_hour', 'is_approved', 'created_at', 'task_title_id'],
+            attributes: ['task_id', 'title', 'description', 'category', 'priority', 'score', 'penalty_per_hour', 'is_approved', 'created_at', 'task_title_id', 'venue_id'],
             include: [
                 { model: User, as: 'Creator', attributes: ['user_id', 'role'] },
                 { model: TaskType },
+                { model: Venue },
                 { model: Faculty, attributes: ['name', 'department_id'] },
                 { model: TaskTitle, attributes: ['id', 'task_title'] }
             ],
@@ -307,6 +309,7 @@ exports.getTaskById = async (req, res) => {
                 { model: User, as: 'Creator', attributes: ['user_id', 'role'] },
                 { model: User, as: 'Approver', attributes: ['user_id', 'role'] },
                 { model: TaskType },
+                { model: Venue },
                 {
                     model: TaskAssign,
                     include: [{ model: User, attributes: ['user_id', 'role'] }]
@@ -645,6 +648,7 @@ exports.getTasksCreatedByUser = async (req, res) => {
             where: { creator_id: userId, is_deleted: false },
             include: [
                 { model: TaskType },
+                { model: Venue },
                 { model: TaskAssign, include: [{ model: User, attributes: ['user_id', 'role'] }] }
             ],
             limit,
@@ -670,7 +674,8 @@ exports.getTasksAssignedToUser = async (req, res) => {
                     where: { is_deleted: false },
                     include: [
                         { model: User, as: 'Creator', attributes: ['user_id', 'role'] },
-                        { model: TaskType }
+                        { model: TaskType },
+                        { model: Venue }
                     ]
                 }
             ],
@@ -1299,11 +1304,7 @@ exports.createUnifiedTask = async (req, res) => {
         if (task_type_data.task_name === 'Recurring Task' && recurrence !== 'none') {
             let current = new Date(start);
             while (current <= end) {
-                // Skip Sundays for daily Recurring tasks if that was the intent,
-                // but user said "each day" so I will include them for now 
-                // unless it's a legacy requirement. 
-                // Actually, I'll keep the skip for now to avoid breaking changes 
-                // unless they explicitly ask to include Sundays.
+                // Strictly skip Sundays as per user requirement
                 if (current.getDay() !== 0) {
                     occurrenceDates.push(new Date(current));
                 }
@@ -1317,6 +1318,11 @@ exports.createUnifiedTask = async (req, res) => {
                 if (occurrenceDates.length >= 365) break;
             }
         } else {
+            // Validate single task date is not Sunday
+            if (start.getDay() === 0) {
+                await t.rollback();
+                return res.status(400).json({ message: 'Task cannot be created on a Sunday (Holiday).' });
+            }
             occurrenceDates.push(start);
         }
 
@@ -2438,6 +2444,9 @@ exports.getPendingProofTasks = async (req, res) => {
                 include: [{
                     model: TaskType,
                     required: true
+                }, {
+                    model: Venue,
+                    required: false
                 }]
             }],
             limit,
@@ -2508,7 +2517,7 @@ exports.getTasksAssignedToday = async (req, res) => {
             include: [{
                 model: Task,
                 where: { is_deleted: false },
-                include: [{ model: TaskType }]
+                include: [{ model: TaskType }, { model: Venue }]
             }]
         });
 
@@ -2545,20 +2554,23 @@ exports.getTasksAssignedTodayByUserId = async (req, res) => {
             include: [{
                 model: Task,
                 where: { is_deleted: false },
-                include: [{
-                    model: TaskType,
-                    where: {
-                        [Op.and]: [
-                            { start_date: { [Op.lte]: `${todayStr} 23:59:59` } },
-                            {
-                                [Op.or]: [
-                                    { end_date: { [Op.gte]: `${todayStr} 00:00:00` } },
-                                    { end_date: null }
-                                ]
-                            }
-                        ]
-                    }
-                }]
+                include: [
+                    {
+                        model: TaskType,
+                        where: {
+                            [Op.and]: [
+                                { start_date: { [Op.lte]: `${todayStr} 23:59:59` } },
+                                {
+                                    [Op.or]: [
+                                        { end_date: { [Op.gte]: `${todayStr} 00:00:00` } },
+                                        { end_date: null }
+                                    ]
+                                }
+                            ]
+                        }
+                    },
+                    { model: Venue }
+                ]
             }]
         });
 
@@ -2671,7 +2683,7 @@ exports.getApprovedUpcomingTasks = async (req, res) => {
             include: [{
                 model: Task,
                 where: { is_deleted: false },
-                include: [{ model: TaskType }]
+                include: [{ model: TaskType }, { model: Venue }]
             }]
         });
 
@@ -2730,7 +2742,7 @@ exports.getPendingUpcomingTasks = async (req, res) => {
             include: [{
                 model: Task,
                 where: { is_deleted: false },
-                include: [{ model: TaskType }]
+                include: [{ model: TaskType }, { model: Venue }]
             }]
         });
 
