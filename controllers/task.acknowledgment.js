@@ -515,7 +515,7 @@ exports.acknowledgeGeneral = async (req, res) => {
                 ? `Daily morning awareness acknowledged for User ID ${targetUserId}.`
                 : 'Daily morning awareness acknowledged. This confirms you are aware of your tasks for today.',
             acknowledged_at: ack.acknowledged_at,
-            date: today,
+            date: targetDate,
             user_id: targetUserId
         });
 
