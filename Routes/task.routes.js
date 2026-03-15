@@ -95,6 +95,7 @@ router.post('/assignment/:id/review-proof', verifyToken, taskController.reviewTa
 router.post('/otp/generate', verifyToken, taskOTPController.generateOTP);
 router.get('/otp/active', verifyToken, taskOTPController.getGeneratedOTPs);
 router.post('/otp/verify', verifyToken, upload.single('file'), taskOTPController.verifyOTP);
+router.post('/:id/start-activity', verifyToken, taskController.startActivity);
 router.get('/otp/creator/assignments', verifyToken, taskOTPController.getCreatorTaskAssignments);
 
 // Task Closure

@@ -723,6 +723,59 @@ exports.approveTask = async (req, res) => {
 };
 
 // Submit Task Proof
+exports.startActivity = async (req, res) => {
+    try {
+        const userId = req.userId;
+        const { id } = req.params;
+
+        // Find assignment
+        const assignment = await TaskAssign.findOne({
+            where: {
+                task_id: id,
+                user_id: userId,
+                status: { [require('sequelize').Op.in]: ['pending', 'accepted'] }
+            },
+            include: [{
+                model: Task,
+                include: [{ model: TaskType }]
+            }]
+        });
+
+        if (!assignment) {
+            return res.status(404).json({ message: 'Eligible task assignment (pending or accepted) not found' });
+        }
+
+        const taskType = assignment.Task.TaskTypes && assignment.Task.TaskTypes[0];
+
+        // Deadline check
+        if (taskType && taskType.end_date && taskType.end_time) {
+            const deadline = new Date(`${taskType.end_date}T${taskType.end_time}`);
+            if (new Date() > deadline) {
+                return res.status(400).json({ message: "Activity window has passed. This task is marked as missed." });
+            }
+        }
+
+        await assignment.update({
+            status: 'in_progress'
+        });
+
+        await TaskLog.create({
+            task_id: id,
+            user_id: userId,
+            action: 'start_activity',
+            details: 'Activity started manually'
+        });
+
+        res.json({
+            message: 'Activity started successfully',
+            status: 'in_progress'
+        });
+
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
 exports.submitTaskProof = async (req, res) => {
     try {
         const userId = req.userId;
