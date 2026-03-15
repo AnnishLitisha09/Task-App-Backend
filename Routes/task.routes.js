@@ -74,6 +74,7 @@ router.get('/created-by/:userId', verifyToken, taskController.getTasksCreatedByU
 router.get('/assigned-to/:userId', verifyToken, taskController.getTasksAssignedToUser);
 router.get('/pending-upcoming', verifyToken, taskController.getPendingUpcomingTasks);
 router.get('/pending-proof', verifyToken, taskController.getPendingProofTasks); // NEW: Pending Proof
+router.get('/verification/pending', verifyToken, taskController.getVerificationTasks); // NEW: Tasks awaiting review
 router.get('/assigned-today', verifyToken, taskController.getTasksAssignedToday); // NEW: Assigned Today
 router.get('/assigned-today/:userId', verifyToken, taskController.getTasksAssignedTodayByUserId); // NEW: Assigned Today for user
 
@@ -90,6 +91,7 @@ router.get('/:id/exhaustive', verifyToken, taskController.getExhaustiveTaskDetai
 
 // Task Completion & Proof
 router.post('/:id/submit-proof', verifyToken, taskController.submitTaskProof);
+router.post('/assignment/:id/review-proof', verifyToken, taskController.reviewTaskProof);
 router.post('/otp/generate', verifyToken, taskOTPController.generateOTP);
 router.get('/otp/active', verifyToken, taskOTPController.getGeneratedOTPs);
 router.post('/otp/verify', verifyToken, upload.single('file'), taskOTPController.verifyOTP);
