@@ -92,7 +92,7 @@ router.get('/:id/exhaustive', verifyToken, taskController.getExhaustiveTaskDetai
 router.post('/:id/submit-proof', verifyToken, taskController.submitTaskProof);
 router.post('/otp/generate', verifyToken, taskOTPController.generateOTP);
 router.get('/otp/active', verifyToken, taskOTPController.getGeneratedOTPs);
-router.post('/otp/verify', verifyToken, taskOTPController.verifyOTP);
+router.post('/otp/verify', verifyToken, upload.single('file'), taskOTPController.verifyOTP);
 router.get('/otp/creator/assignments', verifyToken, taskOTPController.getCreatorTaskAssignments);
 
 // Task Closure
