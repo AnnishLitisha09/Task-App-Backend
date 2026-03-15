@@ -842,4 +842,52 @@ exports.updateVenueStatus = async (req, res) => {
     }
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/tasks/venues/all
+// Returns a simple list of all venues for any authenticated user
+// ─────────────────────────────────────────────────────────────────────────────
+exports.getAllVenues = async (req, res) => {
+    try {
+        const venues = await Venue.findAll({
+            attributes: ['venue_id', 'name', 'venue_type', 'location', 'image_url', 'description', 'status'],
+            where: { is_deleted: false }
+        });
+
+        res.json({
+            success: true,
+            count: venues.length,
+            venues
+        });
+    } catch (error) {
+        console.error('Error in getAllVenues:', error);
+        res.status(500).json({ message: error.message });
+    }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/tasks/venue/:id/basic
+// Returns basic details for a specific venue
+// ─────────────────────────────────────────────────────────────────────────────
+exports.getVenueBasicDetails = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const venue = await Venue.findByPk(id, {
+            attributes: ['venue_id', 'name', 'venue_type', 'location', 'image_url', 'description', 'status'],
+            where: { is_deleted: false }
+        });
+
+        if (!venue) {
+            return res.status(404).json({ message: 'Venue not found' });
+        }
+
+        res.json({
+            success: true,
+            venue
+        });
+    } catch (error) {
+        console.error('Error in getVenueBasicDetails:', error);
+        res.status(500).json({ message: error.message });
+    }
+};
+
 module.exports = exports;

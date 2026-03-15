@@ -26,7 +26,9 @@ router.get('/venue-dashboard', verifyToken, venueController.getVenueDashboard);
 router.get('/venue-history', verifyToken, venueController.getVenueHistory);
 router.get('/venue-details', verifyToken, venueController.getManagedVenuesDetails); // Detailed all-in-one
 router.get('/venues/my-list', verifyToken, venueController.getMyVenuesList);        // Simplified list
+router.get('/venues/all', verifyToken, venueController.getAllVenues);            // NEW: All Venues
 router.get('/venue/:id/details', verifyToken, venueController.getVenueDetails);     // Single venue deep-dive
+router.get('/venue/:id/basic', verifyToken, venueController.getVenueBasicDetails);   // NEW: Basic details
 router.get('/calendar', verifyToken, calendarController.getUserCalendar);
 router.get('/calendar/venue', verifyToken, calendarController.getVenueCalendar); // NEW: Venue Calendar
 router.put('/venue/:id/status', verifyToken, venueController.updateVenueStatus); // NEW: Update Venue Status

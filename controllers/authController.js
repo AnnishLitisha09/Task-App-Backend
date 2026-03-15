@@ -69,6 +69,14 @@ exports.login = async (req, res) => {
             return res.status(401).json({ message: "Invalid credentials" });
         }
 
+        // --- NEW: Single-Device Login Check ---
+        if (account.is_logged_in) {
+            return res.status(403).json({ message: "You are already logged in on another device. Please logout first." });
+        }
+
+        // Set is_logged_in flag
+        await account.update({ is_logged_in: true });
+
         const token = jwt.sign(
             {
                 user_id: account.User.user_id,
@@ -189,6 +197,14 @@ exports.googleLogin = async (req, res) => {
         if (!account || !account.User) {
             return res.status(403).json({ message: "Account not created by admin" });
         }
+
+        // --- NEW: Single-Device Login Check ---
+        if (account.is_logged_in) {
+            return res.status(403).json({ message: "You are already logged in on another device. Please logout first." });
+        }
+
+        // Set is_logged_in flag
+        await account.update({ is_logged_in: true });
 
         // Generate JWT
         const jwtToken = jwt.sign(
@@ -398,6 +414,42 @@ exports.getUserContext = async (req, res) => {
 
     } catch (err) {
         console.error("GET USER CONTEXT ERROR 👉", err);
+        res.status(500).json({ message: err.message });
+    }
+};
+exports.logout = async (req, res) => {
+    try {
+        const userId = req.userId;
+        const account = await AuthAccount.findByPk(userId);
+
+        if (account) {
+            await account.update({ is_logged_in: false });
+        }
+
+        res.json({ success: true, message: "Logged out successfully" });
+    } catch (err) {
+        console.error("LOGOUT ERROR 👉", err);
+        res.status(500).json({ message: err.message });
+    }
+};
+
+exports.adminLogoutUser = async (req, res) => {
+    try {
+        const { userId } = req.params;
+        const account = await AuthAccount.findByPk(userId);
+
+        if (!account) {
+            return res.status(404).json({ message: "User account not found" });
+        }
+
+        await account.update({ is_logged_in: false });
+
+        res.json({ 
+            success: true, 
+            message: `User #${userId} has been logged out by administrator` 
+        });
+    } catch (err) {
+        console.error("ADMIN LOGOUT ERROR 👉", err);
         res.status(500).json({ message: err.message });
     }
 };

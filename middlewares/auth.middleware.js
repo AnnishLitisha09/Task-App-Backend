@@ -14,13 +14,24 @@ const verifyToken = (req, res, next) => {
     const tokenParts = token.split(' ');
     const tokenValue = tokenParts.length === 2 ? tokenParts[1] : token;
 
-    jwt.verify(tokenValue, JWT_SECRET, (err, decoded) => {
+    jwt.verify(tokenValue, JWT_SECRET, async (err, decoded) => {
         if (err) {
             return res.status(401).json({ message: 'Unauthorized!' });
         }
-        req.userId = decoded.user_id;
-        req.userRole = decoded.role;
-        next();
+
+        try {
+            // --- NEW: Strict Single-Device Session Check ---
+            const account = await AuthAccount.findByPk(decoded.user_id);
+            if (!account || !account.is_logged_in) {
+                return res.status(401).json({ message: 'Unauthorized! Please login again.' });
+            }
+
+            req.userId = decoded.user_id;
+            req.userRole = decoded.role;
+            next();
+        } catch (dbErr) {
+            return res.status(500).json({ message: 'Internal server error' });
+        }
     });
 };
 

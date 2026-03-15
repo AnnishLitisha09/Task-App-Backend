@@ -25,6 +25,10 @@ module.exports = (sequelize, DataTypes) => {
     hashed_password: {
       type: DataTypes.STRING(255),
       allowNull: false
+    },
+    is_logged_in: {
+      type: DataTypes.BOOLEAN,
+      defaultValue: false
     }
   }, {
     sequelize,

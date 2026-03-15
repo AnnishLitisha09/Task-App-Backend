@@ -1293,8 +1293,9 @@ exports.createUnifiedTask = async (req, res) => {
                 const workbook = XLSX.readFile(req.file.path);
                 const data = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]]);
                 for (const row of data) {
-                    const { email, user_id } = row;
+                    const { email, user_id, name } = row;
                     let excelUserId = user_id;
+                    
                     if (!excelUserId && email) {
                         const profiles = await Promise.all([
                             Student.findOne({ where: { email } }),
@@ -1304,6 +1305,17 @@ exports.createUnifiedTask = async (req, res) => {
                         ]);
                         excelUserId = profiles.find(p => p)?.user_id;
                     }
+
+                    if (!excelUserId && name) {
+                        const profiles = await Promise.all([
+                            Student.findOne({ where: { name } }),
+                            Faculty.findOne({ where: { name } }),
+                            RoleUser.findOne({ where: { name } }),
+                            Staff.findOne({ where: { name } })
+                        ]);
+                        excelUserId = profiles.find(p => p)?.user_id;
+                    }
+
                     if (excelUserId) {
                         const numericId = parseInt(excelUserId);
                         if (!isNaN(numericId) && !finalAssigneeIds.includes(numericId)) {
