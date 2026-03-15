@@ -60,6 +60,7 @@ router.post('/approval-requests/:requestId/reject', verifyToken, taskAcceptance.
 
 // Task Acknowledgment
 router.get('/today/unacknowledged', verifyToken, taskAcknowledgment.getTodaysUnacknowledgedTasks);
+router.get('/acknowledgments/status', verifyToken, taskAcknowledgment.getGeneralAcknowledgmentStatus);
 router.post('/acknowledge', verifyToken, taskAcknowledgment.acknowledgeTodaysTasks);
 router.post('/acknowledge-general', verifyToken, taskAcknowledgment.acknowledgeGeneral);
 router.get('/acknowledgments/history', verifyToken, taskAcknowledgment.getAcknowledgmentHistory);
