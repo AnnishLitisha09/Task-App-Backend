@@ -70,7 +70,7 @@ exports.login = async (req, res) => {
         }
 
         // --- NEW: Single-Device Login Check ---
-        if (account.is_logged_in) {
+        if (account.is_logged_in && account.User.role !== "ADMIN" && account.User.role !== "admin") {
             return res.status(403).json({ message: "You are already logged in on another device. Please logout first." });
         }
 
@@ -199,7 +199,7 @@ exports.googleLogin = async (req, res) => {
         }
 
         // --- NEW: Single-Device Login Check ---
-        if (account.is_logged_in) {
+        if (account.is_logged_in && account.User.role !== "ADMIN" && account.User.role !== "admin") {
             return res.status(403).json({ message: "You are already logged in on another device. Please logout first." });
         }
 
