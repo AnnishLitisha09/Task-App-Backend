@@ -781,10 +781,10 @@ exports.submitTaskProof = async (req, res) => {
     try {
         const userId = req.userId;
         const { id } = req.params;
-        const { proof } = req.body;
+        let { proof, obtained_score, penalty: body_penalty } = req.body || {};
 
-        if (!proof) {
-            return res.status(400).json({ message: 'Proof is required' });
+        if (req.file) {
+            proof = `${req.protocol}://${req.get('host')}/uploads/${req.file.filename}`;
         }
 
         // Find assignment
@@ -805,6 +805,12 @@ exports.submitTaskProof = async (req, res) => {
         }
 
         const task = assignment.Task;
+
+        // Check if proof is required based on the task type
+        if (task.is_document && !proof) {
+            return res.status(400).json({ message: 'Proof/Document is required for this task' });
+        }
+
         const taskType = task.TaskTypes && task.TaskTypes[0];
 
         if (!taskType) {
@@ -814,9 +820,9 @@ exports.submitTaskProof = async (req, res) => {
         let penalty = 0;
         let earnedScore = 0;
 
-        if (req.body.obtained_score !== undefined && req.body.penalty !== undefined) {
-            penalty = parseFloat(req.body.penalty);
-            earnedScore = parseFloat(req.body.obtained_score);
+        if (obtained_score !== undefined && body_penalty !== undefined) {
+            penalty = parseFloat(body_penalty);
+            earnedScore = parseFloat(obtained_score);
         } else {
             const now = new Date();
             const deadline = taskType.end_date ? new Date(taskType.end_date) : null;
@@ -871,7 +877,7 @@ exports.submitTaskProof = async (req, res) => {
             task_id: id,
             user_id: userId,
             action: 'submit_proof',
-            details: `Proof submitted: ${proofPath}`
+            details: proof ? `Proof submitted: ${proof}` : 'Task completed without specific proof document.'
         });
 
         res.json({

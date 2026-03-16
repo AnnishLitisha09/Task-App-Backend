@@ -265,11 +265,11 @@ exports.verifyOTP = async (req, res) => {
             let penalty = 0;
             let earnedScore = 0;
 
+            const now = new Date();
             if (req.body.obtained_score !== undefined && req.body.penalty !== undefined) {
                 penalty = parseFloat(req.body.penalty);
                 earnedScore = parseFloat(req.body.obtained_score);
             } else {
-                const now = new Date();
                 const deadline = taskType?.end_date ? new Date(taskType.end_date) : null;
 
                 if (deadline && now > deadline) {
