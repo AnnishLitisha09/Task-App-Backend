@@ -455,12 +455,14 @@ exports.adminLogoutUser = async (req, res) => {
 };
 exports.getActiveSessions = async (req, res) => {
     try {
+        const { Op } = require('sequelize');
         const activeAccounts = await AuthAccount.findAll({
             where: { is_logged_in: true },
             include: [
                 {
                     model: User,
-                    attributes: ["role", "status"]
+                    attributes: ["role", "status"],
+                    where: { role: { [Op.notIn]: ['ADMIN', 'admin'] } }
                 },
                 { model: Student, attributes: ["name"], required: false },
                 { model: Faculty, attributes: ["name"], required: false },
