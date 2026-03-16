@@ -726,22 +726,49 @@ exports.cancelApproval = async (req, res) => {
         const { id: taskId } = req.params;
         const { reason } = req.body;
         const userId = req.userId;
+        const { Op } = require('sequelize');
 
-        // 1. Find assignment
-        const assignment = await TaskAssign.findOne({
-            where: { task_id: taskId, user_id: userId, status: 'accepted' },
+        // 1. Find assignment — covers pending (transferred), accepted, or in_progress
+        let assignment = await TaskAssign.findOne({
+            where: {
+                task_id: taskId,
+                user_id: userId,
+                status: { [Op.in]: ['pending', 'accepted', 'in_progress'] }
+            },
             include: [{ model: Task }]
         });
 
+        // If the caller is the task creator, allow them to cancel any assignee's acceptance
+        if (!assignment) {
+            const taskRecord = await Task.findByPk(taskId);
+            if (taskRecord && taskRecord.creator_id === userId) {
+                assignment = await TaskAssign.findOne({
+                    where: {
+                        task_id: taskId,
+                        status: { [Op.in]: ['accepted', 'in_progress'] }
+                    },
+                    include: [{ model: Task }]
+                });
+            }
+        }
+
         if (!assignment) {
             await t.rollback();
-            return res.status(404).json({ message: 'Accepted task assignment not found' });
+            return res.status(404).json({
+                message: 'No accepted or in-progress assignment found for this task',
+                hint: 'The task may already be rejected, completed, or not yet accepted.'
+            });
         }
 
         const task = assignment.Task;
+        const prevStatus = assignment.status;
 
         // 2. Update status to rejected
-        const cancelReason = reason ? `Approved cancellation: ${reason}` : 'Approval cancelled by user';
+        const isPending = prevStatus === 'pending';
+        const cancelReason = reason
+            ? (isPending ? `Declined transferred task: ${reason}` : `Approved cancellation: ${reason}`)
+            : (isPending ? 'Declined transferred task assignment' : 'Approval cancelled by user');
+
         await assignment.update({
             status: 'rejected',
             reason: cancelReason,
@@ -749,22 +776,29 @@ exports.cancelApproval = async (req, res) => {
             submitted_time: new Date()
         }, { transaction: t });
 
-        // 3. Trigger Escalation to Creator
-        await TaskEscalation.create({
-            task_id: taskId,
-            reason: 'Approval Cancelled',
-            msg: `User ${userId} cancelled their approval for task "${task.title}". Status moved to rejected.`,
-            creator_id: task.creator_id,
-            rejected_user_id: userId,
-            status: 'pending',
-            is_read: false
-        }, { transaction: t });
+        // 3. Trigger Escalation to Creator (only if previously accepted/in_progress)
+        if (!isPending) {
+            await TaskEscalation.create({
+                task_id: taskId,
+                reason: 'Approval Cancelled',
+                msg: `User ${userId} cancelled their approval for task "${task.title}". Status moved to rejected.`,
+                creator_id: task.creator_id,
+                rejected_user_id: userId,
+                status: 'pending',
+                is_read: false
+            }, { transaction: t });
+        }
 
         // 4. Notify Creator
+        const notifTitle = isPending ? 'Transferred Task Declined' : 'Task Approval Cancelled';
+        const notifMsg = isPending
+            ? `User ${userId} declined the transferred task "${task.title}". Reason: ${reason || 'Not specified'}.`
+            : `Action required: User ${userId} has cancelled their approval for "${task.title}".`;
+
         await Notification.create({
             user_id: task.creator_id,
-            title: 'Task Approval Cancelled',
-            msg: `Action required: User ${userId} has cancelled their approval for "${task.title}".`,
+            title: notifTitle,
+            msg: notifMsg,
             type: 'task_escalation'
         }, { transaction: t });
 
@@ -772,14 +806,16 @@ exports.cancelApproval = async (req, res) => {
         await TaskLog.create({
             task_id: taskId,
             user_id: userId,
-            action: 'cancel_approval',
+            action: isPending ? 'decline_transfer' : 'cancel_approval',
             details: cancelReason
         }, { transaction: t });
 
         await t.commit();
 
         res.json({
-            message: 'Approval cancelled and task rejected successfully',
+            message: isPending
+                ? 'Transferred task declined and rejected successfully'
+                : 'Approval cancelled and task rejected successfully',
             task_id: taskId,
             status: 'rejected'
         });
