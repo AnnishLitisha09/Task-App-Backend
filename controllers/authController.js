@@ -71,7 +71,7 @@ exports.login = async (req, res) => {
 
         // --- NEW: Single-Device Login Check ---
         if (account.is_logged_in && account.User.role !== "ADMIN" && account.User.role !== "admin") {
-            return res.status(403).json({ message: "You are already logged in on another device. Please logout first." });
+            // Single-device block disabled
         }
 
         // Set is_logged_in flag
@@ -200,7 +200,7 @@ exports.googleLogin = async (req, res) => {
 
         // --- NEW: Single-Device Login Check ---
         if (account.is_logged_in && account.User.role !== "ADMIN" && account.User.role !== "admin") {
-            return res.status(403).json({ message: "You are already logged in on another device. Please logout first." });
+            // Single-device block disabled
         }
 
         // Set is_logged_in flag
@@ -450,6 +450,35 @@ exports.adminLogoutUser = async (req, res) => {
         });
     } catch (err) {
         console.error("ADMIN LOGOUT ERROR 👉", err);
+        res.status(500).json({ message: err.message });
+    }
+};
+exports.getActiveSessions = async (req, res) => {
+    try {
+        const activeAccounts = await AuthAccount.findAll({
+            where: { is_logged_in: true },
+            include: [
+                {
+                    model: User,
+                    attributes: ["role", "status"]
+                },
+                { model: Student, attributes: ["name"], required: false },
+                { model: Faculty, attributes: ["name"], required: false },
+                { model: Staff, attributes: ["name"], required: false },
+                { model: RoleUser, attributes: ["name"], required: false }
+            ]
+        });
+
+        const sessions = activeAccounts.map(acc => ({
+            user_id: acc.user_id,
+            email: acc.email,
+            role: acc.User?.role || 'N/A',
+            name: acc.Student?.name || acc.Faculty?.name || acc.Staff?.name || acc.RoleUser?.name || "Unknown User"
+        }));
+
+        res.json(sessions);
+    } catch (err) {
+        console.error("GET ACTIVE SESSIONS ERROR 👉", err);
         res.status(500).json({ message: err.message });
     }
 };
