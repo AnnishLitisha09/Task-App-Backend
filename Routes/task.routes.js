@@ -92,7 +92,7 @@ router.get('/:id/detail', verifyToken, taskController.getTaskDetail); // NEW: Ge
 router.get('/:id/exhaustive', verifyToken, taskController.getExhaustiveTaskDetails); // NEW: Exhaustive details with logs/history
 
 // Task Completion & Proof
-router.post('/:id/submit-proof', verifyToken, taskController.submitTaskProof);
+router.post('/:id/submit-proof', verifyToken, upload.single('file'), taskController.submitTaskProof);
 router.post('/assignment/:id/review-proof', verifyToken, taskController.reviewTaskProof);
 router.post('/otp/generate', verifyToken, taskOTPController.generateOTP);
 router.get('/otp/active', verifyToken, taskOTPController.getGeneratedOTPs);
