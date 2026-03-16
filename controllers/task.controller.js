@@ -812,23 +812,31 @@ exports.submitTaskProof = async (req, res) => {
         }
 
         let penalty = 0;
-        const now = new Date();
-        const deadline = taskType.end_date ? new Date(taskType.end_date) : null;
+        let earnedScore = 0;
 
-        // Calculate penalty if late
-        if (deadline && now > deadline) {
-            const diffMs = now - deadline;
-            const diffHours = Math.ceil(diffMs / (1000 * 60 * 60));
-            penalty = diffHours * parseFloat(task.penalty_per_hour || 0);
+        if (req.body.obtained_score !== undefined && req.body.penalty !== undefined) {
+            penalty = parseFloat(req.body.penalty);
+            earnedScore = parseFloat(req.body.obtained_score);
+        } else {
+            const now = new Date();
+            const deadline = taskType.end_date ? new Date(taskType.end_date) : null;
+
+            // Calculate penalty if late
+            if (deadline && now > deadline) {
+                const diffMs = now - deadline;
+                const diffHours = Math.ceil(diffMs / (1000 * 60 * 60));
+                penalty = diffHours * parseFloat(task.penalty_per_hour || 0);
+            }
+
+            earnedScore = parseFloat(task.score || 0) - penalty;
         }
 
-        const earnedScore = parseFloat(task.score || 0) - penalty;
-
         // Update Assignment
+        const nowFinal = new Date();
         await assignment.update({
             status: 'completed',
             proof,
-            submitted_time: now,
+            submitted_time: nowFinal,
             earned_score: earnedScore,
             penalty_applied: penalty
         });

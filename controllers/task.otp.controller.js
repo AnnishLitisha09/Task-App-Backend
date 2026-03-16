@@ -263,16 +263,23 @@ exports.verifyOTP = async (req, res) => {
         } else if (otpRecord.otp_type === 'END') {
             // Logic similar to submitTaskProof but without physical proof requirement
             let penalty = 0;
-            const now = new Date();
-            const deadline = taskType?.end_date ? new Date(taskType.end_date) : null;
+            let earnedScore = 0;
 
-            if (deadline && now > deadline) {
-                const diffMs = now - deadline;
-                const diffHours = Math.ceil(diffMs / (1000 * 60 * 60));
-                penalty = diffHours * parseFloat(task.penalty_per_hour || 0);
+            if (req.body.obtained_score !== undefined && req.body.penalty !== undefined) {
+                penalty = parseFloat(req.body.penalty);
+                earnedScore = parseFloat(req.body.obtained_score);
+            } else {
+                const now = new Date();
+                const deadline = taskType?.end_date ? new Date(taskType.end_date) : null;
+
+                if (deadline && now > deadline) {
+                    const diffMs = now - deadline;
+                    const diffHours = Math.ceil(diffMs / (1000 * 60 * 60));
+                    penalty = diffHours * parseFloat(task.penalty_per_hour || 0);
+                }
+
+                earnedScore = parseFloat(task.score || 0) - penalty;
             }
-
-            const earnedScore = parseFloat(task.score || 0) - penalty;
 
             let proof = null;
             if (req.file) {

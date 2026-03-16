@@ -5,7 +5,7 @@ exports.closeTask = async (req, res) => {
     const t = await Task.sequelize.transaction();
     try {
         const { id: taskId } = req.params;
-        const { closure_id, is_completed, proof, reason } = req.body;
+        const { closure_id, is_completed, proof, reason, obtained_score, penalty: body_penalty } = req.body;
         const userId = req.userId;
 
         // Check if task exists
@@ -47,20 +47,25 @@ exports.closeTask = async (req, res) => {
             let earnedScore = 0;
             
             if (is_completed) {
-                const taskWithTypes = await Task.findByPk(taskId, {
-                    include: [{ model: TaskType }],
-                    transaction: t
-                });
-                const taskType = taskWithTypes.TaskTypes?.[0];
-                const now = new Date();
-                const deadline = taskType?.end_date ? new Date(taskType.end_date) : null;
+                if (obtained_score !== undefined && body_penalty !== undefined) {
+                    penalty = parseFloat(body_penalty);
+                    earnedScore = parseFloat(obtained_score);
+                } else {
+                    const taskWithTypes = await Task.findByPk(taskId, {
+                        include: [{ model: TaskType }],
+                        transaction: t
+                    });
+                    const taskType = taskWithTypes.TaskTypes?.[0];
+                    const now = new Date();
+                    const deadline = taskType?.end_date ? new Date(taskType.end_date) : null;
 
-                if (deadline && now > deadline) {
-                    const diffMs = now - deadline;
-                    const diffHours = Math.ceil(diffMs / (1000 * 60 * 60));
-                    penalty = diffHours * parseFloat(task.penalty_per_hour || 0);
+                    if (deadline && now > deadline) {
+                        const diffMs = now - deadline;
+                        const diffHours = Math.ceil(diffMs / (1000 * 60 * 60));
+                        penalty = diffHours * parseFloat(task.penalty_per_hour || 0);
+                    }
+                    earnedScore = parseFloat(task.score || 0) - penalty;
                 }
-                earnedScore = parseFloat(task.score || 0) - penalty;
             }
 
             await assignment.update({
