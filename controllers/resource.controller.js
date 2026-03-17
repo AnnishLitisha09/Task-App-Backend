@@ -1392,3 +1392,74 @@ exports.deleteRole = async (req, res) => {
         res.status(500).json({ message: error.message });
     }
 };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/resources/export
+// Exports resource inventory and usage metrics to Excel
+// ─────────────────────────────────────────────────────────────────────────────
+exports.exportResourceUtilisation = async (req, res) => {
+    try {
+        const userId = req.userId;
+        const userRole = req.userRole?.toLowerCase();
+
+        const { ResourceUsageLog } = require('../models');
+
+        // 1. Identify relevant resources
+        let where = { deleted_at: null };
+        if (userRole !== 'admin') {
+            const assignments = await RoleAssignment.findAll({
+                where: { user_id: userId, venue_id: { [Op.ne]: null } },
+                attributes: ['venue_id']
+            });
+            const managedVenueIds = assignments.map(a => a.venue_id);
+            where.venue_id = { [Op.in]: managedVenueIds };
+        }
+
+        const resources = await Resource.findAll({
+            where,
+            include: [{ model: Venue, attributes: ['name'] }]
+        });
+
+        const reportData = [];
+
+        for (const resource of resources) {
+            // Count total usage occurrences and duration
+            const usageLogs = await ResourceUsageLog.findAll({
+                where: { resource_id: resource.resource_id }
+            });
+
+            let totalMinutes = 0;
+            usageLogs.forEach(log => {
+                if (log.start_time && log.end_time) {
+                    const duration = (new Date(log.end_time) - new Date(log.start_time)) / (1000 * 60);
+                    if (duration > 0) totalMinutes += duration;
+                }
+            });
+
+            reportData.push({
+                "Resource ID": resource.resource_id,
+                "Resource Name": resource.name,
+                "Venue": resource.Venue ? resource.Venue.name : "Master Inventory",
+                "Quantity": resource.quantity,
+                "Status": resource.status,
+                "Total Usage (Times)": usageLogs.length,
+                "Total Usage (Minutes)": totalMinutes.toFixed(2),
+                "Category": resource.description || "N/A"
+            });
+        }
+
+        const wb = xlsx.utils.book_new();
+        const ws = xlsx.utils.json_to_sheet(reportData);
+        xlsx.utils.book_append_sheet(wb, ws, "Resource Utilisation");
+
+        const buffer = xlsx.write(wb, { type: 'buffer', bookType: 'xlsx' });
+
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        res.setHeader('Content-Disposition', 'attachment; filename=resource_utilisation_report.xlsx');
+        res.send(buffer);
+
+    } catch (error) {
+        console.error('RESOURCE EXPORT ERROR:', error);
+        res.status(500).json({ message: error.message });
+    }
+};

@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const resourceController = require('../controllers/resource.controller');
+const venueController = require('../controllers/venue.controller');
 const maintenanceController = require('../controllers/maintenance.controller');
 const { verifyToken, isAdmin } = require('../middlewares/auth.middleware');
 const multer = require('multer');
@@ -89,6 +90,10 @@ router.post('/manage-resource', resourceController.manageResource); // Unified m
 // Bulk Uploads
 router.post('/bulk', isAdmin, memoryUpload.single('file'), resourceController.bulkCreateResources);
 router.post('/venues/bulk', isAdmin, memoryUpload.single('file'), resourceController.bulkCreateVenues);
+
+// Export Reports
+router.get('/venues/export', venueController.exportVenueUtilisation);
+router.get('/export', resourceController.exportResourceUtilisation);
 
 // Role & Scope Management (Admin Only)
 router.get('/scopes', isAdmin, resourceController.getAllScopes);
