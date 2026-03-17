@@ -37,9 +37,10 @@ const canAssignTo = async (assignerId, assigneeId) => {
     // Admin can assign to anyone
     if (assignerRole === 'admin') return true;
 
-    // Principal can assign to HOD, Faculty, Students
-    if (assignerDetails.specificRoles.includes('PRINCIPAL')) {
-        return ['role-user', 'faculty', 'student'].includes(assigneeRole);
+    // Institutional roles (Principal, Director, etc.) can assign to HOD, Faculty, Students, and Staff
+    const institutionalRoles = ['PRINCIPAL', 'DIRECTOR', 'DEAN', 'GENERAL_MANAGER'];
+    if (assignerDetails.specificRoles.some(role => institutionalRoles.includes(role))) {
+        return ['role-user', 'faculty', 'student', 'staff'].includes(assigneeRole);
     }
 
     // HOD can assign to Incharge, Faculty, Students in their department
@@ -51,7 +52,7 @@ const canAssignTo = async (assignerId, assigneeId) => {
 
             return assigneeProfile && assignerDetails.departmentIds.includes(assigneeProfile.department_id);
         }
-        if (assigneeRole === 'role-user') return true; // Can assign to incharges
+        if (assigneeRole === 'role-user' || assigneeRole === 'staff') return true; // Can assign to incharges and staff
     }
 
     // Faculty can assign to Incharge and Students

@@ -1284,12 +1284,9 @@ exports.createUnifiedTask = async (req, res) => {
                         users = ra;
                     }
                 }
-                users.forEach(u => { 
-                    if (u.user_id && !finalAssigneeIds.includes(u.user_id * 1)) finalAssigneeIds.push(u.user_id * 1); 
-                });
+                users.forEach(u => { if (u.user_id && !finalAssigneeIds.includes(u.user_id * 1)) finalAssigneeIds.push(u.user_id * 1); });
             }
         }
-        console.log("FINAL ASSIGNEE IDS AFTER GROUPS:", finalAssigneeIds);
 
         // --- NEW: Faculty Ownership Logic (Unified with normalization) ---
         let facultyUserId = null;
@@ -1472,8 +1469,6 @@ exports.createUnifiedTask = async (req, res) => {
                     // Faculty supervisor only auto-accepts if they are the creator
                     const facultyAutoAccept = isFacultySupervisor && (facultyUserId === userId);
                     const autoAccept = is_mandatory || isStaff || facultyAutoAccept;
-
-                    console.log(`Checking assigner=${userId} to assignee=${assigneeId}, role=${assigneeRole}, allowed=${allowed}, autoAccept=${autoAccept}`);
 
                     if (allowed) {
                         let finalStatus = autoAccept ? 'accepted' : 'pending';
