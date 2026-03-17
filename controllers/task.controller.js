@@ -1,5 +1,6 @@
 const { Task, TaskAssign, TaskType, TaskPackageClosure, TaskClosure, User, Student, Faculty, Staff, RoleUser, RoleAssignment, Role, Department, TaskEscalation, AuthAccount, Notification, TaskLog, TaskTitle, Venue, TaskApprovalRequest } = require('../models');
 const XLSX = require('xlsx');
+const os = require('os');
 const { canAssignTo } = require('./task.assignment');
 const { checkTaskOverlap, isWithinWorkHours, getWorkingMinutes } = require('../utils/task-utils');
 const { MAX_DAILY_TASKS, PRIORITY_WEIGHTS } = require('../config/constants');
@@ -18,6 +19,19 @@ const getPagingData = (data, page, limit) => {
     const currentPage = page ? +page : 1;
     const totalPages = Math.ceil(totalItems / limit);
     return { totalItems, items, totalPages, currentPage };
+};
+
+// Helper: Get Network IP for cross-device visibility
+const getLocalIP = () => {
+    const interfaces = os.networkInterfaces();
+    for (const name of Object.keys(interfaces)) {
+        for (const iface of interfaces[name]) {
+            if (iface.family === 'IPv4' && !iface.internal) {
+                return iface.address;
+            }
+        }
+    }
+    return 'localhost';
 };
 
 // Helper: Check if user can create tasks
@@ -130,14 +144,47 @@ const normalizeTaskPayload = async (body) => {
             facultyRecord = await Faculty.findOne({ where: { user_id: payload.faculty_id } });
         }
         if (facultyRecord) {
-            payload.faculty_id = facultyRecord.id; // Resolve to PK
+            const oldId = parseInt(payload.faculty_id);
+            payload.faculty_id = facultyRecord.id; // Resolve to PK for Task table
             payload.is_faculty = true; // Auto-infer
             
-            // Add faculty user to assignees if not there
+            // Ensure correct user_id is in assignees, and remove the PK if it was mistakenly added
             if (facultyRecord.user_id) {
                 const fUserId = facultyRecord.user_id * 1;
+                
+                // If the oldId was a PK and was in assignee_ids, remove it
+                if (oldId === facultyRecord.id) {
+                    payload.assignee_ids = payload.assignee_ids.filter(id => id !== oldId);
+                }
+
                 if (!payload.assignee_ids.includes(fUserId)) {
                     payload.assignee_ids.push(fUserId);
+                }
+            }
+        }
+    }
+
+    // Staff specific normalization & PK Resolution
+    if (payload.staffId && !payload.staff_id) payload.staff_id = payload.staffId;
+    if (payload.staff_id) {
+        let staffRecord = await Staff.findByPk(payload.staff_id);
+        if (!staffRecord) {
+            staffRecord = await Staff.findOne({ where: { user_id: payload.staff_id } });
+        }
+        if (staffRecord) {
+            const oldId = parseInt(payload.staff_id);
+            payload.staff_id = staffRecord.id; // Resolve to PK
+            
+            if (staffRecord.user_id) {
+                const sUserId = staffRecord.user_id * 1;
+                
+                // Remove PK if it was in assignee_ids
+                if (oldId === staffRecord.id) {
+                    payload.assignee_ids = payload.assignee_ids.filter(id => id !== oldId);
+                }
+
+                if (!payload.assignee_ids.includes(sUserId)) {
+                    payload.assignee_ids.push(sUserId);
                 }
             }
         }
@@ -808,12 +855,10 @@ exports.submitTaskProof = async (req, res) => {
         let { proof, obtained_score, penalty: body_penalty } = req.body || {};
 
         if (req.file) {
-            const fileExt = req.file.originalname.split('.').pop().toLowerCase();
-            const allowedExts = ['pdf', 'png', 'jpg', 'jpeg'];
-            if (!allowedExts.includes(fileExt)) {
-                return res.status(400).json({ message: 'Invalid file type. Only PDF, PNG, and JPG/JPEG are allowed.' });
-            }
-            proof = `${req.protocol}://${req.get('host')}/uploads/${req.file.filename}`;
+            const localIP = getLocalIP();
+            const port = process.env.PORT || 3002;
+            // Use network IP to ensure other devices can access the file
+            proof = `${req.protocol}://${localIP}:${port}/uploads/submissions/${req.file.filename}`;
         }
 
         // Find assignment
@@ -2239,6 +2284,67 @@ exports.updateTask = async (req, res) => {
                     recurrence: typeData.recurrence || taskType.recurrence
                 }, { transaction: t });
             }
+        }
+
+        // --- NEW: Synchronize Assignments ---
+        if (payload.assignee_ids && Array.isArray(payload.assignee_ids)) {
+            const newAssigneeIds = payload.assignee_ids.map(id => parseInt(id)).filter(id => !isNaN(id));
+
+            // Get current assignments
+            const currentAssignments = await TaskAssign.findAll({
+                where: { task_id: id },
+                transaction: t
+            });
+
+            const currentAssigneeIds = currentAssignments.map(a => a.user_id);
+
+            // IDs to add
+            const idsToAdd = newAssigneeIds.filter(uid => !currentAssigneeIds.includes(uid));
+            // IDs to remove
+            const idsToRemove = currentAssigneeIds.filter(uid => !newAssigneeIds.includes(uid));
+
+            // Remove no longer assigned
+            if (idsToRemove.length > 0) {
+                await TaskAssign.destroy({
+                    where: {
+                        task_id: id,
+                        user_id: idsToRemove
+                    },
+                    transaction: t
+                });
+            }
+
+            // Add new assignments
+            for (const uid of idsToAdd) {
+                await TaskAssign.create({
+                    task_id: id,
+                    user_id: uid,
+                    status: 'Pending'
+                }, { transaction: t });
+
+                // Optional: Create notification for new assignee
+                await Notification.create({
+                    user_id: uid,
+                    title: 'New Task Assigned (Updated)',
+                    msg: `You have been added to the task "${updateTitle}".`,
+                    type: 'task_created'
+                }, { transaction: t });
+            }
+        }
+
+        // --- NEW: Synchronize Closure Rules ---
+        if (payload.closure_ids && Array.isArray(payload.closure_ids)) {
+            // Remove existing closures for this task
+            await TaskPackageClosure.destroy({
+                where: { task_id: id },
+                transaction: t
+            });
+            // Bulk create new ones
+            const closures = payload.closure_ids.map(cid => ({
+                task_id: id,
+                closure_id: cid
+            }));
+            await TaskPackageClosure.bulkCreate(closures, { transaction: t });
         }
 
         await t.commit();

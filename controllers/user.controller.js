@@ -34,11 +34,26 @@ exports.createStudent = async (req, res) => {
     try {
         const { reg_no, name, email, department_id, year, c_gpa, faculty_id, score, penalty } = req.body;
 
-        // Check if student exists
-        const existing = await Student.findOne({ where: { [Op.or]: [{ reg_no }, { email }] } });
-        if (existing) return res.status(400).json({ message: 'Student already exists' });
+        // 1. Check for ACTIVE accounts (paranoid: true is default)
+        const existingAuth = await AuthAccount.findOne({ where: { email } });
+        if (existingAuth) return res.status(400).json({ message: 'An account with this email already exists and is active.' });
+
+        const existingStudent = await Student.findOne({ where: { [Op.or]: [{ reg_no }, { email }] } });
+        if (existingStudent) return res.status(400).json({ message: 'A student with this registration number or email already exists and is active.' });
+
+        const existingFaculty = await Faculty.findOne({ where: { [Op.or]: [{ reg_no }, { email }] } });
+        if (existingFaculty) return res.status(400).json({ message: 'A faculty member with this registration number or email already exists and is active.' });
 
         const user = await createBaseUser('student', t);
+
+        // Validate faculty_id if provided
+        if (faculty_id) {
+            const faculty = await Faculty.findByPk(faculty_id, { transaction: t });
+            if (!faculty) {
+                await t.rollback();
+                return res.status(400).json({ message: `Faculty ID ${faculty_id} not found` });
+            }
+        }
 
         await Student.create({
             user_id: user.user_id,
@@ -61,7 +76,14 @@ exports.createStudent = async (req, res) => {
         await t.commit();
         res.status(201).json({ message: 'Student created successfully', user_id: user.user_id });
     } catch (error) {
-        await t.rollback();
+        if (t) await t.rollback();
+        console.error('CreateStudent Error:', error);
+        if (error.name === 'SequelizeUniqueConstraintError' || error.name === 'SequelizeValidationError') {
+            return res.status(400).json({ 
+                message: 'Validation failed', 
+                errors: error.errors.map(e => ({ field: e.path, message: e.message }))
+            });
+        }
         res.status(500).json({ message: error.message });
     }
 };
@@ -71,11 +93,15 @@ exports.createFaculty = async (req, res) => {
     try {
         const { reg_no, name, email, department_id, type, roleName, venue_id } = req.body;
 
-        const existing = await Faculty.findOne({
-            where: { [Op.or]: [{ reg_no }, { email }] }
-        });
-        if (existing) return res.status(400).json({ message: 'Faculty already exists' });
+        const existingAuth = await AuthAccount.findOne({ where: { email } });
+        if (existingAuth) return res.status(400).json({ message: 'An account with this email already exists and is active.' });
 
+        const existingFac = await Faculty.findOne({ where: { [Op.or]: [{ reg_no }, { email }] } });
+        if (existingFac) return res.status(400).json({ message: 'Faculty with this registration number or email already exists and is active.' });
+
+        const existingStudent = await Student.findOne({ where: { [Op.or]: [{ reg_no }, { email }] } });
+        if (existingStudent) return res.status(400).json({ message: 'Registration number already assigned to an active student.' });
+        
         const user = await createBaseUser('faculty', t);
 
         await Faculty.create({
@@ -111,7 +137,14 @@ exports.createFaculty = async (req, res) => {
             user_id: user.user_id
         });
     } catch (error) {
-        await t.rollback();
+        if (t) await t.rollback();
+        console.error('CreateFaculty Error:', error);
+        if (error.name === 'SequelizeUniqueConstraintError' || error.name === 'SequelizeValidationError') {
+            return res.status(400).json({ 
+                message: 'Validation failed', 
+                errors: error.errors.map(e => ({ field: e.path, message: e.message }))
+            });
+        }
         res.status(500).json({ message: error.message });
     }
 };
@@ -122,8 +155,11 @@ exports.createStaff = async (req, res) => {
     try {
         const { name, email, designation, roleName, venue_id, manager_id } = req.body;
 
-        const existing = await Staff.findOne({ where: { email } });
-        if (existing) return res.status(400).json({ message: 'Staff already exists' });
+        const existingAuth = await AuthAccount.findOne({ where: { email } });
+        if (existingAuth) return res.status(400).json({ message: 'An account with this email already exists and is active.' });
+
+        const existingStaff = await Staff.findOne({ where: { email } });
+        if (existingStaff) return res.status(400).json({ message: 'Staff with this email already exists and is active.' });
 
         const user = await createBaseUser('staff', t);
 
@@ -155,7 +191,14 @@ exports.createStaff = async (req, res) => {
         await t.commit();
         res.status(201).json({ message: 'Staff created successfully', user_id: user.user_id });
     } catch (error) {
-        await t.rollback();
+        if (t) await t.rollback();
+        console.error('CreateStaff Error:', error);
+        if (error.name === 'SequelizeUniqueConstraintError' || error.name === 'SequelizeValidationError') {
+            return res.status(400).json({ 
+                message: 'Validation failed', 
+                errors: error.errors.map(e => ({ field: e.path, message: e.message }))
+            });
+        }
         res.status(500).json({ message: error.message });
     }
 };
@@ -170,10 +213,16 @@ exports.createRoleUser = async (req, res) => {
             return res.status(400).json({ message: 'Name and email are required' });
         }
 
+        const existingAuth = await AuthAccount.findOne({ where: { email } });
+        if (existingAuth) {
+            await t.rollback();
+            return res.status(400).json({ message: 'An account with this email already exists and is active.' });
+        }
+
         const existing = await RoleUser.findOne({ where: { email } });
         if (existing) {
             await t.rollback();
-            return res.status(400).json({ message: 'Role User already exists' });
+            return res.status(400).json({ message: 'Role User with this email already exists and is active.' });
         }
 
         const user = await createBaseUser('role-user', t);
@@ -238,6 +287,12 @@ exports.createRoleUser = async (req, res) => {
     } catch (error) {
         if (t) await t.rollback();
         console.error('CreateRoleUser Error:', error);
+        if (error.name === 'SequelizeUniqueConstraintError' || error.name === 'SequelizeValidationError') {
+            return res.status(400).json({ 
+                message: 'Validation failed', 
+                errors: error.errors.map(e => ({ field: e.path, message: e.message }))
+            });
+        }
         res.status(500).json({ 
             message: error.name === 'SequelizeUniqueConstraintError' 
                 ? 'User with this email already exists' 
@@ -284,7 +339,13 @@ exports.bulkCreateUsers = async (req, res) => {
             try {
                 const lowerType = user_type.toLowerCase();
                 
-                // 1. Existence check with transaction
+                // 1. Existence check with transaction (paranoid: true is default)
+                const existingAuth = await AuthAccount.findOne({ where: { email }, transaction: t });
+                if (existingAuth) {
+                    results.push({ email, status: 'skipped', reason: 'Active account with this email already exists' });
+                    continue;
+                }
+
                 let existing = null;
                 if (lowerType === 'student') {
                     existing = await Student.findOne({ 
@@ -302,7 +363,7 @@ exports.bulkCreateUsers = async (req, res) => {
                 }
 
                 if (existing) {
-                    results.push({ email: email, status: 'skipped', reason: 'Profile already exists' });
+                    results.push({ email: email, status: 'skipped', reason: `Active ${lowerType} profile already exists` });
                     continue;
                 }
 
@@ -328,7 +389,12 @@ exports.bulkCreateUsers = async (req, res) => {
                 // 5. Create Profile
                 if (lowerType === 'student') {
                     let fId = faculty_id || null;
-                    if (!fId) {
+                    if (fId) {
+                        const faculty = await Faculty.findByPk(fId, { transaction: t });
+                        if (!faculty) {
+                            throw new Error(`Faculty ID ${fId} not found`);
+                        }
+                    } else {
                         if (faculty_email) {
                             const fac = await Faculty.findOne({ where: { email: faculty_email }, transaction: t });
                             if (fac) fId = fac.id;
@@ -411,22 +477,73 @@ exports.deleteUser = async (req, res) => {
     const t = await User.sequelize.transaction();
     try {
         const { id } = req.params;
+        const timestamp = Date.now();
 
-        // Force delete related records to avoid FK constraints
-        await RoleAssignment.destroy({ where: { user_id: id }, transaction: t, force: true });
-        await AuthAccount.destroy({ where: { user_id: id }, transaction: t, force: true });
-        await Student.destroy({ where: { user_id: id }, transaction: t, force: true });
-        await Faculty.destroy({ where: { user_id: id }, transaction: t, force: true });
-        await Staff.destroy({ where: { user_id: id }, transaction: t, force: true });
-        await RoleUser.destroy({ where: { user_id: id }, transaction: t, force: true });
+        // 1. Fetch user and ALL profiles (including soft-deleted ones to ensure clean renames)
+        const user = await User.findByPk(id, {
+            include: [
+                { model: Student, paranoid: false },
+                { model: Faculty, paranoid: false },
+                { model: Staff, paranoid: false },
+                { model: RoleUser, paranoid: false },
+                { model: AuthAccount, paranoid: false }
+            ],
+            paranoid: false,
+            transaction: t
+        });
 
-        // Force delete User
-        await User.destroy({ where: { user_id: id }, transaction: t, force: true });
+        if (!user) {
+            await t.rollback();
+            return res.status(404).json({ message: 'User not found' });
+        }
+
+        // 2. Rename unique fields across ALL potential profiles
+        // We use paranoid: false in updates to ensure even if they were partially deleted, they get renamed
+        if (user.Student) {
+            await Student.update({
+                email: `${user.Student.email}_del_${timestamp}`,
+                reg_no: `${user.Student.reg_no}_del_${timestamp}`
+            }, { where: { user_id: id }, transaction: t, paranoid: false });
+        }
+        if (user.Faculty) {
+            await Faculty.update({
+                email: `${user.Faculty.email}_del_${timestamp}`,
+                reg_no: `${user.Faculty.reg_no}_del_${timestamp}`
+            }, { where: { user_id: id }, transaction: t, paranoid: false });
+        }
+        if (user.Staff) {
+            await Staff.update({
+                email: `${user.Staff.email}_del_${timestamp}`
+            }, { where: { user_id: id }, transaction: t, paranoid: false });
+        }
+        if (user.RoleUser) {
+            await RoleUser.update({
+                email: `${user.RoleUser.email}_del_${timestamp}`
+            }, { where: { user_id: id }, transaction: t, paranoid: false });
+        }
+        if (user.AuthAccount) {
+            await AuthAccount.update({
+                email: `${user.AuthAccount.email}_del_${timestamp}`
+            }, { where: { user_id: id }, transaction: t, paranoid: false });
+        }
+
+        // 3. Soft delete (paranoid destroy)
+        // Note: Destroying with paranoid: false in some dialects might perform hard delete,
+        // but here we just want to ensure that even if they were "half-deleted", we mark them fully.
+        // Actually, destroy() on a paranoid model just sets deleted_at.
+        await RoleAssignment.destroy({ where: { user_id: id }, transaction: t });
+        await AuthAccount.destroy({ where: { user_id: id }, transaction: t });
+        await Student.destroy({ where: { user_id: id }, transaction: t });
+        await Faculty.destroy({ where: { user_id: id }, transaction: t });
+        await Staff.destroy({ where: { user_id: id }, transaction: t });
+        await RoleUser.destroy({ where: { user_id: id }, transaction: t });
+        await User.destroy({ where: { user_id: id }, transaction: t });
 
         await t.commit();
-        res.json({ message: 'User and related data permanently deleted successfully' });
+        res.json({ message: 'User and related data soft-deleted/renamed successfully' });
     } catch (error) {
-        await t.rollback();
+        if (t) await t.rollback();
+        console.error('DeleteUser Error:', error);
         res.status(500).json({ message: error.message });
     }
 };

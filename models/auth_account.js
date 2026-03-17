@@ -29,13 +29,25 @@ module.exports = (sequelize, DataTypes) => {
     is_logged_in: {
       type: DataTypes.BOOLEAN,
       defaultValue: false
+    },
+    created_at: {
+      type: DataTypes.DATE,
+      defaultValue: DataTypes.NOW
+    },
+    deleted_at: {
+      type: DataTypes.DATE,
+      allowNull: true
     }
   }, {
     sequelize,
     modelName: 'AuthAccount',
     tableName: 'auth_accounts',
-    timestamps: false,   // 🔥 VERY IMPORTANT
-    underscored: true
+    timestamps: true,
+    paranoid: true,
+    underscored: true,
+    createdAt: 'created_at',
+    updatedAt: 'updated_at',
+    deletedAt: 'deleted_at'
   });
 
   return AuthAccount;

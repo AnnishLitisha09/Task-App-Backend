@@ -57,8 +57,11 @@ module.exports = (sequelize, DataTypes) => {
     modelName: 'RoleUser',
     tableName: 'role_users',
     timestamps: true,
-    paranoid: true, // soft delete
-    underscored: true
+    paranoid: true,
+    underscored: true,
+    createdAt: 'created_at',
+    updatedAt: 'updated_at',
+    deletedAt: 'deleted_at'
   });
 
   return RoleUser;

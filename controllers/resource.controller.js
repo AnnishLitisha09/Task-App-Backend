@@ -146,14 +146,27 @@ exports.updateDepartment = async (req, res) => {
 };
 
 exports.deleteDepartment = async (req, res) => {
+    const t = await Department.sequelize.transaction();
     try {
         const { id } = req.params;
         const dept = await Department.findByPk(id);
-        if (!dept) return res.status(404).json({ message: 'Department not found' });
+        if (!dept) {
+            await t.rollback();
+            return res.status(404).json({ message: 'Department not found' });
+        }
 
-        await dept.destroy();
+        // 1. Manually nullify references because soft delete doesn't trigger DB-level SET NULL
+        await Faculty.update({ department_id: null }, { where: { department_id: id }, transaction: t });
+        await Student.update({ department_id: null }, { where: { department_id: id }, transaction: t });
+        await RoleAssignment.update({ department_id: null }, { where: { department_id: id }, transaction: t });
+
+        // 2. Soft delete the department
+        await dept.destroy({ transaction: t });
+        
+        await t.commit();
         res.json({ message: 'Department deleted successfully' });
     } catch (error) {
+        if (t) await t.rollback();
         res.status(500).json({ message: error.message });
     }
 };
@@ -550,14 +563,17 @@ exports.updateVenue = async (req, res) => {
 
 // Delete Venue
 exports.deleteVenue = async (req, res) => {
+    const t = await Venue.sequelize.transaction();
     try {
         const { id } = req.params;
         const venue = await Venue.findByPk(id);
         if (!venue) {
+            await t.rollback();
             return res.status(404).json({ message: 'Venue not found' });
         }
 
-        // Delete image file
+        // Delete image file (even on soft delete, we might want to keep it, but user didn't specify. 
+        // Usually file deletion is immediate. Keeping user's existing logic of unlinking.)
         if (venue.image_url) {
             const imagePath = path.join(__dirname, '..', venue.image_url);
             if (fs.existsSync(imagePath)) {
@@ -565,9 +581,17 @@ exports.deleteVenue = async (req, res) => {
             }
         }
 
-        await venue.destroy();
+        // 1. Manually nullify references
+        await RoleAssignment.update({ venue_id: null }, { where: { venue_id: id }, transaction: t });
+        await Resource.update({ venue_id: null }, { where: { venue_id: id }, transaction: t });
+
+        // 2. Soft delete the venue
+        await venue.destroy({ transaction: t });
+        
+        await t.commit();
         res.json({ message: 'Venue deleted successfully' });
     } catch (error) {
+        if (t) await t.rollback();
         res.status(500).json({ message: error.message });
     }
 };
@@ -1381,14 +1405,25 @@ exports.updateRole = async (req, res) => {
 
 // Delete a role
 exports.deleteRole = async (req, res) => {
+    const t = await Role.sequelize.transaction();
     try {
         const { id } = req.params;
         const role = await Role.findByPk(id);
-        if (!role) return res.status(404).json({ message: 'Role not found' });
+        if (!role) {
+            await t.rollback();
+            return res.status(404).json({ message: 'Role not found' });
+        }
 
-        await role.destroy();
+        // 1. Manually nullify references
+        await RoleAssignment.update({ role_id: null }, { where: { role_id: id }, transaction: t });
+
+        // 2. Soft delete the role
+        await role.destroy({ transaction: t });
+        
+        await t.commit();
         res.json({ message: 'Role deleted successfully' });
     } catch (error) {
+        if (t) await t.rollback();
         res.status(500).json({ message: error.message });
     }
 };

@@ -10,8 +10,31 @@ const taskAcknowledgment = require('../controllers/task.acknowledgment');
 const calendarController = require('../controllers/calendar.controller');
 const taskOTPController = require('../controllers/task.otp.controller');
 
+const fs = require('fs');
+const path = require('path');
+
 // Multer configuration for Excel upload
 const upload = multer({ dest: 'uploads/' });
+
+// Specialized Multer for Task Submissions (Preserves extensions)
+const submissionStorage = multer.diskStorage({
+    destination: (req, file, cb) => {
+        const dir = './uploads/submissions';
+        if (!fs.existsSync(dir)) {
+            fs.mkdirSync(dir, { recursive: true });
+        }
+        cb(null, dir);
+    },
+    filename: (req, file, cb) => {
+        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+        const ext = path.extname(file.originalname);
+        cb(null, 'sub-' + uniqueSuffix + ext);
+    }
+});
+const submissionUpload = multer({ 
+    storage: submissionStorage,
+    limits: { fileSize: 5 * 1024 * 1024 } // 5MB limit
+});
 // Task Title Master
 const taskTitleController = require('../controllers/task.title');
 router.get('/titles', verifyToken, taskTitleController.getAllTaskTitles);
@@ -92,7 +115,7 @@ router.get('/:id/detail', verifyToken, taskController.getTaskDetail); // NEW: Ge
 router.get('/:id/exhaustive', verifyToken, taskController.getExhaustiveTaskDetails); // NEW: Exhaustive details with logs/history
 
 // Task Completion & Proof
-router.post('/:id/submit-proof', verifyToken, upload.single('file'), taskController.submitTaskProof);
+router.post('/:id/submit-proof', verifyToken, submissionUpload.single('file'), taskController.submitTaskProof);
 router.post('/assignment/:id/review-proof', verifyToken, taskController.reviewTaskProof);
 router.post('/otp/generate', verifyToken, taskOTPController.generateOTP);
 router.get('/otp/active', verifyToken, taskOTPController.getGeneratedOTPs);

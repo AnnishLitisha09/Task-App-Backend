@@ -38,7 +38,7 @@ module.exports = (sequelize, DataTypes) => {
     },
     department_id: {
       type: DataTypes.BIGINT.UNSIGNED,
-      allowNull: false
+      allowNull: true
     },
     score: {
       type: DataTypes.DECIMAL(10, 2),
@@ -77,8 +77,11 @@ module.exports = (sequelize, DataTypes) => {
     modelName: 'Student',
     tableName: 'students',
     timestamps: true,
-    paranoid: true, // soft delete
-    underscored: true
+    paranoid: true,
+    underscored: true,
+    createdAt: 'created_at',
+    updatedAt: 'updated_at',
+    deletedAt: 'deleted_at'
   });
 
   return Student;

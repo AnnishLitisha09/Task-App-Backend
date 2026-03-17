@@ -29,7 +29,7 @@ module.exports = (sequelize, DataTypes) => {
     },
     department_id: {
       type: DataTypes.BIGINT.UNSIGNED,
-      allowNull: false
+      allowNull: true
     },
     name: {
       type: DataTypes.STRING(100),
@@ -73,8 +73,11 @@ module.exports = (sequelize, DataTypes) => {
     modelName: 'Faculty',
     tableName: 'faculties',
     timestamps: true,
-    paranoid: true, // enables soft delete using deleted_at
-    underscored: true
+    paranoid: true,
+    underscored: true,
+    createdAt: 'created_at',
+    updatedAt: 'updated_at',
+    deletedAt: 'deleted_at'
   });
 
   return Faculty;

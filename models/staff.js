@@ -67,7 +67,10 @@ module.exports = (sequelize, DataTypes) => {
         tableName: 'staffs',
         timestamps: true,
         paranoid: true,
-        underscored: true
+        underscored: true,
+        createdAt: 'created_at',
+        updatedAt: 'updated_at',
+        deletedAt: 'deleted_at'
     });
 
     return Staff;

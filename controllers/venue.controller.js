@@ -892,8 +892,133 @@ exports.getVenueBasicDetails = async (req, res) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
+// GET /api/venues/usage-report
+// Detailed venue usage report for a date range (default 1 month)
+// ─────────────────────────────────────────────────────────────────────────────
+exports.exportDetailedVenueReport = async (req, res) => {
+    try {
+        const userId = req.userId;
+        const userRole = req.userRole?.toLowerCase();
+        const { from, to, venue_id } = req.query;
+
+        // 1. Date Range Setup (Default last 30 days)
+        const now = new Date();
+        const endDate = to ? new Date(to) : now;
+        const startDate = from ? new Date(from) : new Date(new Date().setDate(now.getDate() - 30));
+
+        const fromStr = toDateStr(startDate);
+        const toStr = toDateStr(endDate);
+
+        // 2. Determine Venues
+        let assignedVenueIds = [];
+        if (userRole === 'admin') {
+            const all = await Venue.findAll({ attributes: ['venue_id'] });
+            assignedVenueIds = all.map(v => v.venue_id);
+        } else {
+            const assignments = await RoleAssignment.findAll({
+                where: { user_id: userId, venue_id: { [Op.ne]: null } },
+                attributes: ['venue_id']
+            });
+            assignedVenueIds = [...new Set(assignments.map(a => a.venue_id))];
+        }
+
+        if (venue_id) {
+            const vid = parseInt(venue_id);
+            if (!assignedVenueIds.includes(vid)) {
+                return res.status(403).json({ message: "Access denied to this venue." });
+            }
+            assignedVenueIds = [vid];
+        }
+
+        if (assignedVenueIds.length === 0) {
+            return res.status(404).json({ message: "No venues found for report." });
+        }
+
+        // 3. Fetch Tasks within range
+        const tasks = await Task.findAll({
+            where: { is_deleted: false },
+            include: [
+                {
+                    model: TaskType,
+                    required: true,
+                    where: {
+                        [Op.and]: [
+                            {
+                                [Op.or]: [
+                                    { venue_id: { [Op.in]: assignedVenueIds } },
+                                    literal(`\`Task\`.\`venue_id\` IN (${assignedVenueIds.join(',')})`)
+                                ]
+                            },
+                            {
+                                [Op.or]: [
+                                    literal(`DATE(\`TaskTypes\`.\`start_date\`) BETWEEN '${fromStr}' AND '${toStr}'`),
+                                    literal(`DATE(\`TaskTypes\`.\`end_date\`) BETWEEN '${fromStr}' AND '${toStr}'`)
+                                ]
+                            }
+                        ]
+                    }
+                },
+                { model: Venue, attributes: ['name'] },
+                { model: Resource, attributes: ['name'] },
+                { model: User, as: 'Creator', include: [{ model: Student, attributes: ['name']}, {model: Faculty, attributes:['name']}, {model: Staff, attributes: ['name']}, {model: RoleUser, attributes: ['name']}] },
+                { model: TaskAssign, attributes: ['status', 'accepted_at', 'user_id'] }
+            ]
+        });
+
+        // 4. Resolve Incharges to check approval times
+        const roleAssignments = await RoleAssignment.findAll({
+            where: { venue_id: { [Op.in]: assignedVenueIds } },
+            attributes: ['venue_id', 'user_id']
+        });
+        const venueInchargeMap = {};
+        roleAssignments.forEach(ra => {
+            if (!venueInchargeMap[ra.venue_id]) venueInchargeMap[ra.venue_id] = [];
+            venueInchargeMap[ra.venue_id].push(ra.user_id);
+        });
+
+        const reportData = tasks.map(t => {
+            const tt = t.TaskTypes?.[0];
+            const creator = t.Creator;
+            const profile = creator?.Student || creator?.Faculty || creator?.Staff || creator?.RoleUser;
+            const bookedBy = profile ? profile.name : (creator ? `User #${creator.user_id}` : 'System');
+            
+            // Find incharge approval time
+            const incharges = venueInchargeMap[t.venue_id || tt?.venue_id] || [];
+            const inchargeAssign = t.TaskAssigns?.find(a => incharges.includes(a.user_id) && a.status === 'accepted');
+            const approvalTime = inchargeAssign?.accepted_at ? new Date(inchargeAssign.accepted_at).toLocaleString() : 'Pending/Auto';
+
+            return {
+                "Date": tt?.start_date,
+                "Venue": t.Venue?.name || "N/A",
+                "Booked By": bookedBy,
+                "Task": t.title,
+                "Time": tt ? `${tt.start_time} - ${tt.end_time}` : 'N/A',
+                "Resource Used": t.Resource?.name || 'None',
+                "Assignee Count": t.TaskAssigns?.length || 0,
+                "Incharge Approval Time": approvalTime
+            };
+        });
+
+        // 5. Generate Excel
+        const wb = xlsx.utils.book_new();
+        const ws = xlsx.utils.json_to_sheet(reportData);
+        xlsx.utils.book_append_sheet(wb, ws, "Venue Usage Details");
+
+        const buffer = xlsx.write(wb, { type: 'buffer', bookType: 'xlsx' });
+
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        res.setHeader('Content-Disposition', `attachment; filename=venue_usage_detailed_${fromStr}_to_${toStr}.xlsx`);
+        res.send(buffer);
+
+    } catch (error) {
+        console.error('DETAILED EXPORT ERROR:', error);
+        res.status(500).json({ message: error.message });
+    }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
 // GET /api/venues/export
-// Exports venue utilization metrics to Excel
+// Exports venue utilization metrics to Excel with score and penalty data
 // ─────────────────────────────────────────────────────────────────────────────
 exports.exportVenueUtilisation = async (req, res) => {
     try {
@@ -917,7 +1042,7 @@ exports.exportVenueUtilisation = async (req, res) => {
             return res.status(404).json({ message: "No venues found for report export." });
         }
 
-        // 2. Fetch Venues with Tasks and Incharges
+        // 2. Fetch Venues with Tasks, Incharges and Resources
         const venues = await Venue.findAll({
             where: { venue_id: { [Op.in]: assignedVenueIds } },
             include: [
@@ -940,12 +1065,24 @@ exports.exportVenueUtilisation = async (req, res) => {
         const reportData = [];
 
         for (const venue of venues) {
-            const totalTasks = await Task.count({
-                where: { venue_id: venue.venue_id, is_deleted: false }
+            const tasks = await Task.findAll({
+                where: { 
+                    is_deleted: false,
+                    [Op.or]: [
+                        { venue_id: venue.venue_id },
+                        literal(`\`Task\`.\`task_id\` IN (SELECT task_id FROM task_types WHERE venue_id = ${venue.venue_id})`)
+                    ]
+                }
             });
 
             const acceptedTasks = await Task.findAll({
-                where: { venue_id: venue.venue_id, is_deleted: false },
+                where: { 
+                    is_deleted: false,
+                    [Op.or]: [
+                        { venue_id: venue.venue_id },
+                        literal(`\`Task\`.\`task_id\` IN (SELECT task_id FROM task_types WHERE venue_id = ${venue.venue_id})`)
+                    ]
+                },
                 include: [{
                     model: TaskAssign,
                     where: { status: 'accepted' },
@@ -954,6 +1091,14 @@ exports.exportVenueUtilisation = async (req, res) => {
                     model: TaskType,
                     required: true
                 }]
+            });
+
+            // Cumulative Metrics
+            const totalScore = tasks.reduce((acc, t) => acc + parseFloat(t.score || 0), 0);
+            const totalPenalty = tasks.reduce((acc, t) => acc + parseFloat(t.penalty_per_hour || 0), 0);
+            
+            const resourceCount = await require('../models').Resource.count({
+                where: { venue_id: venue.venue_id }
             });
 
             let totalMinutes = 0;
@@ -982,10 +1127,12 @@ exports.exportVenueUtilisation = async (req, res) => {
                 "Type": venue.venue_type,
                 "Location": venue.location,
                 "Status": venue.status || 'open',
-                "Total Bookings": totalTasks,
+                "Total Bookings": tasks.length,
                 "Confirmed Bookings": acceptedTasks.length,
-                "Minutes Used (Today/Load)": totalMinutes,
-                "Utilization %": `${utilization}%`,
+                "Total Resources": resourceCount,
+                "Accumulated Score": totalScore.toFixed(2),
+                "Total Penalty": totalPenalty.toFixed(2),
+                "Utilization % (Current Load)": `${utilization}%`,
                 "Incharge": incharges || "N/A"
             });
         }
@@ -997,11 +1144,11 @@ exports.exportVenueUtilisation = async (req, res) => {
         const buffer = xlsx.write(wb, { type: 'buffer', bookType: 'xlsx' });
 
         res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-        res.setHeader('Content-Disposition', 'attachment; filename=venue_utilisation_report.xlsx');
+        res.setHeader('Content-Disposition', 'attachment; filename=venue_utilisation_summary.xlsx');
         res.send(buffer);
 
     } catch (error) {
-        console.error('EXPORT ERROR:', error);
+        console.error('UTILISATION EXPORT ERROR:', error);
         res.status(500).json({ message: error.message });
     }
 };

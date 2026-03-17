@@ -93,6 +93,7 @@ router.post('/venues/bulk', isAdmin, memoryUpload.single('file'), resourceContro
 
 // Export Reports
 router.get('/venues/export', venueController.exportVenueUtilisation);
+router.get('/venues/usage-report', venueController.exportDetailedVenueReport); // NEW: Detailed usage report
 router.get('/export', resourceController.exportResourceUtilisation);
 
 // Role & Scope Management (Admin Only)

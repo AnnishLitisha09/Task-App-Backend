@@ -42,9 +42,12 @@ module.exports = (sequelize, DataTypes) => {
     sequelize,
     modelName: 'User',
     tableName: 'users',
-    timestamps: false,
-    paranoid: true, // Optional: enables soft delete using deleted_at
-    underscored: true
+    timestamps: true,
+    paranoid: true,
+    underscored: true,
+    createdAt: 'created_at',
+    updatedAt: 'updated_at',
+    deletedAt: 'deleted_at'
   });
 
   return User;
