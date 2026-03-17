@@ -4401,6 +4401,24 @@ exports.reviewTaskProof = async (req, res) => {
         }, { transaction: t });
 
         await t.commit();
+
+        // Notification (Async)
+        (async () => {
+            try {
+                const { Notification } = require('../models');
+                await Notification.create({
+                    user_id: assignment.user_id,
+                    title: status === 'approved' ? 'Proof Approved' : 'Proof Rejected',
+                    msg: status === 'approved' 
+                        ? `Your proof for task "${assignment.Task.title}" was approved.`
+                        : `Your proof for task "${assignment.Task.title}" was rejected. Reason: ${reason || 'N/A'}. Please resubmit.`,
+                    type: status === 'approved' ? 'task_completed' : 'task_rejected'
+                });
+            } catch (err) {
+                console.error('Notification error in reviewTaskProof:', err);
+            }
+        })();
+
         res.json({ message: `Proof successfully ${status}` });
 
     } catch (error) {
