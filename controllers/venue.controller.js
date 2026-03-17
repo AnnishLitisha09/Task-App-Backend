@@ -1,5 +1,6 @@
 const { Venue, RoleAssignment, Role, User, Student, Faculty, Staff, RoleUser, Task, TaskType, TaskAssign } = require('../models');
 const { Op, literal } = require('sequelize');
+const xlsx = require('xlsx');
 
 // Helper: format YYYY-MM-DD safely
 function toDateStr(dateObj) {
@@ -886,6 +887,121 @@ exports.getVenueBasicDetails = async (req, res) => {
         });
     } catch (error) {
         console.error('Error in getVenueBasicDetails:', error);
+        res.status(500).json({ message: error.message });
+    }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/venues/export
+// Exports venue utilization metrics to Excel
+// ─────────────────────────────────────────────────────────────────────────────
+exports.exportVenueUtilisation = async (req, res) => {
+    try {
+        const userId = req.userId;
+        const userRole = req.userRole?.toLowerCase();
+
+        // 1. Determine which venues to include
+        let assignedVenueIds = [];
+        if (userRole === 'admin') {
+            const all = await Venue.findAll({ attributes: ['venue_id'] });
+            assignedVenueIds = all.map(v => v.venue_id);
+        } else {
+            const assignments = await RoleAssignment.findAll({
+                where: { user_id: userId, venue_id: { [Op.ne]: null } },
+                attributes: ['venue_id']
+            });
+            assignedVenueIds = [...new Set(assignments.map(a => a.venue_id))];
+        }
+
+        if (assignedVenueIds.length === 0) {
+            return res.status(404).json({ message: "No venues found for report export." });
+        }
+
+        // 2. Fetch Venues with Tasks and Incharges
+        const venues = await Venue.findAll({
+            where: { venue_id: { [Op.in]: assignedVenueIds } },
+            include: [
+                {
+                    model: RoleAssignment,
+                    include: [{
+                        model: User,
+                        attributes: ['user_id'],
+                        include: [
+                            { model: Student, attributes: ['name'], required: false },
+                            { model: Faculty, attributes: ['name'], required: false },
+                            { model: Staff, attributes: ['name'], required: false },
+                            { model: RoleUser, attributes: ['name'], required: false }
+                        ]
+                    }]
+                }
+            ]
+        });
+
+        const reportData = [];
+
+        for (const venue of venues) {
+            const totalTasks = await Task.count({
+                where: { venue_id: venue.venue_id, is_deleted: false }
+            });
+
+            const acceptedTasks = await Task.findAll({
+                where: { venue_id: venue.venue_id, is_deleted: false },
+                include: [{
+                    model: TaskAssign,
+                    where: { status: 'accepted' },
+                    required: true
+                }, {
+                    model: TaskType,
+                    required: true
+                }]
+            });
+
+            let totalMinutes = 0;
+            acceptedTasks.forEach(t => {
+                const tt = t.TaskTypes?.[0];
+                if (tt && tt.start_time && tt.end_time) {
+                    const [sH, sM] = tt.start_time.split(':').map(Number);
+                    const [eH, eM] = tt.end_time.split(':').map(Number);
+                    const duration = (eH * 60 + eM) - (sH * 60 + sM);
+                    if (duration > 0) totalMinutes += duration;
+                }
+            });
+
+            const incharges = (venue.RoleAssignments || []).map(ra => {
+                const u = ra.User;
+                if (!u) return null;
+                const p = u.Student || u.Faculty || u.Staff || u.RoleUser;
+                return p ? p.name : `User #${u.user_id}`;
+            }).filter(Boolean).join(', ');
+
+            const operationalWindow = 480; 
+            const utilization = ((totalMinutes / operationalWindow) * 100).toFixed(2);
+
+            reportData.push({
+                "Venue Name": venue.name,
+                "Type": venue.venue_type,
+                "Location": venue.location,
+                "Status": venue.status || 'open',
+                "Total Bookings": totalTasks,
+                "Confirmed Bookings": acceptedTasks.length,
+                "Minutes Used (Today/Load)": totalMinutes,
+                "Utilization %": `${utilization}%`,
+                "Incharge": incharges || "N/A"
+            });
+        }
+
+        const wb = xlsx.utils.book_new();
+        const ws = xlsx.utils.json_to_sheet(reportData);
+        xlsx.utils.book_append_sheet(wb, ws, "Venue Utilisation");
+
+        const buffer = xlsx.write(wb, { type: 'buffer', bookType: 'xlsx' });
+
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        res.setHeader('Content-Disposition', 'attachment; filename=venue_utilisation_report.xlsx');
+        res.send(buffer);
+
+    } catch (error) {
+        console.error('EXPORT ERROR:', error);
         res.status(500).json({ message: error.message });
     }
 };
