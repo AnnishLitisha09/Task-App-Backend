@@ -1,7 +1,7 @@
 const { Task, TaskAssign, TaskType, TaskPackageClosure, TaskClosure, User, Student, Faculty, Staff, RoleUser, RoleAssignment, Role, Department, TaskEscalation, AuthAccount, Notification, TaskLog, TaskTitle, Venue, TaskApprovalRequest } = require('../models');
 const XLSX = require('xlsx');
 const { canAssignTo } = require('./task.assignment');
-const { checkTaskOverlap, isWithinWorkHours } = require('../utils/task-utils');
+const { checkTaskOverlap, isWithinWorkHours, getWorkingMinutes } = require('../utils/task-utils');
 const { MAX_DAILY_TASKS, PRIORITY_WEIGHTS } = require('../config/constants');
 
 
@@ -523,6 +523,19 @@ exports.getExhaustiveTaskDetails = async (req, res) => {
             others: assignments_list.filter(a => !['student', 'faculty', 'staff'].includes(a.assignee?.role)).map(a => a.assignee)
         };
 
+        // Summary Stats
+        const summary_stats = {
+            assigned: assignments_list.length,
+            pending: assignments_list.filter(a => a.status === 'pending').length,
+            accepted: assignments_list.filter(a => a.status === 'accepted').length,
+            rejected: assignments_list.filter(a => a.status === 'rejected').length,
+            in_progress: assignments_list.filter(a => a.status === 'in_progress').length,
+            completed: assignments_list.filter(a => a.status === 'completed').length,
+            proof_approved_successfully: assignments_list.filter(a => a.status === 'completed').length,
+            started_but_not_completed: assignments_list.filter(a => a.status === 'in_progress').length,
+            accepted_but_not_started: assignments_list.filter(a => a.status === 'accepted').length
+        };
+
         // Venue details including Incharge
         const venue_incharges = (task.Venue?.RoleAssignments || []).map(ra => formatUserSimple(ra.User));
 
@@ -536,10 +549,7 @@ exports.getExhaustiveTaskDetails = async (req, res) => {
         } else if (taskType) {
             const startDate = taskType.start_date ? new Date(taskType.start_date) : null;
             const endDate = taskType.end_date ? new Date(taskType.end_date) : null;
-            const startTime = taskType.start_time;
-            const endTime = taskType.end_time;
 
-            // Simple date-based logic for now, more complex time logic could be added
             if (startDate && now < startDate) {
                 execution_status = 'not_started';
             } else if (endDate && now > endDate) {
@@ -549,14 +559,35 @@ exports.getExhaustiveTaskDetails = async (req, res) => {
             }
         }
 
-        // Transfer history from logs
-        const transfer_history = (task.TaskLogs || [])
-            .filter(log => ['transfer', 'reject_and_transfer'].includes(log.action))
-            .map(log => ({
-                from_user: formatUserSimple(log.User),
-                details: log.details,
-                timestamp: log.created_at
-            }));
+        // Timeline events
+        const timeline = [
+            { event: 'Task Created', timestamp: task.created_at, details: `Task created by User ${task.creator_id}` }
+        ];
+
+        const accepted_count = assignments_list.filter(a => a.accepted_at).length;
+        if (accepted_count > 0) {
+            const firstAccepted = assignments_list.filter(a => a.accepted_at).sort((a,b) => new Date(a.accepted_at) - new Date(b.accepted_at))[0];
+            timeline.push({ 
+                event: 'Task Accepted', 
+                timestamp: firstAccepted.accepted_at, 
+                details: `${accepted_count} user(s) have accepted this task.` 
+            });
+        }
+
+        (task.TaskLogs || []).forEach(log => {
+            if (log.action === 'self_assign') {
+                timeline.push({ event: 'Self Assigned', timestamp: log.created_at, details: log.details });
+            } else if (log.action === 'transfer' || log.action === 'reject_and_transfer') {
+                timeline.push({ event: 'Task Transferred', timestamp: log.created_at, details: log.details });
+            } else if (log.action === 'proof_submitted') {
+                timeline.push({ event: 'Proof Submitted', timestamp: log.created_at, details: log.details });
+            } else if (log.action === 'proof_approved' || log.action === 'close') {
+                timeline.push({ event: 'Task Completed', timestamp: log.created_at, details: log.details });
+            }
+        });
+
+        // Sort timeline
+        timeline.sort((a,b) => new Date(a.timestamp) - new Date(b.timestamp));
 
         const formattedTask = {
             task_info: {
@@ -574,10 +605,11 @@ exports.getExhaustiveTaskDetails = async (req, res) => {
                 created_at: task.created_at,
                 updated_at: task.updated_at
             },
+            summary_stats,
+            timeline,
             is_faculty_detail: task.is_faculty ? {
                 is_faculty: true,
                 faculty_id: task.faculty_id
-                // Note: task.Faculty relation might exist if included in Task.findOne
             } : { is_faculty: false },
             schedule: taskType || null,
             venue: task.Venue ? {
@@ -602,14 +634,6 @@ exports.getExhaustiveTaskDetails = async (req, res) => {
                 creator: formatUserDetailed(task.Creator),
                 approver: formatUserDetailed(task.Approver)
             },
-            history_logs: (task.TaskLogs || []).map(log => ({
-                log_id: log.id,
-                action: log.action,
-                details: log.details,
-                actor: formatUserSimple(log.User),
-                timestamp: log.created_at
-            })),
-            transfer_history,
             escalations: (task.TaskEscalations || []).map(esc => ({
                 escalation_id: esc.id,
                 reason: esc.reason,
@@ -784,6 +808,11 @@ exports.submitTaskProof = async (req, res) => {
         let { proof, obtained_score, penalty: body_penalty } = req.body || {};
 
         if (req.file) {
+            const fileExt = req.file.originalname.split('.').pop().toLowerCase();
+            const allowedExts = ['pdf', 'png', 'jpg', 'jpeg'];
+            if (!allowedExts.includes(fileExt)) {
+                return res.status(400).json({ message: 'Invalid file type. Only PDF, PNG, and JPG/JPEG are allowed.' });
+            }
             proof = `${req.protocol}://${req.get('host')}/uploads/${req.file.filename}`;
         }
 
@@ -805,17 +834,38 @@ exports.submitTaskProof = async (req, res) => {
         }
 
         const task = assignment.Task;
+        const taskType = task.TaskTypes && task.TaskTypes[0];
+        const isStudent = req.userRole === 'student';
+
+        // 1. Enforce Start Task for non-students if proof is required
+        if (!isStudent && task.is_document && assignment.status !== 'in_progress') {
+            return res.status(400).json({ message: 'You must start the task before submitting proof.' });
+        }
+
+        // 2. Enforce 6-working-hour deadline for non-students
+        if (!isStudent && taskType) {
+            const taskEndDate = new Date(taskType.end_date || taskType.start_date);
+            const taskEndTime = taskType.end_time || '16:30:00';
+            const endDateTime = new Date(`${taskEndDate.toISOString().split('T')[0]}T${taskEndTime}`);
+            
+            const now = new Date();
+            const istOffset = 330 * 60 * 1000;
+            const localNow = new Date(now.getTime() + (now.getTimezoneOffset() * 60000) + istOffset);
+
+            if (localNow > endDateTime) {
+                const elapsedWorkingMins = getWorkingMinutes(endDateTime, localNow);
+                if (elapsedWorkingMins > 360) { // 6 hours
+                    return res.status(400).json({ message: 'Deadline for proof submission (6 working hours) has passed. Task has been escalated.' });
+                }
+            }
+        }
 
         // Check if proof is required based on the task type
         if (task.is_document && !proof) {
             return res.status(400).json({ message: 'Proof/Document is required for this task' });
         }
 
-        const taskType = task.TaskTypes && task.TaskTypes[0];
 
-        if (!taskType) {
-            return res.status(500).json({ message: 'Task type data missing' });
-        }
 
         let penalty = 0;
         let earnedScore = 0;
@@ -2427,10 +2477,10 @@ exports.getStudentDashboard = async (req, res) => {
             }).length
         };
 
-        // 4. Today's Scheduled Tasks
+        // 4. Today's Scheduled Tasks (Exclude Rejected)
         const todaySchedule = allAssignments.filter(a => {
             const tt = a.Task?.TaskTypes?.[0];
-            return tt && toLocalISO(tt.start_date) === todayStr;
+            return tt && toLocalISO(tt.start_date) === todayStr && a.status !== 'rejected';
         }).map(a => ({
             task_id: a.Task.task_id,
             title: a.Task.title,
@@ -2441,12 +2491,11 @@ exports.getStudentDashboard = async (req, res) => {
             priority: a.Task.priority
         }));
 
-        // 5. Tomorrow's Activity (Pending/Rejected)
+        // 5. Tomorrow's Activity (Pending Only - Exclude Rejected)
         const tomorrowStr = toLocalISO(tomorrow);
         const tomorrowActivity = allAssignments.filter(a => {
             const tt = a.Task?.TaskTypes?.[0];
-            return tt && toLocalISO(tt.start_date) === tomorrowStr &&
-                (a.status === 'pending' || a.status === 'rejected');
+            return tt && toLocalISO(tt.start_date) === tomorrowStr && a.status === 'pending';
         }).map(a => ({
             task_id: a.Task.task_id,
             title: a.Task.title,
@@ -2454,7 +2503,7 @@ exports.getStudentDashboard = async (req, res) => {
             time: a.Task.TaskTypes[0].start_time + ' - ' + a.Task.TaskTypes[0].end_time
         }));
 
-        // 6. Pending Proof Submission
+        // 6. Pending Proof Submission (Accepted/In Progress Only)
         const pendingProof = allAssignments.filter(a => {
             const task = a.Task;
             const tt = task?.TaskTypes?.[0];
@@ -2462,7 +2511,7 @@ exports.getStudentDashboard = async (req, res) => {
 
             const datePart = toLocalISO(tt.start_date);
             const startTime = new Date(`${datePart}T${tt.start_time}`);
-            return (a.status === 'accepted') &&
+            return (a.status === 'in_progress') &&
                 startTime <= localNow &&
                 (!a.proof || a.proof === '');
         }).map(a => ({
@@ -2511,7 +2560,7 @@ exports.getPendingProofTasks = async (req, res) => {
         const tasksInfo = await TaskAssign.findAndCountAll({
             where: {
                 user_id: userId,
-                status: 'accepted',
+                status: 'in_progress',
                 [Op.or]: [
                     { proof: null },
                     { proof: '' }
@@ -2545,16 +2594,32 @@ exports.getPendingProofTasks = async (req, res) => {
             return `${year}-${month}-${day}`;
         };
 
-        // Filter for tasks that have already started
-        const startedTasks = tasksInfo.rows.filter(a => {
+        // Filter: 1. Already started, 2. Within 6 working hours of end time (for non-students)
+        const filteredTasks = tasksInfo.rows.filter(a => {
             const tt = a.Task.TaskTypes && a.Task.TaskTypes[0];
             if (!tt) return false;
+            
             const datePart = toLocalISO(tt.start_date);
             const startDateTime = new Date(`${datePart}T${tt.start_time}`);
-            return startDateTime <= localNow;
+            
+            // Rule 1: Must have started
+            if (startDateTime > localNow) return false;
+
+            // Rule 2: Non-students have a 6-hour working-hour deadline
+            if (req.userRole !== 'student') {
+                const endDatePart = toLocalISO(tt.end_date || tt.start_date);
+                const endDateTime = new Date(`${endDatePart}T${tt.end_time || '16:30:00'}`);
+                
+                if (localNow > endDateTime) {
+                    const elapsedWorkingMins = getWorkingMinutes(endDateTime, localNow);
+                    if (elapsedWorkingMins > 360) return false; // Hide if past 6 working hours
+                }
+            }
+
+            return true;
         });
 
-        const formatted = startedTasks.map(a => ({
+        const formatted = filteredTasks.map(a => ({
             assignment_id: a.id,
             task_id: a.Task.task_id,
             title: a.Task.title,
@@ -2570,7 +2635,7 @@ exports.getPendingProofTasks = async (req, res) => {
             }
         }));
 
-        res.json(getPagingData({ count: startedTasks.length, rows: formatted }, page, limit));
+        res.json(getPagingData({ count: filteredTasks.length, rows: formatted }, page, limit));
     } catch (error) {
         console.error('Error in getPendingProofTasks:', error);
         res.status(500).json({ message: error.message });

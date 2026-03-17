@@ -149,4 +149,45 @@ async function checkTaskOverlap(userId, taskDetails, excludeTaskId = null) {
     return { hasConflict: false };
 }
 
-module.exports = { checkTaskOverlap, isWithinWorkHours };
+const getWorkingMinutes = (start, end) => {
+    if (start >= end) return 0;
+
+    let totalMins = 0;
+    const startDate = new Date(start);
+    const endDate = new Date(end);
+
+    const workStartMins = 8 * 60 + 45; // 8:45 AM
+    const workEndMins = 16 * 60 + 30;  // 4:30 PM (as per WORK_END in constants)
+
+    let current = new Date(startDate);
+    current.setSeconds(0, 0);
+    
+    // Normalize iterator to start of day
+    let d = new Date(current);
+    d.setHours(0, 0, 0, 0);
+
+    const targetEnd = new Date(endDate);
+    targetEnd.setSeconds(0, 0);
+
+    while (d <= targetEnd) {
+        if (d.getDay() !== 0) { // Not Sunday
+            const dayStart = new Date(d);
+            dayStart.setHours(8, 45, 0, 0); // 8:45 AM
+            const dayEnd = new Date(d);
+            dayEnd.setHours(16, 30, 0, 0);  // 4:30 PM
+
+            const effectiveStart = current > dayStart ? current : dayStart;
+            const effectiveEnd = targetEnd < dayEnd ? targetEnd : dayEnd;
+
+            if (effectiveStart < effectiveEnd) {
+                totalMins += (effectiveEnd - effectiveStart) / 60000;
+            }
+        }
+        d.setDate(d.getDate() + 1);
+        current = new Date(d); 
+    }
+
+    return Math.floor(totalMins);
+};
+
+module.exports = { checkTaskOverlap, isWithinWorkHours, getWorkingMinutes };

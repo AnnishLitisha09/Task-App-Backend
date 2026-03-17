@@ -509,15 +509,31 @@ exports.transferTask = async (req, res) => {
             return res.status(400).json({ message: 'transfer_to_user_id is required' });
         }
 
-        // 1. Find current assignment
-        const assignment = await TaskAssign.findOne({
+        // 1. Find the assignment. 
+        // We look for EITHER:
+        // - An assignment for the current user (standard transfer)
+        // - ANY assignment for this task IF the current user is the TASK CREATOR (re-assignment)
+        let assignment = await TaskAssign.findOne({
             where: { task_id: taskId, user_id: userId },
             include: [{ model: Task }, { model: User }]
         });
 
+        // Special case: If user is the creator, they can transfer ANY assignment for this task
+        if (!assignment) {
+            const task = await Task.findByPk(taskId);
+            if (task && task.creator_id === userId) {
+                // Find ANY pending/accepted/escalated assignment to transfer from
+                assignment = await TaskAssign.findOne({
+                    where: { task_id: taskId },
+                    include: [{ model: Task }, { model: User }],
+                    order: [['created_at', 'DESC']] // Take the most recent one if multiple exist
+                });
+            }
+        }
+
         if (!assignment) {
             await t.rollback();
-            return res.status(404).json({ message: 'Task assignment not found' });
+            return res.status(404).json({ message: 'Task assignment not found or you are not authorized' });
         }
 
         const task = assignment.Task;
@@ -543,8 +559,8 @@ exports.transferTask = async (req, res) => {
             }
         }
 
-        // 2. Apply Penalty if task was already accepted
-        if (previousStatus === 'accepted') {
+        // 2. Apply Penalty if the user is transferring their OWN accepted task
+        if (previousStatus === 'accepted' && assignment.user_id === userId) {
             await applyPenalty(userId, 2, `Transfer penalty for task: ${task.title}`, t);
         }
 

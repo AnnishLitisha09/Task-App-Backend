@@ -1,48 +1,8 @@
 const cron = require('node-cron');
-const { Task, TaskAssign, User, TaskType, TaskEscalation, Notification, TaskLog } = require('../models');
+const { User, Task, TaskAssign, TaskType, TaskEscalation, Notification, TaskLog } = require('../models');
 const { Op } = require('sequelize');
+const { getWorkingMinutes } = require('../utils/task-utils');
 const { getSupervisor } = require('../utils/hierarchy');
-
-const getWorkingMinutes = (start, end) => {
-    if (start >= end) return 0;
-
-    let totalMins = 0;
-    const startDate = new Date(start);
-    const endDate = new Date(end);
-
-    const workStartMins = 8 * 60 + 45; // 8:45 AM
-    const workEndMins = 16 * 60;       // 4:00 PM (16:00)
-
-    let current = new Date(startDate);
-    current.setSeconds(0, 0);
-    
-    // Normalize iterator to start of day
-    let d = new Date(current);
-    d.setHours(0, 0, 0, 0);
-
-    const targetEnd = new Date(endDate);
-    targetEnd.setSeconds(0, 0);
-
-    while (d <= targetEnd) {
-        if (d.getDay() !== 0) { // Not Sunday
-            const dayStart = new Date(d);
-            dayStart.setHours(8, 45, 0, 0); // 8:45 AM
-            const dayEnd = new Date(d);
-            dayEnd.setHours(16, 0, 0, 0);  // 4:00 PM (16:00)
-
-            const effectiveStart = current > dayStart ? current : dayStart;
-            const effectiveEnd = targetEnd < dayEnd ? targetEnd : dayEnd;
-
-            if (effectiveStart < effectiveEnd) {
-                totalMins += (effectiveEnd - effectiveStart) / 60000;
-            }
-        }
-        d.setDate(d.getDate() + 1);
-        current = new Date(d); 
-    }
-
-    return Math.floor(totalMins);
-};
 
 let isProcessingEscalations = false;
 
@@ -151,15 +111,30 @@ const processAllEscalations = async () => {
             const user = a.User;
             const isStudent = user && user.role && user.role.toLowerCase() === 'student';
 
-            // Standard Escalation Check (Non-Students)
+            // Standard Overdue Check (Non-Students)
             if (!isStudent) {
-                const [h, m] = taskEndTime.split(':').map(Number);
-                const endMinutes = h * 60 + m + 60; // +1 hour buffer
-                const currentMinutes = localNow.getHours() * 60 + localNow.getMinutes();
+                const isDocumentRequired = a.Task?.is_document;
+                const endDateTime = new Date(`${taskEndStr}T${taskEndTime}`);
+                const elapsedWorkingMins = getWorkingMinutes(endDateTime, localNow);
 
-                if (taskEndStr < todayStr || (taskEndStr === todayStr && currentMinutes > endMinutes)) {
-                    await escalateAssignment(a, 'Task Overdue (Not completed 1 hour after end time)', supervisorCache);
-                    continue; // Skip 24hr check if already escalated
+                if (localNow > endDateTime) {
+                    if (isDocumentRequired) {
+                        // Rule: 6 working hours for proof submission
+                        if (elapsedWorkingMins >= (6 * 60)) {
+                            await escalateAssignment(a, 'Proof Submission Deadline Expired (6 Working Hours)', supervisorCache);
+                            continue;
+                        }
+                    } else {
+                        // Standard: 1 hour buffer for non-document tasks
+                        const [h, m] = taskEndTime.split(':').map(Number);
+                        const endMinutes = h * 60 + m + 60; 
+                        const currentMinutes = localNow.getHours() * 60 + localNow.getMinutes();
+
+                        if (taskEndStr < todayStr || (taskEndStr === todayStr && currentMinutes > endMinutes)) {
+                            await escalateAssignment(a, 'Task Overdue (Not completed 1 hour after end time)', supervisorCache);
+                            continue;
+                        }
+                    }
                 }
             }
 

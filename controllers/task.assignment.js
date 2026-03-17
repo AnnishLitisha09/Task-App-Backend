@@ -399,11 +399,15 @@ exports.selfAssignTask = async (req, res) => {
 
             const overlapCheck = await checkTaskOverlap(assigneeId, taskDetails);
             if (overlapCheck.hasConflict) {
-                return res.status(412).json({
-                    success: false,
-                    message: "Cannot self-assign task due to a schedule conflict.",
-                    conflictTask: overlapCheck.conflictTask
-                });
+                const { is_override } = req.body;
+                if (!is_override) {
+                    return res.status(412).json({
+                        success: false,
+                        message: "Cannot self-assign task due to a schedule conflict.",
+                        conflictTask: overlapCheck.conflictTask,
+                        can_override: true
+                    });
+                }
             }
         }
 
