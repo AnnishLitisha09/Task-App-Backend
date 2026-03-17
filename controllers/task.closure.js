@@ -14,6 +14,12 @@ exports.closeTask = async (req, res) => {
             return res.status(404).json({ message: 'Task not found' });
         }
 
+        // Check if proof is required
+        if (task.is_document && !proof) {
+            await t.rollback();
+            return res.status(400).json({ message: 'Proof/Document is required for this task' });
+        }
+
         // Validate closure_id if provided
         if (closure_id) {
             const closure = await TaskClosure.findByPk(closure_id);
@@ -43,6 +49,15 @@ exports.closeTask = async (req, res) => {
         });
 
         if (assignment) {
+            const user = await User.findByPk(userId, { transaction: t });
+            const isStudent = user && user.role === 'student';
+
+            // Lifecycle Enforcement for non-students
+            if (is_completed && !isStudent && task.is_document && assignment.status !== 'in_progress') {
+                await t.rollback();
+                return res.status(400).json({ message: 'You must start the task (move to in_progress) before completing it.' });
+            }
+
             let penalty = 0;
             let earnedScore = 0;
             
@@ -202,6 +217,34 @@ exports.startTask = async (req, res) => {
                 current_status: assignment.status
             });
         }
+
+        // --- NEW: Start Time Enforcement ---
+        const taskWithTypes = await Task.findByPk(taskId, {
+            include: [{ model: TaskType }],
+            transaction: t
+        });
+        const taskType = taskWithTypes.TaskTypes?.[0];
+
+        if (taskType && taskType.start_date) {
+            const now = new Date();
+            // Create a Date object representing the task start time in the local timezone (assuming IST based on previous constraints, but using server time for comparison)
+            // It's safer to compare the start_date directly if no start_time is provided
+            let startDateTime = new Date(taskType.start_date);
+            
+            if (taskType.start_time) {
+                const [h, m] = taskType.start_time.split(':');
+                startDateTime.setHours(parseInt(h, 10), parseInt(m, 10), 0, 0);
+            }
+
+            if (now < startDateTime) {
+                await t.rollback();
+                return res.status(403).json({
+                    message: 'Task Cannot Be Started Yet',
+                    details: `This task is scheduled to start at ${startDateTime.toLocaleString()}. You cannot start it before this time.`
+                });
+            }
+        }
+        // --- END NEW RULE ---
 
         // Update status to in_progress
         await assignment.update({

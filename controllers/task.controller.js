@@ -193,8 +193,8 @@ const normalizeTaskPayload = async (body) => {
     if (typeof payload.is_faculty === 'string') payload.is_faculty = (payload.is_faculty === 'true' || payload.is_faculty === '1');
     payload.is_faculty = !!payload.is_faculty;
 
-    // Consistency: Map "Long Task" to canonical names
-    if (payload.task_type_data && payload.task_type_data.task_name === 'Long Task') {
+    // Consistency: Map generic names to canonical names
+    if (payload.task_type_data && ['Long Task', 'Task'].includes(payload.task_type_data.task_name)) {
         payload.task_type_data.task_name = 'Date-Only / Long Task';
     }
     if (payload.task_type_data && payload.task_type_data.task_name === 'Bidding Task') {
@@ -1330,6 +1330,8 @@ exports.createUnifiedTask = async (req, res) => {
             const masterTitle = await TaskTitle.findByPk(task_title_id);
             if (masterTitle) {
                 title = title || masterTitle.task_title;
+                // Update payload so validation below passes and it persists correctly
+                payload.title = title;
             }
         }
 
@@ -1561,9 +1563,15 @@ exports.createUnifiedTask = async (req, res) => {
                     const assigneeRole = roleMap[assigneeId];
                     const isStaff = assigneeRole === 'staff';
                     const isFacultySupervisor = (assigneeId === facultyUserId);
-                    // Faculty supervisor only auto-accepts if they are the creator
-                    const facultyAutoAccept = isFacultySupervisor && (facultyUserId === userId);
-                    const autoAccept = is_mandatory || isStaff || facultyAutoAccept;
+                    
+                    // Faculty members (even if they are supervisors) should NOT be auto-accepted 
+                    // unless they are explicitly the creator of the task.
+                    const isFacultyAssignee = assigneeRole === 'faculty';
+                    const facultyAutoAccept = isFacultyAssignee ? (assigneeId === userId) : false;
+
+                    // Auto-accept if it's mandatory (and not a faculty member being assigned by someone else), 
+                    // or if it's staff, or if it's a faculty assigning to themselves.
+                    const autoAccept = (is_mandatory && (!isFacultyAssignee || facultyAutoAccept)) || isStaff || facultyAutoAccept;
 
                     if (allowed) {
                         let finalStatus = autoAccept ? 'accepted' : 'pending';
@@ -1729,7 +1737,10 @@ exports.createUnifiedTask = async (req, res) => {
                             }
 
                             const isChildStaff = roleMap[sid] === 'staff';
-                            const childAutoAccept = sub.is_mandatory || isChildStaff;
+                            const isChildFaculty = roleMap[sid] === 'faculty';
+                            const childFacultyAutoAccept = isChildFaculty ? (sid === userId) : false;
+                            
+                            const childAutoAccept = (sub.is_mandatory && (!isChildFaculty || childFacultyAutoAccept)) || isChildStaff || childFacultyAutoAccept;
 
                             let finalChildStatus = childAutoAccept ? 'accepted' : 'pending';
                             let finalChildAcceptedAt = childAutoAccept ? new Date() : null;
@@ -1912,9 +1923,23 @@ exports.createUnifiedTask = async (req, res) => {
             }
 
             // 8. Closure Rules
-            if (closure_ids && Array.isArray(closure_ids)) {
+            if (closure_ids && Array.isArray(closure_ids) && closure_ids.length > 0) {
                 const closures = closure_ids.map(cid => ({ task_id: parentTask.task_id, closure_id: cid }));
                 await TaskPackageClosure.bulkCreate(closures, { transaction: t });
+            } else {
+                // --- NEW: Default OTP Closure for Students ---
+                // If no specific closures are provided, and any assignee is a student, 
+                // link the 'OTP' closure by default.
+                const hasStudentAssignee = finalAssigneeIds.some(id => roleMap[id] === 'student');
+                if (hasStudentAssignee || userRole?.toLowerCase() === 'student') {
+                    const otpClosure = await TaskClosure.findOne({ where: { name: 'OTP' } });
+                    if (otpClosure) {
+                        await TaskPackageClosure.create({
+                            task_id: parentTask.task_id,
+                            closure_id: otpClosure.id
+                        }, { transaction: t });
+                    }
+                }
             }
         }
 
@@ -1974,7 +1999,7 @@ exports.createUnifiedTask = async (req, res) => {
 
         res.status(500).json({ message: error.message });
     }
-}; // end createUnifiedTask
+}; // end createUnifiedTask// end createUnifiedTask
 
 // Finalize a task after approval (Create assignments and notify)
 exports.finalizeTaskAssignments = async (approvalRequest, transaction = null) => {
@@ -2014,7 +2039,27 @@ exports.finalizeTaskAssignments = async (approvalRequest, transaction = null) =>
             });
         }
 
-        // 3. Process Assignments for each task occurrence
+        // 3. Role Mapping for Assignments
+        const { Student, Faculty, Staff, RoleUser } = require('../models');
+        const allUserIds = [...new Set([
+            ...(payload.assignee_ids || []),
+            ...(payload.sub_tasks?.flatMap(st => [...(st.assignee_ids || []), st.assignee_id ? parseInt(st.assignee_id) : null]) || []).filter(id => id !== null)
+        ])];
+        
+        const userProfiles = await Promise.all([
+            Student.findAll({ where: { user_id: allUserIds }, attributes: ['user_id'], transaction: t }),
+            Faculty.findAll({ where: { user_id: allUserIds }, attributes: ['user_id'], transaction: t }),
+            Staff.findAll({ where: { user_id: allUserIds }, attributes: ['user_id'], transaction: t }),
+            RoleUser.findAll({ where: { user_id: allUserIds }, attributes: ['user_id'], transaction: t })
+        ]);
+
+        const roleMap = {};
+        userProfiles[0].forEach(p => roleMap[p.user_id] = 'student');
+        userProfiles[1].forEach(p => roleMap[p.user_id] = 'faculty');
+        userProfiles[2].forEach(p => roleMap[p.user_id] = 'staff');
+        userProfiles[3].forEach(p => roleMap[p.user_id] = 'role-user');
+
+        // 4. Process Assignments for each task occurrence
         for (const taskId of taskIds) {
             // Get finalAssigneeIds (Already normalized in payload)
             let finalAssigneeIds = [...(payload.assignee_ids || [])];
@@ -2036,11 +2081,23 @@ exports.finalizeTaskAssignments = async (approvalRequest, transaction = null) =>
                     if (sub.assignee_ids) sub.assignee_ids.forEach(id => subAssigneeIds.push(parseInt(id)));
 
                     for (const sid of [...new Set(subAssigneeIds)]) {
-                        if (isNaN(sid)) continue;
+                        if (isNaN(sid) || !roleMap[sid]) continue;
+
+                        const isChildStaff = roleMap[sid] === 'staff';
+                        const isChildFaculty = roleMap[sid] === 'faculty';
+                        const childFacultyAutoAccept = isChildFaculty ? (sid === userId) : false;
+                        const childAutoAccept = (sub.is_mandatory && (!isChildFaculty || childFacultyAutoAccept)) || isChildStaff || childFacultyAutoAccept;
+
+                        let finalChildStatus = childAutoAccept ? 'accepted' : 'pending';
+                        if (childTask.sequence_order > 1 && roleMap[sid] !== 'student') {
+                            finalChildStatus = 'queued';
+                        }
+
                         await TaskAssign.create({
                             task_id: childTask.task_id,
                             user_id: sid,
-                            status: 'pending'
+                            status: finalChildStatus,
+                            accepted_at: finalChildAcceptedAt = (finalChildStatus === 'accepted' ? new Date() : null)
                         }, { transaction: t });
 
                         await Notification.create({
@@ -2055,10 +2112,20 @@ exports.finalizeTaskAssignments = async (approvalRequest, transaction = null) =>
 
             // Main task assignments
             for (const assigneeId of finalAssigneeIds) {
+                if (!roleMap[assigneeId]) continue;
+
+                const isStaff = roleMap[assigneeId] === 'staff';
+                const isFacultyAssignee = roleMap[assigneeId] === 'faculty';
+                const facultyAutoAccept = isFacultyAssignee ? (assigneeId === userId) : false;
+                const autoAccept = (payload.is_mandatory && (!isFacultyAssignee || facultyAutoAccept)) || isStaff || facultyAutoAccept;
+
+                const finalStatus = autoAccept ? 'accepted' : 'pending';
+
                 await TaskAssign.create({
                     task_id: taskId,
                     user_id: assigneeId,
-                    status: 'pending' // Should check roles for auto-accept? For simplicity, pending.
+                    status: finalStatus,
+                    accepted_at: autoAccept ? new Date() : null
                 }, { transaction: t });
 
                 await Notification.create({
@@ -2353,6 +2420,145 @@ exports.updateTask = async (req, res) => {
     } catch (error) {
         await t.rollback();
         res.status(500).json({ message: error.message });
+    }
+};
+
+// --- NEW: Get Task Details By ID ---
+exports.getTaskDetailsById = async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        const task = await Task.findOne({
+            where: { task_id: id, is_deleted: false },
+            include: [
+                {
+                    model: User,
+                    as: 'Creator',
+                    attributes: ['user_id', 'role'],
+                    include: [
+                        { model: Student, attributes: ['name', 'reg_no'], required: false },
+                        { model: Faculty, attributes: ['name', 'reg_no'], required: false },
+                        { model: Staff, attributes: ['name'], required: false },
+                        { model: RoleUser, attributes: ['name'], required: false }
+                    ]
+                },
+                {
+                    model: User,
+                    as: 'Approver',
+                    attributes: ['user_id', 'role'],
+                    required: false,
+                    include: [
+                        { model: Student, attributes: ['name', 'reg_no'], required: false },
+                        { model: Faculty, attributes: ['name', 'reg_no'], required: false },
+                        { model: Staff, attributes: ['name'], required: false },
+                        { model: RoleUser, attributes: ['name'], required: false }
+                    ]
+                },
+                {
+                    model: TaskType,
+                    required: false
+                },
+                {
+                    model: TaskAssign,
+                    required: false,
+                    attributes: ['id', 'user_id', 'status', 'created_at'],
+                    include: [{
+                        model: User,
+                        attributes: ['user_id', 'role'],
+                        include: [
+                            { model: Student, attributes: ['name', 'reg_no', 'department_id', 'year'], required: false },
+                            { model: Faculty, attributes: ['name', 'reg_no', 'department_id'], required: false },
+                            { model: Staff, attributes: ['name'], required: false },
+                            { model: RoleUser, attributes: ['name'], required: false }
+                        ]
+                    }]
+                },
+                {
+                    model: TaskPackageClosure,
+                    required: false,
+                    include: [{ model: TaskClosure, attributes: ['id', 'name'] }]
+                } // Document links will be handled by existing document fields or separate tables if applicable
+            ]
+        });
+
+        if (!task) {
+            return res.status(404).json({ success: false, message: 'Task not found or has been deleted.' });
+        }
+
+        // Helper to format User names
+        const formatUser = (u) => {
+            if (!u) return null;
+            const profile = u.Student || u.Faculty || u.Staff || u.RoleUser;
+            return {
+                user_id: u.user_id,
+                name: profile ? profile.name : `User #${u.user_id}`,
+                reg_no: profile?.reg_no || null,
+                role: u.role
+            };
+        };
+
+        const creator = formatUser(task.Creator);
+        const approver = formatUser(task.Approver);
+
+        // Format Assignees
+        const assignees = task.TaskAssigns ? task.TaskAssigns.map(ta => ({
+            assignment_id: ta.id, // TaskAssign primary key is `id`
+            status: ta.status,
+            assigned_at: ta.created_at,
+            user: formatUser(ta.User)
+        })) : [];
+
+        // Format Closures
+        const closures = task.TaskPackageClosures ? task.TaskPackageClosures.map(tc => ({
+            closure_id: tc.TaskClosure?.id,
+            closure_name: tc.TaskClosure?.name
+        })) : [];
+
+        // Compile full details
+        const taskDetails = {
+            task_id: task.task_id,
+            title: task.title,
+            description: task.description,
+            category: task.category, // 'directive' or 'self log'
+            priority: task.priority,
+            mandatory_task: task.mandatory_task,
+            is_package: task.is_package,
+            score: task.score,
+            penalty: task.penalty,
+            status: task.status,
+            proof_attachment: task.proof_attachment,
+            rejection_reason: task.rejection_reason,
+            is_approved: task.is_approved,
+            created_at: task.created_at,
+            
+            creator: creator,
+            approver: approver,
+            
+            // Timing and Location (From TaskType)
+            type_details: task.TaskTypes && task.TaskTypes.length > 0 ? {
+                task_name: task.TaskTypes[0].task_name,
+                start_date: task.TaskTypes[0].start_date,
+                end_date: task.TaskTypes[0].end_date,
+                start_time: task.TaskTypes[0].start_time,
+                end_time: task.TaskTypes[0].end_time,
+                recurrence: task.TaskTypes[0].recurrence,
+                time_quota_hours: task.TaskTypes[0].time_quota_hours,
+                venue_id: task.TaskTypes[0].venue_id,
+                pause_allowed: task.TaskTypes[0].pause_allowed,
+            } : null,
+
+            assignees: assignees,
+            closures: closures
+        };
+
+        res.json({
+            success: true,
+            task: taskDetails
+        });
+
+    } catch (error) {
+        console.error("GET TASK DETAILS ERROR:", error);
+        res.status(500).json({ success: false, message: error.message });
     }
 };
 

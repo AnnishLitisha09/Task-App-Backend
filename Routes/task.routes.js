@@ -94,10 +94,12 @@ router.get('/:id/acknowledgments', verifyToken, taskAcknowledgment.getTaskAcknow
 
 // Fetch APIs
 router.get('/', verifyToken, taskController.getAllTasks);
+router.get('/:id/details', verifyToken, taskController.getTaskDetailsById); // NEW Task Details Endpoint
 router.get('/stats/me', verifyToken, taskController.getUserTaskStats);
 router.get('/created-by/:userId', verifyToken, taskController.getTasksCreatedByUser);
 router.get('/assigned-to/:userId', verifyToken, taskController.getTasksAssignedToUser);
 router.get('/pending-upcoming', verifyToken, taskController.getPendingUpcomingTasks);
+
 router.get('/pending-proof', verifyToken, taskController.getPendingProofTasks); // NEW: Pending Proof
 router.get('/verification/pending', verifyToken, taskController.getVerificationTasks); // NEW: Tasks awaiting review
 router.get('/assigned-today', verifyToken, taskController.getTasksAssignedToday); // NEW: Assigned Today

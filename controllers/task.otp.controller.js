@@ -231,17 +231,39 @@ exports.verifyOTP = async (req, res) => {
 
         // 3. Process based on Type
         if (otpRecord.otp_type === 'START') {
-            // --- NEW: Deadline Check ---
-            if (taskType && taskType.end_date) {
-                const timeStr = taskType.end_time || '23:59:59';
-                const deadlineStr = `${taskType.end_date}T${timeStr}`;
-                const deadline = new Date(deadlineStr);
-                if (new Date() > deadline) {
-                    await t.rollback();
-                    return res.status(400).json({
-                        success: false,
-                        message: "Activity window has passed. This task is marked as missed."
-                    });
+            // --- NEW: Start Time and Deadline Check ---
+            if (taskType) {
+                const now = new Date();
+                
+                // 1. Start Time Enforcement
+                if (taskType.start_date) {
+                    let startDateTime = new Date(taskType.start_date);
+                    if (taskType.start_time) {
+                        const [h, m] = taskType.start_time.split(':');
+                        startDateTime.setHours(parseInt(h, 10), parseInt(m, 10), 0, 0);
+                    }
+                    if (now < startDateTime) {
+                        await t.rollback();
+                        return res.status(403).json({
+                            success: false,
+                            message: "Task Cannot Be Started Yet",
+                            details: `This task is scheduled to start at ${startDateTime.toLocaleString()}.`
+                        });
+                    }
+                }
+
+                // 2. Deadline Check
+                if (taskType.end_date) {
+                    const timeStr = taskType.end_time || '23:59:59';
+                    const deadlineStr = `${taskType.end_date}T${timeStr}`;
+                    const deadline = new Date(deadlineStr);
+                    if (now > deadline) {
+                        await t.rollback();
+                        return res.status(400).json({
+                            success: false,
+                            message: "Activity window has passed. This task is marked as missed."
+                        });
+                    }
                 }
             }
 
