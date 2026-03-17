@@ -2519,7 +2519,8 @@ exports.getTaskDetailsById = async (req, res) => {
             task_id: task.task_id,
             title: task.title,
             description: task.description,
-            category: task.category, // 'directive' or 'self log'
+            category: task.category,
+            origin_type: task.origin_type,
             priority: task.priority,
             mandatory_task: task.mandatory_task,
             is_package: task.is_package,
