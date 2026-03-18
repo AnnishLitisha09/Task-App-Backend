@@ -850,8 +850,7 @@ exports.updateVenueStatus = async (req, res) => {
 exports.getAllVenues = async (req, res) => {
     try {
         const venues = await Venue.findAll({
-            attributes: ['venue_id', 'name', 'venue_type', 'location', 'image_url', 'description', 'status'],
-            where: { is_deleted: false }
+            attributes: ['venue_id', 'name', 'venue_type', 'location', 'image_url', 'description', 'status']
         });
 
         res.json({
@@ -873,8 +872,7 @@ exports.getVenueBasicDetails = async (req, res) => {
     try {
         const { id } = req.params;
         const venue = await Venue.findByPk(id, {
-            attributes: ['venue_id', 'name', 'venue_type', 'location', 'image_url', 'description', 'status'],
-            where: { is_deleted: false }
+            attributes: ['venue_id', 'name', 'venue_type', 'location', 'image_url', 'description', 'status']
         });
 
         if (!venue) {

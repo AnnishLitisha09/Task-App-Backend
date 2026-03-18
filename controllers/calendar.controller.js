@@ -48,6 +48,11 @@ exports.getUserCalendar = async (req, res) => {
                             }
                         },
                         {
+                            model: Task,
+                            as: 'Parent',
+                            attributes: ['task_id', 'title']
+                        },
+                        {
                             model: User,
                             as: 'Creator',
                             attributes: ['user_id', 'role'],
@@ -63,7 +68,12 @@ exports.getUserCalendar = async (req, res) => {
             ]
         });
 
-        const calendarTasks = [];
+        const result = {
+            time_tasks: [],
+            all_day: [],
+            floating: []
+        };
+
         assignments.forEach(assign => {
             const task = assign.Task;
             if (!task || !task.TaskTypes) return;
@@ -77,7 +87,9 @@ exports.getUserCalendar = async (req, res) => {
                 }
 
                 const isLongTask = tt.task_name === 'Date-Only / Long Task' || tt.task_name === 'Long Task';
-                calendarTasks.push({
+                const isFloating = tt.task_name === 'Floating Task';
+
+                const formatted = {
                     task_id: task.task_id,
                     task: task.title,
                     status: assign.status,
@@ -87,12 +99,41 @@ exports.getUserCalendar = async (req, res) => {
                     start_date: tt.start_date,
                     end_date: tt.end_date,
                     start_time: isLongTask ? '08:45:00' : tt.start_time,
-                    end_time: isLongTask ? '16:30:00' : tt.end_time
-                });
+                    end_time: isLongTask ? '16:30:00' : tt.end_time,
+                    task_name: tt.task_name,
+                    parent_task_id: task.parent_task_id,
+                    sub_tasks: []
+                };
+
+                if (isFloating) result.floating.push(formatted);
+                else if (isLongTask) result.all_day.push(formatted);
+                else result.time_tasks.push(formatted);
             });
         });
 
-        res.json(calendarTasks.sort((a, b) => new Date(a.start_date) - new Date(b.start_date)));
+        // Helper: Nesting
+        const buildCalendarTree = (flatTasks) => {
+            const taskMap = {};
+            const rootTasks = [];
+            flatTasks.forEach(t => { taskMap[t.task_id] = t; });
+            flatTasks.forEach(t => {
+                if (t.parent_task_id && taskMap[t.parent_task_id]) {
+                    taskMap[t.parent_task_id].sub_tasks.push(t);
+                } else {
+                    rootTasks.push(t);
+                }
+            });
+            return rootTasks;
+        };
+
+        result.time_tasks = buildCalendarTree(result.time_tasks);
+        result.all_day = buildCalendarTree(result.all_day);
+        result.floating = buildCalendarTree(result.floating);
+
+        // Optional: Sort time_tasks by time
+        result.time_tasks.sort((a, b) => (a.start_time || '').localeCompare(b.start_time || ''));
+
+        res.json(result);
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -150,6 +191,11 @@ exports.getVenueCalendar = async (req, res) => {
                     }
                 },
                 {
+                    model: Task,
+                    as: 'Parent',
+                    attributes: ['task_id', 'title']
+                },
+                {
                     model: User,
                     as: 'Creator',
                     attributes: ['user_id', 'role'],
@@ -163,7 +209,12 @@ exports.getVenueCalendar = async (req, res) => {
             ]
         });
 
-        const calendarTasks = [];
+        const result = {
+            time_tasks: [],
+            all_day: [],
+            floating: []
+        };
+
         tasks.forEach(task => {
             if (!task.TaskTypes) return;
 
@@ -176,10 +227,12 @@ exports.getVenueCalendar = async (req, res) => {
                 }
 
                 const isLongTask = tt.task_name === 'Date-Only / Long Task' || tt.task_name === 'Long Task';
-                calendarTasks.push({
+                const isFloating = tt.task_name === 'Floating Task';
+
+                const formatted = {
                     task_id: task.task_id,
                     task: task.title,
-                    status: 'N/A', // Venue tasks might have multiple assignees with different statuses
+                    status: 'N/A',
                     assigned_by: creatorName,
                     priority: task.priority,
                     category: task.category,
@@ -187,12 +240,40 @@ exports.getVenueCalendar = async (req, res) => {
                     end_date: tt.end_date,
                     start_time: isLongTask ? '08:45:00' : tt.start_time,
                     end_time: isLongTask ? '16:30:00' : tt.end_time,
-                    venue_id: task.venue_id
-                });
+                    venue_id: task.venue_id,
+                    task_name: tt.task_name,
+                    parent_task_id: task.parent_task_id,
+                    sub_tasks: []
+                };
+
+                if (isFloating) result.floating.push(formatted);
+                else if (isLongTask) result.all_day.push(formatted);
+                else result.time_tasks.push(formatted);
             });
         });
 
-        res.json(calendarTasks.sort((a, b) => new Date(a.start_date) - new Date(b.start_date)));
+        // Helper: Nesting
+        const buildCalendarTree = (flatTasks) => {
+            const taskMap = {};
+            const rootTasks = [];
+            flatTasks.forEach(t => { taskMap[t.task_id] = t; });
+            flatTasks.forEach(t => {
+                if (t.parent_task_id && taskMap[t.parent_task_id]) {
+                    taskMap[t.parent_task_id].sub_tasks.push(t);
+                } else {
+                    rootTasks.push(t);
+                }
+            });
+            return rootTasks;
+        };
+
+        result.time_tasks = buildCalendarTree(result.time_tasks);
+        result.all_day = buildCalendarTree(result.all_day);
+        result.floating = buildCalendarTree(result.floating);
+
+        result.time_tasks.sort((a, b) => (a.start_time || '').localeCompare(b.start_time || ''));
+
+        res.json(result);
     } catch (error) {
         res.status(500).json({ message: error.message });
     }

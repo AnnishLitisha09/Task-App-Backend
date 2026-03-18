@@ -167,6 +167,10 @@ exports.acceptTask = async (req, res) => {
             accepted_at: new Date()
         });
 
+        // Resolve any existing escalations for this user/task
+        const { resolveTaskEscalations } = require('../utils/task-utils');
+        await resolveTaskEscalations(taskId, userId);
+
         // --- NEW: Auto-accept Remaining Days in Series ---
         try {
             const task = assignment.Task;
@@ -438,7 +442,9 @@ exports.rejectTask = async (req, res) => {
             await TaskEscalation.create({
                 task_id: taskId,
                 reason: reason ? reason.trim() : 'No reason provided',
-                msg: `Task was rejected by ${user.user_id}.`,
+                msg: task.is_faculty 
+                    ? `Faculty Task rejected by ${user.user_id}. Faculty approval is required.` 
+                    : `Task was rejected by ${user.user_id}.`,
                 creator_id: task.creator_id,
                 rejected_user_id: userId,
                 status: 'pending',
@@ -578,6 +584,10 @@ exports.transferTask = async (req, res) => {
             reason: reason || 'Transferred to another user',
             rejected_at: new Date()
         }, { transaction: t });
+
+        // Resolve any existing escalations for the previous user/task
+        const { resolveTaskEscalations } = require('../utils/task-utils');
+        await resolveTaskEscalations(taskId, assignment.user_id, t);
 
         // 5. Log Action
         await TaskLog.create({

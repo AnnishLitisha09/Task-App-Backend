@@ -53,7 +53,10 @@ exports.closeTask = async (req, res) => {
             const isStudent = user && user.role === 'student';
 
             // Lifecycle Enforcement for non-students
-            if (is_completed && !isStudent && task.is_document && assignment.status !== 'in_progress') {
+            const tt = (await TaskType.findOne({ where: { task_id: taskId } })) || {};
+            const isFloating = tt.task_name === 'Floating Task';
+
+            if (is_completed && !isStudent && task.is_document && assignment.status !== 'in_progress' && !isFloating) {
                 await t.rollback();
                 return res.status(400).json({ message: 'You must start the task (move to in_progress) before completing it.' });
             }
@@ -92,6 +95,10 @@ exports.closeTask = async (req, res) => {
                 penalty_applied: is_completed ? penalty : 0
             }, { transaction: t });
 
+            // Resolve any existing escalations for this user/task
+            const { resolveTaskEscalations } = require('../utils/task-utils');
+            await resolveTaskEscalations(taskId, userId, t);
+
             // Update User Profile Scores
             if (is_completed) {
                 const user = await User.findByPk(userId, { transaction: t });
@@ -118,7 +125,7 @@ exports.closeTask = async (req, res) => {
                 details: `Task closed with status: ${is_completed ? 'completed' : 'rejected'}`
             }, { transaction: t });
 
-            // SEQUENTIAL LOGIC: If completed and part of a package, trigger next sub-task
+            // SEQUENTIAL LOGIC: If completed and part of a package, trigger next sub-task for ALL assignees
             if (is_completed && task.parent_task_id) {
                 const nextSubTask = await Task.findOne({
                     where: { 
@@ -129,30 +136,31 @@ exports.closeTask = async (req, res) => {
                 });
 
                 if (nextSubTask) {
-                    const nextAssignment = await TaskAssign.findOne({
-                        where: { task_id: nextSubTask.task_id, user_id: userId, status: 'queued' }
+                    // Activate ALL queued assignments for this next sub-task
+                    const queuedAssignments = await TaskAssign.findAll({
+                        where: { task_id: nextSubTask.task_id, status: 'queued' }
                     });
 
-                    if (nextAssignment) {
+                    if (queuedAssignments.length > 0) {
                         const Notification = require('../models').Notification;
                         
-                        // Move to pending (or accepted if mandatory/staff? for now pending is safer)
-                        // Actually, if it was queued, we should probably follow the same auto-accept logic or just move to pending
-                        await nextAssignment.update({ status: 'pending' }, { transaction: t });
+                        for (const qAssign of queuedAssignments) {
+                            await qAssign.update({ status: 'pending' }, { transaction: t });
 
-                        await Notification.create({
-                            user_id: userId,
-                            title: 'Next Sub-task Available',
-                            msg: `Sub-task "${nextSubTask.title}" is now available for you.`,
-                            type: 'task_created'
-                        }, { transaction: t });
+                            await Notification.create({
+                                user_id: qAssign.user_id,
+                                title: 'Next Sub-task Available',
+                                msg: `Sub-task "${nextSubTask.title}" from package "${task.parent_task_id}" is now available for you.`,
+                                type: 'task_created'
+                            }, { transaction: t });
 
-                        await TaskLog.create({
-                            task_id: nextSubTask.task_id,
-                            user_id: userId,
-                            action: 'unqueued',
-                            details: `Sub-task unqueued after completion of sequence ${task.sequence_order}.`
-                        }, { transaction: t });
+                            await TaskLog.create({
+                                task_id: nextSubTask.task_id,
+                                user_id: qAssign.user_id,
+                                action: 'unqueued',
+                                details: `Sub-task unqueued globally after completion of sequence ${task.sequence_order} by User ${userId}.`
+                            }, { transaction: t });
+                        }
                     }
                 }
             }

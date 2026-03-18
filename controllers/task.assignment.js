@@ -419,6 +419,10 @@ exports.selfAssignTask = async (req, res) => {
             accepted_at: new Date()
         });
 
+        // Resolve any existing escalations for this user/task
+        const { resolveTaskEscalations } = require('../utils/task-utils');
+        await resolveTaskEscalations(taskId, assigneeId);
+
         res.json({ message: 'Task self-assigned successfully' });
 
     } catch (error) {

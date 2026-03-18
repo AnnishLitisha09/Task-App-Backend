@@ -1,4 +1,4 @@
-const { Task, TaskType, TaskAssign } = require('../models');
+const { Task, TaskType, TaskAssign, TaskEscalation } = require('../models');
 const { Op } = require('sequelize');
 
 /**
@@ -100,25 +100,32 @@ async function checkTaskOverlap(userId, taskDetails, excludeTaskId = null) {
         const datesOverlap = (propStartStr <= exEndStr && propEndStr >= exStartStr);
         if (!datesOverlap) continue;
 
-        // Case 1: Long Task Conflict
-        if (propIsLong || exIsLong) {
-            // Long tasks are "background", can be paused if higher priority comes in
-            if (propWeight > exWeight) {
-                // Return potential for pause/override
-                return { 
-                    hasConflict: true, 
-                    type: 'priority_override',
-                    can_pause: exIsLong,
-                    conflictTask: { task_id: exTask.task_id, title: exTask.title, priority: exTask.priority, weight: exWeight }
-                };
-            } else {
-                return { 
-                    hasConflict: true, 
-                    type: 'blocked',
-                    reason: `Blocked by ${exIsLong ? 'Long Task' : 'High Priority'} "${exTask.title}".`
-                };
+        // Case 1: Background Tasks (Long Task / Floating Task)
+        const propIsFloating = task_name === 'Floating Task';
+        const exIsFloating = exType.task_name === 'Floating Task';
+
+        if (propIsLong || exIsLong || propIsFloating || exIsFloating) {
+            // Background tasks can overlap with anything as they don't have fixed slots.
+            // We only check for priority if the proposed task is meant to 'replace' or 'pause' the existing one.
+            // For Floating Task, it's just a reminder, so it definitely doesn't block.
+            
+            if (!propIsFloating && !exIsFloating) {
+                // Long task logic: can be paused if higher priority comes in
+                if (propWeight > exWeight) {
+                    return { 
+                        hasConflict: true, 
+                        type: 'priority_override',
+                        can_pause: exIsLong,
+                        conflictTask: { task_id: exTask.task_id, title: exTask.title, priority: exTask.priority, weight: exWeight }
+                    };
+                }
             }
+            
+            // If it's a floating task or we are okay with background overlap, just continue
+            continue;
         }
+
+        // Case 2: Standard Time Overlap with 5-min Buffer
 
         // Case 2: Standard Time Overlap with 5-min Buffer
         if (exType.start_time && exType.end_time && start_time && end_time) {
@@ -190,4 +197,40 @@ const getWorkingMinutes = (start, end) => {
     return Math.floor(totalMins);
 };
 
-module.exports = { checkTaskOverlap, isWithinWorkHours, getWorkingMinutes };
+async function resolveTaskEscalations(taskId, userId, transaction = null) {
+    try {
+        // 1. Resolve any pending escalations for this user and task
+        await TaskEscalation.update({
+            status: 'resolved',
+            is_read: true
+        }, {
+            where: {
+                task_id: taskId,
+                rejected_user_id: userId,
+                status: 'pending'
+            },
+            transaction
+        });
+
+        // 2. Check if any other assignments for this task still have pending escalations
+        const anyEscalationsLeft = await TaskEscalation.findOne({
+            where: {
+                task_id: taskId,
+                status: 'pending'
+            },
+            transaction
+        });
+
+        // 3. If no pending escalations left, clear the global flag on the Task
+        if (!anyEscalationsLeft) {
+            await Task.update({ is_escalate: false }, { 
+                where: { task_id: taskId },
+                transaction 
+            });
+        }
+    } catch (err) {
+        console.error(`[resolveTaskEscalations Error] Task ${taskId}, User ${userId}:`, err);
+    }
+}
+
+module.exports = { checkTaskOverlap, isWithinWorkHours, getWorkingMinutes, resolveTaskEscalations };

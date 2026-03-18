@@ -942,6 +942,9 @@ exports.submitTaskProof = async (req, res) => {
             penalty_applied: penalty
         });
 
+// Resolve any existing escalations for this user/task
+        const { resolveTaskEscalations } = require('../utils/task-utils');
+        await resolveTaskEscalations(id, userId);
         // Update User Profile (Student, Faculty, or RoleUser)
         const user = await User.findByPk(userId);
         let profile = null;
@@ -1571,7 +1574,9 @@ exports.createUnifiedTask = async (req, res) => {
 
                     // Auto-accept if it's mandatory (and not a faculty member being assigned by someone else), 
                     // or if it's staff, or if it's a faculty assigning to themselves.
-                    const autoAccept = (is_mandatory && (!isFacultyAssignee || facultyAutoAccept)) || isStaff || facultyAutoAccept;
+                    // CRITICAL: If is_faculty = 1, we force it to pending so the faculty can explicitly accept/reject.
+                    let autoAccept = (is_mandatory && (!isFacultyAssignee || facultyAutoAccept)) || isStaff || facultyAutoAccept;
+                    if (is_faculty) autoAccept = false;
 
                     if (allowed) {
                         let finalStatus = autoAccept ? 'accepted' : 'pending';
@@ -1838,52 +1843,67 @@ exports.createUnifiedTask = async (req, res) => {
             }
 
             // 5. Venue Logic (Special Permission/Assignment for Incharge) - ONLY IF NOT WAITING FOR APPROVAL
-            if (!requires_approval && venue_id) {
-                const inchargers = await RoleAssignment.findAll({
-                    where: { venue_id },
-                    include: [{ model: Role, where: { user_role: { [Op.like]: '%INCHARGE%' } } }]
-                });
+            if (!requires_approval) {
+                // Collect unique venue IDs from parent and sub-tasks
+                const venuesToRequest = new Set();
+                if (venue_id) venuesToRequest.add(venue_id);
+                if (is_package && sub_tasks && Array.isArray(sub_tasks)) {
+                    sub_tasks.forEach(st => { if (st.venue_id) venuesToRequest.add(st.venue_id); });
+                }
 
-                for (const ra of inchargers) {
-                    if (!ra.user_id) continue;
-                    const alreadyAssigned = finalAssigneeIds.includes(ra.user_id * 1);
-                    if (!alreadyAssigned) {
-                        if (is_package) {
-                            const venueTask = await Task.create({
-                                title: `Permission: ${title} at Venue`,
-                                description: `Approval required for venue reservation.`,
-                                category: 'Admin',
-                                priority: 'high',
-                                is_package: false,
-                                parent_task_id: parentTask.task_id,
-                                venue_id: venue_id,
-                                creator_id: userId,
-                                status: 'Active'
-                            }, { transaction: t });
+                for (const vid of venuesToRequest) {
+                    const inchargers = await RoleAssignment.findAll({
+                        where: { venue_id: vid },
+                        include: [{ model: Role, where: { user_role: { [Op.like]: '%INCHARGE%' } } }]
+                    });
 
-                            await TaskType.create({
-                                task_id: venueTask.task_id,
-                                task_name: 'Permission Request',
-                                start_date: oDate,
-                                end_date: oDate,
-                                start_time: task_type_data.start_time,
-                                end_time: task_type_data.end_time,
-                                venue_id: venue_id,
-                                recurrence: 'none'
-                            }, { transaction: t });
+                    if (inchargers.length === 0) continue;
 
-                            await TaskAssign.create({
-                                task_id: venueTask.task_id,
-                                user_id: ra.user_id,
-                                status: 'pending'
-                            }, { transaction: t });
-                        } else {
-                            await TaskAssign.create({
-                                task_id: parentTask.task_id,
-                                user_id: ra.user_id,
-                                status: 'pending'
-                            }, { transaction: t });
-                        }
+                    let targetTaskId = parentTask.task_id;
+
+                    // If it's a package, or if the venue is from a sub-task, create a separate permission task
+                    // to avoid cluttering the main task's assignee list with inchargers who are just "approvers".
+                    const needsSeparatePermission = is_package || (vid !== venue_id);
+
+                    if (needsSeparatePermission) {
+                        const venueTask = await Task.create({
+                            title: `Permission: ${title} at Venue`,
+                            description: `Approval required for venue reservation.`,
+                            category: 'Admin',
+                            priority: 'high',
+                            is_package: false,
+                            parent_task_id: parentTask.task_id,
+                            venue_id: vid,
+                            creator_id: userId,
+                            status: 'Active'
+                        }, { transaction: t });
+
+                        await TaskType.create({
+                            task_id: venueTask.task_id,
+                            task_name: 'Permission Request',
+                            start_date: oDate,
+                            end_date: (task_type_data.task_name === 'Recurring Task') ? oDate : (task_type_data.end_date || oDate),
+                            start_time: task_type_data.start_time,
+                            end_time: task_type_data.end_time,
+                            venue_id: vid,
+                            recurrence: 'none'
+                        }, { transaction: t });
+
+                        targetTaskId = venueTask.task_id;
+                    }
+
+                    for (const ra of inchargers) {
+                        if (!ra.user_id) continue;
+                        const isAlreadyAssignedToMain = finalAssigneeIds.includes(ra.user_id * 1);
+                        
+                        // If it's the main task and they are already assigned, we don't need to add them again as pending
+                        if (!needsSeparatePermission && isAlreadyAssignedToMain) continue;
+
+                        await TaskAssign.create({
+                            task_id: targetTaskId,
+                            user_id: ra.user_id,
+                            status: 'pending'
+                        }, { transaction: t });
 
                         await Notification.create({
                             user_id: ra.user_id,
@@ -2117,7 +2137,8 @@ exports.finalizeTaskAssignments = async (approvalRequest, transaction = null) =>
                 const isStaff = roleMap[assigneeId] === 'staff';
                 const isFacultyAssignee = roleMap[assigneeId] === 'faculty';
                 const facultyAutoAccept = isFacultyAssignee ? (assigneeId === userId) : false;
-                const autoAccept = (payload.is_mandatory && (!isFacultyAssignee || facultyAutoAccept)) || isStaff || facultyAutoAccept;
+                let autoAccept = (payload.is_mandatory && (!isFacultyAssignee || facultyAutoAccept)) || isStaff || facultyAutoAccept;
+                if (payload.is_faculty) autoAccept = false;
 
                 const finalStatus = autoAccept ? 'accepted' : 'pending';
 
@@ -2137,60 +2158,67 @@ exports.finalizeTaskAssignments = async (approvalRequest, transaction = null) =>
             }
 
             // --- NEW: Post-Approval Venue Incharge Logic ---
-            if (payload.venue_id) {
-                const venue_id = payload.venue_id;
-                const currentTask = await Task.findByPk(taskId, { include: [TaskType], transaction: t });
-                const taskType = currentTask.TaskTypes?.[0]; // Get date/time from the task itself
+            const venuesToRequest = new Set();
+            if (payload.venue_id) venuesToRequest.add(payload.venue_id);
+            if (payload.is_package && payload.sub_tasks) {
+                payload.sub_tasks.forEach(st => { if (st.venue_id) venuesToRequest.add(st.venue_id); });
+            }
 
+            for (const vid of venuesToRequest) {
                 const inchargers = await RoleAssignment.findAll({
-                    where: { venue_id },
+                    where: { venue_id: vid },
                     include: [{ model: Role, where: { user_role: { [Op.like]: '%INCHARGE%' } } }],
                     transaction: t
                 });
 
-                for (const ra of inchargers) {
-                    if (!ra.user_id) continue;
-                    // Skip if already assigned in main loop
-                    if (finalAssigneeIds.includes(ra.user_id * 1)) continue;
+                if (inchargers.length === 0) continue;
 
-                    if (payload.is_package) {
-                        const venueTask = await Task.create({
-                            title: `Permission: ${title} at Venue`,
-                            description: `Approval required for venue reservation.`,
-                            category: 'Admin',
-                            priority: 'high',
-                            is_package: false,
-                            parent_task_id: taskId,
-                            venue_id: venue_id,
-                            creator_id: userId,
-                            status: 'Active'
-                        }, { transaction: t });
+                // Get date/time context from the main task
+                const currentTask = await Task.findByPk(taskId, { include: [TaskType], transaction: t });
+                const taskType = currentTask?.TaskTypes?.[0];
 
-                        if (taskType) {
-                            await TaskType.create({
-                                task_id: venueTask.task_id,
-                                task_name: 'Permission Request',
-                                start_date: taskType.start_date,
-                                end_date: taskType.end_date,
-                                start_time: taskType.start_time,
-                                end_time: taskType.end_time,
-                                venue_id: venue_id,
-                                recurrence: 'none'
-                            }, { transaction: t });
-                        }
+                let targetTaskId = taskId;
+                const needsSeparatePermission = payload.is_package || (vid !== payload.venue_id);
 
-                        await TaskAssign.create({
+                if (needsSeparatePermission) {
+                    const venueTask = await Task.create({
+                        title: `Permission: ${title} at Venue`,
+                        description: `Approval required for venue reservation.`,
+                        category: 'Admin',
+                        priority: 'high',
+                        is_package: false,
+                        parent_task_id: taskId,
+                        venue_id: vid,
+                        creator_id: userId,
+                        status: 'Active'
+                    }, { transaction: t });
+
+                    if (taskType) {
+                        await TaskType.create({
                             task_id: venueTask.task_id,
-                            user_id: ra.user_id,
-                            status: 'pending'
-                        }, { transaction: t });
-                    } else {
-                        await TaskAssign.create({
-                            task_id: taskId,
-                            user_id: ra.user_id,
-                            status: 'pending'
+                            task_name: 'Permission Request',
+                            start_date: taskType.start_date,
+                            end_date: taskType.end_date,
+                            start_time: taskType.start_time,
+                            end_time: taskType.end_time,
+                            venue_id: vid,
+                            recurrence: 'none'
                         }, { transaction: t });
                     }
+
+                    targetTaskId = venueTask.task_id;
+                }
+
+                for (const ra of inchargers) {
+                    if (!ra.user_id) continue;
+                    // Skip if already assigned in main loop (only for the main task)
+                    if (!needsSeparatePermission && finalAssigneeIds.includes(ra.user_id * 1)) continue;
+
+                    await TaskAssign.create({
+                        task_id: targetTaskId,
+                        user_id: ra.user_id,
+                        status: 'pending'
+                    }, { transaction: t });
 
                     await Notification.create({
                         user_id: ra.user_id,
@@ -2773,7 +2801,14 @@ exports.getStudentDashboard = async (req, res) => {
         // 3. Fetch Task Statistics
         const allAssignments = await TaskAssign.findAll({
             where: { user_id: userId },
-            include: [{ model: Task, required: true, include: [{ model: TaskType }] }]
+            include: [{ 
+                model: Task, 
+                required: true, 
+                include: [
+                    { model: TaskType },
+                    { model: Task, as: 'Parent', attributes: ['task_id', 'title'] }
+                ] 
+            }]
         });
 
         const stats = {
@@ -2791,7 +2826,7 @@ exports.getStudentDashboard = async (req, res) => {
         };
 
         // 4. Today's Scheduled Tasks (Exclude Rejected)
-        const todaySchedule = allAssignments.filter(a => {
+        const todayScheduleRaw = allAssignments.filter(a => {
             const tt = a.Task?.TaskTypes?.[0];
             return tt && toLocalISO(tt.start_date) === todayStr && a.status !== 'rejected';
         }).map(a => ({
@@ -2801,23 +2836,27 @@ exports.getStudentDashboard = async (req, res) => {
             status: a.status,
             time: a.Task.TaskTypes[0].start_time + ' - ' + a.Task.TaskTypes[0].end_time,
             category: a.Task.category,
-            priority: a.Task.priority
+            priority: a.Task.priority,
+            parent_task_id: a.Task.parent_task_id,
+            sub_tasks: []
         }));
 
         // 5. Tomorrow's Activity (Pending Only - Exclude Rejected)
         const tomorrowStr = toLocalISO(tomorrow);
-        const tomorrowActivity = allAssignments.filter(a => {
+        const tomorrowActivityRaw = allAssignments.filter(a => {
             const tt = a.Task?.TaskTypes?.[0];
             return tt && toLocalISO(tt.start_date) === tomorrowStr && a.status === 'pending';
         }).map(a => ({
             task_id: a.Task.task_id,
             title: a.Task.title,
             status: a.status,
-            time: a.Task.TaskTypes[0].start_time + ' - ' + a.Task.TaskTypes[0].end_time
+            time: a.Task.TaskTypes[0].start_time + ' - ' + a.Task.TaskTypes[0].end_time,
+            parent_task_id: a.Task.parent_task_id,
+            sub_tasks: []
         }));
 
         // 6. Pending Proof Submission (Accepted/In Progress Only)
-        const pendingProof = allAssignments.filter(a => {
+        const pendingProofRaw = allAssignments.filter(a => {
             const task = a.Task;
             const tt = task?.TaskTypes?.[0];
             if (!task || !tt || !task.is_document) return false;
@@ -2831,8 +2870,29 @@ exports.getStudentDashboard = async (req, res) => {
             task_id: a.Task.task_id,
             title: a.Task.title,
             deadline: a.Task.TaskTypes[0].end_time,
-            status: a.status
+            status: a.status,
+            parent_task_id: a.Task.parent_task_id,
+            sub_tasks: []
         }));
+
+        // Helper: Nesting for Dashboard
+        const buildDashboardTree = (flatTasks) => {
+            const taskMap = {};
+            const rootTasks = [];
+            flatTasks.forEach(t => { taskMap[t.task_id] = t; });
+            flatTasks.forEach(t => {
+                if (t.parent_task_id && taskMap[t.parent_task_id]) {
+                    taskMap[t.parent_task_id].sub_tasks.push(t);
+                } else {
+                    rootTasks.push(t);
+                }
+            });
+            return rootTasks;
+        };
+
+        const todaySchedule = buildDashboardTree(todayScheduleRaw);
+        const tomorrowActivity = buildDashboardTree(tomorrowActivityRaw);
+        const pendingProof = buildDashboardTree(pendingProofRaw);
 
         res.json({
             success: true,
@@ -2873,7 +2933,7 @@ exports.getPendingProofTasks = async (req, res) => {
         const tasksInfo = await TaskAssign.findAndCountAll({
             where: {
                 user_id: userId,
-                status: 'in_progress',
+                status: { [Op.in]: ['in_progress', 'accepted'] }, // Include accepted for floating/long
                 [Op.or]: [
                     { proof: null },
                     { proof: '' }
@@ -2907,18 +2967,28 @@ exports.getPendingProofTasks = async (req, res) => {
             return `${year}-${month}-${day}`;
         };
 
-        // Filter: 1. Already started, 2. Within 6 working hours of end time (for non-students)
+        // Filter: 
+        // 1. Regular tasks: status must be 'in_progress' and current time >= start time.
+        // 2. Background tasks (Floating/Long): Status can be 'accepted' or 'in_progress'.
         const filteredTasks = tasksInfo.rows.filter(a => {
             const tt = a.Task.TaskTypes && a.Task.TaskTypes[0];
             if (!tt) return false;
             
+            const isBackgroundTask = tt.task_name === 'Floating Task' || tt.task_name === 'Long Task' || tt.task_name === 'Date-Only / Long Task';
+            
+            // Background tasks show immediately once accepted/started
+            if (isBackgroundTask) return true;
+
+            // Regular tasks logic:
+            if (a.status !== 'in_progress') return false;
+
             const datePart = toLocalISO(tt.start_date);
             const startDateTime = new Date(`${datePart}T${tt.start_time}`);
             
-            // Rule 1: Must have started
+            // Must have started
             if (startDateTime > localNow) return false;
 
-            // Rule 2: Non-students have a 6-hour working-hour deadline
+            // Non-students have a 6-hour working-hour deadline for regular tasks
             if (req.userRole !== 'student') {
                 const endDatePart = toLocalISO(tt.end_date || tt.start_date);
                 const endDateTime = new Date(`${endDatePart}T${tt.end_time || '16:30:00'}`);
@@ -4095,11 +4165,11 @@ exports.getDailyTasks = async (req, res) => {
         const dateString = getLocalDateString(targetDate);
 
         // 1. Fetch Directive Tasks (Assigned to the user)
-        // Including pending, accepted, rejected (as requested "return the task that pending for approval or reject")
-        const directives = await TaskAssign.findAll({
+        // Including pending, accepted, rejected
+        const directAssignments = await TaskAssign.findAll({
             where: {
                 user_id: userId,
-                status: { [Op.in]: ['pending', 'accepted', 'rejected'] }
+                status: { [Op.in]: ['pending', 'accepted', 'rejected', 'in_progress', 'completed'] }
             },
             include: [{
                 model: Task,
@@ -4107,26 +4177,16 @@ exports.getDailyTasks = async (req, res) => {
                     origin_type: 'directive',
                     is_deleted: false
                 },
-                include: [{
-                    model: TaskType,
-                    where: {
-                        [Op.or]: [
-                            { start_date: dateString },
-                            {
-                                [Op.and]: [
-                                    { start_date: { [Op.lte]: dateString } },
-                                    { end_date: { [Op.gte]: dateString } }
-                                ]
-                            }
-                        ]
-                    }
-                }]
+                include: [
+                    { model: TaskType, required: true },
+                    { model: Task, as: 'Parent', attributes: ['task_id', 'title'] }
+                ]
             }],
             order: [['id', 'DESC']]
         });
 
         // 2. Fetch Self-Log Tasks (Created by the user)
-        const selfLogs = await Task.findAll({
+        const selfLogsRaw = await Task.findAll({
             where: {
                 creator_id: userId,
                 origin_type: 'self-log',
@@ -4134,47 +4194,131 @@ exports.getDailyTasks = async (req, res) => {
             },
             include: [{
                 model: TaskType,
-                where: {
-                    [Op.or]: [
-                        { start_date: dateString },
-                        {
-                            [Op.and]: [
-                                { start_date: { [Op.lte]: dateString } },
-                                { end_date: { [Op.gte]: dateString } }
-                            ]
-                        }
-                    ]
-                }
+                required: true
             }],
             order: [['task_id', 'DESC']]
         });
 
+        const directives = [];
+        const floatingTasks = [];
+        const selfLogs = [];
+
+        // Sorting & Persistence Logic
+        const processTask = (t, status, assignmentId = null) => {
+            const tt = t.TaskTypes?.[0];
+            if (!tt) return;
+
+            const isFloating = tt.task_name === 'Floating Task';
+            const startDateStr = getLocalDateString(tt.start_date);
+            const endDateStr = getLocalDateString(tt.end_date || tt.start_date);
+
+            // Visibility Logic for Floating/Long Tasks
+            let shouldShow = false;
+            if (isFloating) {
+                if (status === 'completed') {
+                    // Completed floating tasks only show on the completion day (or start day if we don't have completed_at)
+                    // For now, let's say they only show on the specific target date if it perfectly matches the completion date context.
+                    // Actually, simple rule: if completed, only show if targetDate == startDate (as a record).
+                    shouldShow = (dateString >= startDateStr && dateString <= endDateStr);
+                    // But if it's completed, we usually only want it to appear once as a finished record.
+                    // Let's refine: if completed, only show on the day it was supposed to be done.
+                    if (status === 'completed' && dateString !== startDateStr) shouldShow = false; 
+                } else {
+                    // Not completed: show every day in range
+                    shouldShow = (dateString >= startDateStr && dateString <= endDateStr);
+                }
+            } else {
+                // Regular tasks only show on their specific day or range
+                shouldShow = (dateString >= startDateStr && dateString <= endDateStr);
+            }
+
+            if (shouldShow) {
+                const formatted = {
+                    task_id: t.task_id,
+                    assignment_id: assignmentId,
+                    title: t.title,
+                    description: t.description,
+                    category: t.category,
+                    priority: t.priority,
+                    status: status,
+                    is_paused: t.is_paused,
+                    is_document: t.is_document,
+                    is_mandatory: t.is_mandatory,
+                    is_package: t.is_package,
+                    parent_task_id: t.parent_task_id,
+                    parent_title: t.Parent?.title,
+                    venue_id: tt.venue_id,
+                    start_date: startDateStr,
+                    end_date: endDateStr,
+                    start_time: tt.start_time,
+                    end_time: tt.end_time,
+                    time_quota_hours: tt.time_quota_hours,
+                    max_acceptances: tt.max_acceptances,
+                    sequence_order: t.sequence_order || 0,
+                    task_name: tt.task_name,
+                    sub_tasks: [] 
+                };
+
+                if (isFloating) floatingTasks.push(formatted);
+                else directives.push(formatted);
+            }
+        };
+
+        directAssignments.forEach(a => processTask(a.Task, a.status, a.id));
+        
+        // Self logs are always 'Active' unless we add assignment status for them too
+        selfLogsRaw.forEach(s => {
+            const tt = s.TaskTypes?.[0];
+            if (!tt) return;
+            const startDateStr = getLocalDateString(tt.start_date);
+            const endDateStr = getLocalDateString(tt.end_date || tt.start_date);
+            if (dateString >= startDateStr && dateString <= endDateStr) {
+                selfLogs.push({
+                    task_id: s.task_id,
+                    title: s.title,
+                    status: 'Active',
+                    category: s.category,
+                    priority: s.priority,
+                    time: {
+                        start_time: tt.start_time,
+                        end_time: tt.end_time,
+                        recurrence: tt.recurrence,
+                        task_name: tt.task_name
+                    }
+                });
+            }
+        });
+
+        // 3. Nest Sub-tasks under Parents
+        const buildTaskTree = (flatTasks) => {
+            const taskMap = {};
+            const rootTasks = [];
+
+            flatTasks.forEach(task => {
+                taskMap[task.task_id] = task;
+            });
+
+            flatTasks.forEach(task => {
+                if (task.parent_task_id && taskMap[task.parent_task_id]) {
+                    taskMap[task.parent_task_id].sub_tasks.push(task);
+                    // Sort sub-tasks by sequence_order
+                    taskMap[task.parent_task_id].sub_tasks.sort((a, b) => a.sequence_order - b.sequence_order);
+                } else {
+                    rootTasks.push(task);
+                }
+            });
+
+            return rootTasks;
+        };
+
+        const nestedDirectives = buildTaskTree(directives);
+        const nestedFloating = buildTaskTree(floatingTasks);
+
         res.json({
             date: dateString,
-            directives: directives.map(d => ({
-                task_id: d.Task.task_id,
-                title: d.Task.title,
-                status: d.status,
-                category: d.Task.category,
-                priority: d.Task.priority,
-                time: d.Task.TaskTypes?.[0] ? {
-                    start_time: d.Task.TaskTypes[0].start_time,
-                    end_time: d.Task.TaskTypes[0].end_time,
-                    recurrence: d.Task.TaskTypes[0].recurrence
-                } : null
-            })),
-            self_logs: selfLogs.map(s => ({
-                task_id: s.task_id,
-                title: s.title,
-                status: 'Active', // Self-logs are usually always active if not deleted
-                category: s.category,
-                priority: s.priority,
-                time: s.TaskTypes?.[0] ? {
-                    start_time: s.TaskTypes[0].start_time,
-                    end_time: s.TaskTypes[0].end_time,
-                    recurrence: s.TaskTypes[0].recurrence
-                } : null
-            }))
+            directives: nestedDirectives,
+            floating_tasks: nestedFloating,
+            self_logs: selfLogs
         });
 
     } catch (error) {
