@@ -306,7 +306,7 @@ exports.verifyOTP = async (req, res) => {
             let proof = null;
             if (req.file) {
                 // If it's a local file upload (via multer)
-                proof = `${req.protocol}://${req.get('host')}/uploads/${req.file.filename}`;
+                proof = `/uploads/submissions/${req.file.filename}`;
             } else if (req.body.proof) {
                 // If proof URL search passed as string
                 proof = req.body.proof;

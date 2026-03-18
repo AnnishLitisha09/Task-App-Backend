@@ -855,10 +855,8 @@ exports.submitTaskProof = async (req, res) => {
         let { proof, obtained_score, penalty: body_penalty } = req.body || {};
 
         if (req.file) {
-            const localIP = getLocalIP();
-            const port = process.env.PORT || 3002;
-            // Use network IP to ensure other devices can access the file
-            proof = `${req.protocol}://${localIP}:${port}/uploads/submissions/${req.file.filename}`;
+            // Use relative path to ensure consistency and avoid IP-based fetching issues
+            proof = `/uploads/submissions/${req.file.filename}`;
         }
 
         // Find assignment
@@ -1750,11 +1748,8 @@ exports.createUnifiedTask = async (req, res) => {
                             let finalChildStatus = childAutoAccept ? 'accepted' : 'pending';
                             let finalChildAcceptedAt = childAutoAccept ? new Date() : null;
 
-                            // Determine if sub-task should be queued (sequential logic for non-students)
-                            const isStudent = roleMap[sid] === 'student';
-
-                            // SEQUENTIAL LOGIC: Only the first sub-task is active/pending; others are 'queued' for non-students
-                            if (childTask.sequence_order > 1 && !isStudent) {
+                            // SEQUENTIAL LOGIC: Only the first sub-task is active/pending; others are 'queued'
+                            if (childTask.sequence_order > 1) {
                                 finalChildStatus = 'queued';
                                 finalChildAcceptedAt = null;
                             }
@@ -2109,7 +2104,7 @@ exports.finalizeTaskAssignments = async (approvalRequest, transaction = null) =>
                         const childAutoAccept = (sub.is_mandatory && (!isChildFaculty || childFacultyAutoAccept)) || isChildStaff || childFacultyAutoAccept;
 
                         let finalChildStatus = childAutoAccept ? 'accepted' : 'pending';
-                        if (childTask.sequence_order > 1 && roleMap[sid] !== 'student') {
+                        if (childTask.sequence_order > 1) {
                             finalChildStatus = 'queued';
                         }
 
