@@ -74,7 +74,7 @@ router.put('/:id', verifyToken, taskController.updateTask);
 router.put('/:id/approve', verifyToken, taskController.approveTask);
 router.delete('/:id', verifyToken, taskController.deleteTask);
 router.delete('/assignment/:id', verifyToken, taskController.deleteAssignment);
-
+router.put('/:id/reschedule', verifyToken, taskController.rescheduleTask); // NEW
 
 // Task Assignment
 router.post('/:id/assign/bulk', verifyToken, upload.single('file'), taskAssignment.bulkAssignByExcel);

@@ -83,24 +83,32 @@ const getTaskButtonState = (task, userId, userRole) => {
              return { type: 'verify_proof', label: 'Review Submissions', action: 'verify' };
         }
 
-        // 5. Proof Submission Step (Assignee)
+        // 5. Combined Logic (Proof + End Activity)
         if (assignment && task.is_document) {
             const s = assignment.status?.toLowerCase();
-            if (s === 'in_progress' || (s === 'accepted' && uRole === 'student')) {
+            if (['in_progress', 'started', 'in progress', 'ongoing'].includes(s)) {
+                return { type: 'activity', label: 'submit proof and end activity', action: 'submit_proof' }; // Action 'submit_proof' will lead to the same flow
+            }
+        }
+
+        // 6. Proof Submission Step (Assignee - Just accepted but student)
+        if (assignment && task.is_document) {
+            const s = assignment.status?.toLowerCase();
+            if (s === 'accepted' && uRole === 'student') {
                 return { type: 'pending_proof', label: 'Submit Proof', action: 'submit_proof' };
             }
         }
 
-        // 6. OTP Generation (For Creator/Faculty if task is in_progress and requires OTP)
+        // 7. OTP Generation (For Creator/Faculty if task is in_progress and requires OTP)
         const requiresOtp = task.TaskPackageClosures?.some(c => c.TaskClosure?.name === 'otp');
         if (requiresOtp && (isCreator || isAssignedFaculty)) {
             const hasInProgress = assignments.some(a => a.status === 'in_progress' || a.status === 'accepted');
             if (hasInProgress) {
-                return { type: 'generate_otp', label: 'Generate OTP', action: 'otp' };
+                return { type: 'generate_otp', label: 'generate otp', action: 'otp' };
             }
         }
 
-        // 7. Standard Activity Lifecycle
+        // 8. Standard Activity Lifecycle
         if (assignment) {
             const status = assignment.status?.toLowerCase();
             
