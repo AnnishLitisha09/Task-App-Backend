@@ -537,6 +537,9 @@ exports.deleteUser = async (req, res) => {
         await Faculty.destroy({ where: { user_id: id }, transaction: t });
         await Staff.destroy({ where: { user_id: id }, transaction: t });
         await RoleUser.destroy({ where: { user_id: id }, transaction: t });
+        const { Task } = require('../models');
+        await Task.update({ approver_id: null }, { where: { approver_id: id }, transaction: t });
+
         await User.destroy({ where: { user_id: id }, transaction: t });
 
         await t.commit();
@@ -590,6 +593,76 @@ exports.assignRole = async (req, res) => {
     } catch (error) {
         await t.rollback();
         res.status(500).json({ message: error.message });
+    }
+};
+
+/**
+ * Dedicated API to assign a user as HOD to a specific department
+ */
+exports.assignHOD = async (req, res) => {
+    const t = await User.sequelize.transaction();
+    try {
+        const { user_id, department_id } = req.body;
+
+        if (!user_id || !department_id) {
+            await t.rollback();
+            return res.status(400).json({ message: 'user_id and department_id are required' });
+        }
+
+        // 1. Verify User exists
+        const user = await User.findByPk(user_id);
+        if (!user) {
+            await t.rollback();
+            return res.status(404).json({ message: 'User not found' });
+        }
+
+        // 2. Verify Department exists
+        const dept = await Department.findByPk(department_id);
+        if (!dept) {
+            await t.rollback();
+            return res.status(404).json({ message: 'Department not found' });
+        }
+
+        // 3. Find HOD role
+        const role = await Role.findOne({ where: { user_role: 'HOD' } });
+        if (!role) {
+            await t.rollback();
+            return res.status(404).json({ message: "Role 'HOD' not found in system" });
+        }
+
+        // 4. Remove any existing HOD for this department (Enforce single HOD)
+        await RoleAssignment.destroy({
+            where: {
+                role_id: role.role_id,
+                department_id: department_id
+            },
+            transaction: t
+        });
+
+        // 5. Create new Role Assignment
+        const assignment = await RoleAssignment.create({
+            user_id,
+            role_id: role.role_id,
+            department_id,
+            created_at: new Date(),
+            updated_at: new Date()
+        }, { transaction: t });
+
+        await t.commit();
+        res.status(201).json({
+            success: true,
+            message: `User assigned as HOD for department '${dept.name}' successfully`,
+            data: {
+                user_id,
+                department_id,
+                assignment_id: assignment.id
+            }
+        });
+
+    } catch (error) {
+        if (t) await t.rollback();
+        console.error('AssignHOD Error:', error);
+        res.status(500).json({ success: false, message: error.message });
     }
 };
 

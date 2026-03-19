@@ -72,12 +72,17 @@ module.exports = (sequelize, DataTypes) => {
     updated_at: {
       type: DataTypes.DATE,
       defaultValue: DataTypes.NOW
+    },
+    deleted_at: {
+      type: DataTypes.DATE,
+      allowNull: true
     }
   }, {
     sequelize,
     modelName: 'TaskType',
     tableName: 'task_types',
     timestamps: true,
+    paranoid: true,
     underscored: true
   });
 

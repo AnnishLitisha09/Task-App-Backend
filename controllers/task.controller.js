@@ -2,7 +2,7 @@ const { Task, TaskAssign, TaskType, TaskPackageClosure, TaskClosure, User, Stude
 const XLSX = require('xlsx');
 const os = require('os');
 const { canAssignTo } = require('./task.assignment');
-const { checkTaskOverlap, isWithinWorkHours, getWorkingMinutes } = require('../utils/task-utils');
+const { checkTaskOverlap, isWithinWorkHours, getWorkingMinutes, toISTDateStr, isOccurrence, adjustLongTaskStatus } = require('../utils/task-utils');
 const { MAX_DAILY_TASKS, PRIORITY_WEIGHTS } = require('../config/constants');
 
 
@@ -39,7 +39,141 @@ const canCreateTask = (userRole) => {
     return ['admin', 'role-user', 'faculty', 'student', 'staff'].includes(userRole?.toLowerCase());
 };
 
-// Helper: Validate task type specific fields
+/**
+ * Helper: Determine the primary UI action button for a task based on user context.
+ * Returns { type: string, label: string, action: string } or null.
+ */
+const getTaskButtonState = (task, userId, userRole) => {
+    try {
+        const now = new Date();
+        const uId = userId ? String(userId) : null;
+        const uRole = userRole?.toLowerCase() || '';
+        
+        // Ensure associations exist
+        const assignments = task.TaskAssigns || [];
+        const taskTypes = task.TaskTypes || [];
+        const escalations = task.TaskEscalations || [];
+        const taskType = taskTypes[0];
+
+        // 1. Find the current user's assignment
+        const assignment = assignments.find(a => String(a.user_id) === uId);
+        
+        // Role Checks
+        const isManager = ['admin', 'role-user', 'faculty', 'hod', 'principal', 'dean', 'incharge', 'registrar', 'director', 'staff'].includes(uRole);
+        const isCreator = String(task.creator_id) === uId;
+        const isAssignedFaculty = task.is_faculty && String(task.faculty_id) === uId;
+
+        // 2. Acceptance Step (Request)
+        if (assignment && (['pending', 'review', 'Review'].includes(assignment.status))) {
+            return { type: 'request', label: 'Accept / Reject', action: 'acceptance' };
+        }
+
+        // 3. Escalation / Directive Step
+        const hasActiveEscalation = escalations.some(e => ['pending', 'active'].includes(e.status)) || task.is_escalate;
+        if (hasActiveEscalation || task.status?.toLowerCase() === 'escalated') {
+            // Show to managers, creators, or faculty supervisor
+            if (isManager || isCreator || isAssignedFaculty) {
+                return { type: 'escalated', label: 'Execute Directive', action: 'execute' };
+            }
+        }
+
+        // 4. Verification Step (Review Submissions)
+        const hasProofsToVerify = assignments.some(a => (a.status === 'completed' || a.status === 'Review') && a.proof);
+        if (hasProofsToVerify && (isManager || isCreator || isAssignedFaculty)) {
+             return { type: 'verify_proof', label: 'Review Submissions', action: 'verify' };
+        }
+
+        // 5. Proof Submission Step (Assignee)
+        if (assignment && task.is_document) {
+            const s = assignment.status?.toLowerCase();
+            if (s === 'in_progress' || (s === 'accepted' && uRole === 'student')) {
+                return { type: 'pending_proof', label: 'Submit Proof', action: 'submit_proof' };
+            }
+        }
+
+        // 6. OTP Generation (For Creator/Faculty if task is in_progress and requires OTP)
+        const requiresOtp = task.TaskPackageClosures?.some(c => c.TaskClosure?.name === 'otp');
+        if (requiresOtp && (isCreator || isAssignedFaculty)) {
+            const hasInProgress = assignments.some(a => a.status === 'in_progress' || a.status === 'accepted');
+            if (hasInProgress) {
+                return { type: 'generate_otp', label: 'Generate OTP', action: 'otp' };
+            }
+        }
+
+        // 7. Standard Activity Lifecycle
+        if (assignment) {
+            const status = assignment.status?.toLowerCase();
+            
+            if (status === 'accepted') {
+                if (taskType) {
+                    const startDate = taskType.start_date ? new Date(taskType.start_date) : null;
+                    const startTime = taskType.start_time || '00:00:00';
+                    const endDate = taskType.end_date ? new Date(taskType.end_date) : null;
+                    const endTime = taskType.end_time || '23:59:59';
+
+                    let startDateTime = null;
+                    if (startDate) {
+                        const dateStr = startDate.toISOString().split('T')[0];
+                        startDateTime = new Date(`${dateStr}T${startTime}`);
+                    }
+
+                    let endDateTime = null;
+                    if (endDate) {
+                        const dateStr = endDate.toISOString().split('T')[0];
+                        endDateTime = new Date(`${dateStr}T${endTime}`);
+                    }
+
+                    if (startDateTime && now < startDateTime) {
+                        return { type: 'activity', label: 'Starts Soon', action: 'too_early' };
+                    }
+                    if (endDateTime && now > endDateTime) {
+                        return { type: 'activity', label: 'missed start time', action: 'missed' };
+                    }
+                }
+                return { type: 'activity', label: 'start activity', action: 'start' };
+            }
+
+            if (['in_progress', 'started', 'in progress', 'ongoing'].includes(status)) {
+                if (task.is_pause_allowed) {
+                    if (assignment.is_paused) {
+                        return { type: 'activity', label: 'Resume / End Activity', action: 'resume' };
+                    } else {
+                        return { type: 'activity', label: 'Pause / End Activity', action: 'pause' };
+                    }
+                }
+                return { type: 'activity', label: 'end activity', action: 'end' };
+            }
+
+            if (['completed', 'closed', 'finished'].includes(status)) {
+                return { type: 'activity', label: 'completed', action: 'completed' };
+            }
+        }
+
+        // 8. Management Level (Non-assignee Manager/Creator)
+        if (!assignment && (isManager || isCreator)) {
+            let isExpired = false;
+            if (taskType) {
+                const endDate = taskType.end_date ? new Date(taskType.end_date) : null;
+                const endTime = taskType.end_time || '23:59:59';
+                if (endDate) {
+                    const dateStr = endDate.toISOString().split('T')[0];
+                    const endDateTime = new Date(`${dateStr}T${endTime}`);
+                    isExpired = now > endDateTime;
+                }
+            }
+            return { 
+                type: 'manage', 
+                label: 'Manage Task', 
+                action: isExpired ? 'reschedule' : 'self_assign' 
+            };
+        }
+    } catch (e) {
+        console.error('CRITICAL: Error in getTaskButtonState:', e);
+    }
+
+    return null;
+};
+
 const validateTaskType = (taskTypeData, priority = 'low') => {
     const { task_name, start_date, end_date, start_time, end_time, recurrence, time_quota_hours, venue_id } = taskTypeData;
 
@@ -147,11 +281,11 @@ const normalizeTaskPayload = async (body) => {
             const oldId = parseInt(payload.faculty_id);
             payload.faculty_id = facultyRecord.id; // Resolve to PK for Task table
             payload.is_faculty = true; // Auto-infer
-            
+
             // Ensure correct user_id is in assignees, and remove the PK if it was mistakenly added
             if (facultyRecord.user_id) {
                 const fUserId = facultyRecord.user_id * 1;
-                
+
                 // If the oldId was a PK and was in assignee_ids, remove it
                 if (oldId === facultyRecord.id) {
                     payload.assignee_ids = payload.assignee_ids.filter(id => id !== oldId);
@@ -174,10 +308,10 @@ const normalizeTaskPayload = async (body) => {
         if (staffRecord) {
             const oldId = parseInt(payload.staff_id);
             payload.staff_id = staffRecord.id; // Resolve to PK
-            
+
             if (staffRecord.user_id) {
                 const sUserId = staffRecord.user_id * 1;
-                
+
                 // Remove PK if it was in assignee_ids
                 if (oldId === staffRecord.id) {
                     payload.assignee_ids = payload.assignee_ids.filter(id => id !== oldId);
@@ -261,6 +395,7 @@ exports.createTask = async (req, res) => {
         }
 
         // Create Task
+        const isLongTaskType = ['Date-Only / Long Task', 'Long Task'].includes(task_type_data.task_name);
         const task = await Task.create({
             title,
             description,
@@ -268,7 +403,7 @@ exports.createTask = async (req, res) => {
             priority,
             is_package: is_package || false,
             venue_id: venue_id || null,
-            is_pause_allowed: is_pause_allowed || false,
+            is_pause_allowed: isLongTaskType ? true : (is_pause_allowed || false), // Long Tasks always allow pause
             score: score || 0,
             penalty_per_hour: penalty_per_hour || 0,
             is_document: is_document || false,
@@ -392,9 +527,9 @@ exports.getExhaustiveTaskDetails = async (req, res) => {
         const task = await Task.findOne({
             where: { task_id: id, is_deleted: false },
             include: [
-                { 
-                    model: User, 
-                    as: 'Creator', 
+                {
+                    model: User,
+                    as: 'Creator',
                     attributes: ['user_id', 'role'],
                     include: [
                         { model: Student, attributes: ['name', 'year', 'department_id'], include: [{ model: Department, attributes: ['name'] }] },
@@ -403,9 +538,9 @@ exports.getExhaustiveTaskDetails = async (req, res) => {
                         { model: RoleUser, attributes: ['name'] }
                     ]
                 },
-                { 
-                    model: User, 
-                    as: 'Approver', 
+                {
+                    model: User,
+                    as: 'Approver',
                     attributes: ['user_id', 'role'],
                     include: [
                         { model: Student, attributes: ['name', 'year', 'department_id'], include: [{ model: Department, attributes: ['name'] }] },
@@ -415,23 +550,23 @@ exports.getExhaustiveTaskDetails = async (req, res) => {
                     ]
                 },
                 { model: TaskType },
-                { 
-                    model: Venue, 
+                {
+                    model: Venue,
                     attributes: ['venue_id', 'name', 'location', 'venue_type'],
                     include: [{
                         model: RoleAssignment,
                         include: [
-                            { 
-                                model: User, 
+                            {
+                                model: User,
                                 attributes: ['user_id', 'role'],
                                 include: [
                                     { model: Student, attributes: ['name'] },
                                     { model: Faculty, attributes: ['name'] },
                                     { model: Staff, attributes: ['name'] }
                                 ]
-                            }, 
-                            { 
-                                model: Role, 
+                            },
+                            {
+                                model: Role,
                                 attributes: ['user_role'],
                                 where: { user_role: 'INCHARGE' }
                             }
@@ -445,8 +580,8 @@ exports.getExhaustiveTaskDetails = async (req, res) => {
                 },
                 {
                     model: TaskAssign,
-                    include: [{ 
-                        model: User, 
+                    include: [{
+                        model: User,
                         attributes: ['user_id', 'role'],
                         include: [
                             { model: Student, attributes: ['name', 'year', 'department_id'], include: [{ model: Department, attributes: ['name'] }] },
@@ -458,8 +593,8 @@ exports.getExhaustiveTaskDetails = async (req, res) => {
                 },
                 {
                     model: TaskLog,
-                    include: [{ 
-                        model: User, 
+                    include: [{
+                        model: User,
                         attributes: ['user_id', 'role'],
                         include: [
                             { model: Student, attributes: ['name'] },
@@ -473,11 +608,11 @@ exports.getExhaustiveTaskDetails = async (req, res) => {
                 {
                     model: TaskEscalation,
                     include: [
-                        { 
+                        {
                             model: User, as: 'Creator', attributes: ['user_id', 'role'],
                             include: [{ model: Student, attributes: ['name'] }, { model: Faculty, attributes: ['name'] }, { model: Staff, attributes: ['name'] }, { model: RoleUser, attributes: ['name'] }]
                         },
-                        { 
+                        {
                             model: User, as: 'RejectedUser', attributes: ['user_id', 'role'],
                             include: [{ model: Student, attributes: ['name'] }, { model: Faculty, attributes: ['name'] }, { model: Staff, attributes: ['name'] }, { model: RoleUser, attributes: ['name'] }]
                         }
@@ -491,8 +626,8 @@ exports.getExhaustiveTaskDetails = async (req, res) => {
                         { model: TaskType },
                         {
                             model: TaskAssign,
-                            include: [{ 
-                                model: User, 
+                            include: [{
+                                model: User,
                                 attributes: ['user_id', 'role'],
                                 include: [
                                     { model: Student, attributes: ['name'] },
@@ -530,7 +665,7 @@ exports.getExhaustiveTaskDetails = async (req, res) => {
             if (!user) return null;
             const profile = user.Student || user.Faculty || user.Staff || user.RoleUser || {};
             const dept = (user.Student?.Department || user.Faculty?.Department)?.name || 'N/A';
-            
+
             return {
                 user_id: user.user_id,
                 role: user.role,
@@ -551,16 +686,16 @@ exports.getExhaustiveTaskDetails = async (req, res) => {
         };
 
         const assignments_list = (task.TaskAssigns || []).map(a => ({
-                assignment_id: a.id,
-                assignee: formatUserDetailed(a.User),
-                status: a.status,
-                reason: a.reason,
-                proof_url: a.proof,
-                accepted_at: a.accepted_at,
-                rejected_at: a.rejected_at,
-                submitted_time: a.submitted_time,
-                assigned_at: a.created_at
-            }));
+            assignment_id: a.id,
+            assignee: formatUserDetailed(a.User),
+            status: a.status,
+            reason: a.reason,
+            proof_url: a.proof,
+            accepted_at: a.accepted_at,
+            rejected_at: a.rejected_at,
+            submitted_time: a.submitted_time,
+            assigned_at: a.created_at
+        }));
 
         // Group assignees
         const assignee_groups = {
@@ -613,11 +748,11 @@ exports.getExhaustiveTaskDetails = async (req, res) => {
 
         const accepted_count = assignments_list.filter(a => a.accepted_at).length;
         if (accepted_count > 0) {
-            const firstAccepted = assignments_list.filter(a => a.accepted_at).sort((a,b) => new Date(a.accepted_at) - new Date(b.accepted_at))[0];
-            timeline.push({ 
-                event: 'Task Accepted', 
-                timestamp: firstAccepted.accepted_at, 
-                details: `${accepted_count} user(s) have accepted this task.` 
+            const firstAccepted = assignments_list.filter(a => a.accepted_at).sort((a, b) => new Date(a.accepted_at) - new Date(b.accepted_at))[0];
+            timeline.push({
+                event: 'Task Accepted',
+                timestamp: firstAccepted.accepted_at,
+                details: `${accepted_count} user(s) have accepted this task.`
             });
         }
 
@@ -634,7 +769,7 @@ exports.getExhaustiveTaskDetails = async (req, res) => {
         });
 
         // Sort timeline
-        timeline.sort((a,b) => new Date(a.timestamp) - new Date(b.timestamp));
+        timeline.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
 
         const formattedTask = {
             task_info: {
@@ -650,7 +785,8 @@ exports.getExhaustiveTaskDetails = async (req, res) => {
                 score: task.score,
                 penalty_per_hour: task.penalty_per_hour,
                 created_at: task.created_at,
-                updated_at: task.updated_at
+                updated_at: task.updated_at,
+                is_escalate: task.is_escalate
             },
             summary_stats,
             timeline,
@@ -700,7 +836,8 @@ exports.getExhaustiveTaskDetails = async (req, res) => {
                     assignee: formatUserSimple(a.User),
                     status: a.status
                 }))
-            }))
+            })),
+            action_button: getTaskButtonState(task, req.userId, req.userRole)
         };
 
         res.json(formattedTask);
@@ -774,10 +911,10 @@ exports.approveTask = async (req, res) => {
         const task = await Task.findByPk(id);
         if (!task) return res.status(404).json({ message: 'Task not found' });
 
-        await task.update({ 
+        await task.update({
             is_approved: is_approved,
             status: is_approved ? 'Active' : 'Review',
-            approver_id: req.userId 
+            approver_id: req.userId
         });
 
         await TaskLog.create({
@@ -856,7 +993,7 @@ exports.submitTaskProof = async (req, res) => {
 
         if (req.file) {
             // Use relative path to ensure consistency and avoid IP-based fetching issues
-            proof = `/uploads/submissions/${req.file.filename}`;
+            proof = `uploads/submissions/${req.file.filename}`;
         }
 
         // Find assignment
@@ -890,7 +1027,7 @@ exports.submitTaskProof = async (req, res) => {
             const taskEndDate = new Date(taskType.end_date || taskType.start_date);
             const taskEndTime = taskType.end_time || '16:30:00';
             const endDateTime = new Date(`${taskEndDate.toISOString().split('T')[0]}T${taskEndTime}`);
-            
+
             const now = new Date();
             const istOffset = 330 * 60 * 1000;
             const localNow = new Date(now.getTime() + (now.getTimezoneOffset() * 60000) + istOffset);
@@ -940,7 +1077,7 @@ exports.submitTaskProof = async (req, res) => {
             penalty_applied: penalty
         });
 
-// Resolve any existing escalations for this user/task
+        // Resolve any existing escalations for this user/task
         const { resolveTaskEscalations } = require('../utils/task-utils');
         await resolveTaskEscalations(id, userId);
         // Update User Profile (Student, Faculty, or RoleUser)
@@ -982,6 +1119,9 @@ exports.submitTaskProof = async (req, res) => {
             penalty_applied: penalty,
             status: 'completed'
         });
+
+        // Rule: After completion, check if any paused long tasks can be resumed
+        await adjustLongTaskStatus(userId);
 
         // Rule 8 & 11: Automatic Resume & Notifications
         (async () => {
@@ -1181,7 +1321,7 @@ exports.manualEscalateTask = async (req, res) => {
             return res.status(403).json({ message: 'Only the creator or an admin can manually escalate this task' });
         }
 
-        await task.update({ is_escalate: true });
+        await task.update({ is_escalate: true, status: 'Active' });
 
         // Get the report to return immediately
         const pendingAssignments = await TaskAssign.findAll({
@@ -1352,7 +1492,7 @@ exports.createUnifiedTask = async (req, res) => {
         // Ensure payload.assignee_ids is an array and stays in sync
         if (!payload.assignee_ids) payload.assignee_ids = [];
         if (!Array.isArray(payload.assignee_ids)) payload.assignee_ids = [payload.assignee_ids];
-        
+
         let finalAssigneeIds = [...payload.assignee_ids];
 
         if (assign_to_groups && Array.isArray(assign_to_groups)) {
@@ -1407,7 +1547,7 @@ exports.createUnifiedTask = async (req, res) => {
                 for (const row of data) {
                     const { email, user_id, name } = row;
                     let excelUserId = user_id;
-                    
+
                     if (!excelUserId && email) {
                         const profiles = await Promise.all([
                             Student.findOne({ where: { email } }),
@@ -1564,7 +1704,7 @@ exports.createUnifiedTask = async (req, res) => {
                     const assigneeRole = roleMap[assigneeId];
                     const isStaff = assigneeRole === 'staff';
                     const isFacultySupervisor = (assigneeId === facultyUserId);
-                    
+
                     // Faculty members (even if they are supervisors) should NOT be auto-accepted 
                     // unless they are explicitly the creator of the task.
                     const isFacultyAssignee = assigneeRole === 'faculty';
@@ -1742,7 +1882,7 @@ exports.createUnifiedTask = async (req, res) => {
                             const isChildStaff = roleMap[sid] === 'staff';
                             const isChildFaculty = roleMap[sid] === 'faculty';
                             const childFacultyAutoAccept = isChildFaculty ? (sid === userId) : false;
-                            
+
                             const childAutoAccept = (sub.is_mandatory && (!isChildFaculty || childFacultyAutoAccept)) || isChildStaff || childFacultyAutoAccept;
 
                             let finalChildStatus = childAutoAccept ? 'accepted' : 'pending';
@@ -1890,7 +2030,7 @@ exports.createUnifiedTask = async (req, res) => {
                     for (const ra of inchargers) {
                         if (!ra.user_id) continue;
                         const isAlreadyAssignedToMain = finalAssigneeIds.includes(ra.user_id * 1);
-                        
+
                         // If it's the main task and they are already assigned, we don't need to add them again as pending
                         if (!needsSeparatePermission && isAlreadyAssignedToMain) continue;
 
@@ -2060,7 +2200,7 @@ exports.finalizeTaskAssignments = async (approvalRequest, transaction = null) =>
             ...(payload.assignee_ids || []),
             ...(payload.sub_tasks?.flatMap(st => [...(st.assignee_ids || []), st.assignee_id ? parseInt(st.assignee_id) : null]) || []).filter(id => id !== null)
         ])];
-        
+
         const userProfiles = await Promise.all([
             Student.findAll({ where: { user_id: allUserIds }, attributes: ['user_id'], transaction: t }),
             Faculty.findAll({ where: { user_id: allUserIds }, attributes: ['user_id'], transaction: t }),
@@ -2554,10 +2694,10 @@ exports.getTaskDetailsById = async (req, res) => {
             rejection_reason: task.rejection_reason,
             is_approved: task.is_approved,
             created_at: task.created_at,
-            
+
             creator: creator,
             approver: approver,
-            
+
             // Timing and Location (From TaskType)
             type_details: task.TaskTypes && task.TaskTypes.length > 0 ? {
                 task_name: task.TaskTypes[0].task_name,
@@ -2635,10 +2775,9 @@ exports.getUserTaskStats = async (req, res) => {
             profile = await RoleUser.findOne({ where: { user_id: userId } });
         }
 
-        const profileTotalScore = profile ? parseFloat(profile.total_score || 0) : 0;
         const profileNetScore = profile ? parseFloat(profile.score || 0) : 0;
-        // Fix: Use Math.max between profile.penalty and (total - net) to catch hidden penalties
-        const profileTotalPenalty = profile ? Math.max(parseFloat(profile.penalty || 0), profileTotalScore - profileNetScore) : 0;
+        const profileTotalPenalty = profile ? parseFloat(profile.penalty || 0) : 0;
+        const profileTotalScore = profileNetScore + profileTotalPenalty; // Gross = Net + Penalty
 
         // Fetch all assignments for the user
         const assignments = await TaskAssign.findAll({
@@ -2796,13 +2935,13 @@ exports.getStudentDashboard = async (req, res) => {
         // 3. Fetch Task Statistics
         const allAssignments = await TaskAssign.findAll({
             where: { user_id: userId },
-            include: [{ 
-                model: Task, 
-                required: true, 
+            include: [{
+                model: Task,
+                required: true,
                 include: [
                     { model: TaskType },
                     { model: Task, as: 'Parent', attributes: ['task_id', 'title'] }
-                ] 
+                ]
             }]
         });
 
@@ -2968,9 +3107,9 @@ exports.getPendingProofTasks = async (req, res) => {
         const filteredTasks = tasksInfo.rows.filter(a => {
             const tt = a.Task.TaskTypes && a.Task.TaskTypes[0];
             if (!tt) return false;
-            
+
             const isBackgroundTask = tt.task_name === 'Floating Task' || tt.task_name === 'Long Task' || tt.task_name === 'Date-Only / Long Task';
-            
+
             // Background tasks show immediately once accepted/started
             if (isBackgroundTask) return true;
 
@@ -2979,7 +3118,7 @@ exports.getPendingProofTasks = async (req, res) => {
 
             const datePart = toLocalISO(tt.start_date);
             const startDateTime = new Date(`${datePart}T${tt.start_time}`);
-            
+
             // Must have started
             if (startDateTime > localNow) return false;
 
@@ -2987,7 +3126,7 @@ exports.getPendingProofTasks = async (req, res) => {
             if (req.userRole !== 'student') {
                 const endDatePart = toLocalISO(tt.end_date || tt.start_date);
                 const endDateTime = new Date(`${endDatePart}T${tt.end_time || '16:30:00'}`);
-                
+
                 if (localNow > endDateTime) {
                     const elapsedWorkingMins = getWorkingMinutes(endDateTime, localNow);
                     if (elapsedWorkingMins > 360) return false; // Hide if past 6 working hours
@@ -3131,7 +3270,7 @@ exports.getTasksAssignedTodayByUserId = async (req, res) => {
     try {
         const { userId } = req.params;
         const { Op } = require('sequelize');
-        
+
         const now = new Date();
         const todayStr = new Date(now.getTime() + (5.5 * 60 * 60 * 1000)).toISOString().split('T')[0];
 
@@ -3159,30 +3298,6 @@ exports.getTasksAssignedTodayByUserId = async (req, res) => {
                 ]
             }]
         });
-
-        // Helper for robust IST date string
-        const toISTDateStr = (d) => {
-            if (!d) return null;
-            return new Date(new Date(d).getTime() + (5.5 * 60 * 60 * 1000)).toISOString().split('T')[0];
-        };
-
-        const isOccurrence = (targetDateStr, tStart, tEnd, recurrence) => {
-            const startStr = toISTDateStr(tStart);
-            const endStr = toISTDateStr(tEnd);
-
-            if (targetDateStr < startStr) return false;
-            if (endStr && targetDateStr > endStr) return false;
-
-            if (recurrence === 'none' || !recurrence) return targetDateStr === startStr;
-            if (recurrence === 'daily') return true;
-
-            const targetDate = new Date(`${targetDateStr}T00:00:00`);
-            const startDate = new Date(`${startStr}T00:00:00`);
-
-            if (recurrence === 'weekly') return targetDate.getDay() === startDate.getDay();
-            if (recurrence === 'monthly') return targetDate.getDate() === startDate.getDate();
-            return false;
-        };
 
         const todayTasks = [];
         assignments.forEach(a => {
@@ -3237,7 +3352,7 @@ exports.deleteAssignment = async (req, res) => {
         }
 
         await assignment.destroy(); // Soft delete due to paranoid: true in model
-        
+
         await TaskLog.create({
             task_id: assignment.task_id,
             user_id: userId,
@@ -3687,9 +3802,8 @@ exports.getTaskDetail = async (req, res) => {
         // Check if user has permission to view this task
         const canView =
             userRole === 'admin' ||
-            task.creator_id === userId ||
-            task.TaskAssigns?.some(a => a.user_id === userId);
-
+            String(task.creator_id) === String(userId) ||
+            task.TaskAssigns?.some(a => String(a.user_id) === String(userId));
         if (!canView) {
             return res.status(403).json({ message: 'You do not have permission to view this task' });
         }
@@ -3882,7 +3996,10 @@ exports.getTaskDetail = async (req, res) => {
 
             // Timestamps
             created_at: task.created_at,
-            updated_at: task.updated_at
+            updated_at: task.updated_at,
+
+            // Action Button
+            action_button: getTaskButtonState(task, userId, userRole)
         };
 
         res.json(response);
@@ -4014,8 +4131,8 @@ exports.getTodaysApprovedSchedule = async (req, res) => {
                             recurrence: tt.recurrence
                         },
                         location: a.Task.Venue ? { name: a.Task.Venue.name, location: a.Task.Venue.location } : null,
-                        status: a.status
-                    });
+                        status: a.status,
+                        action_button: getTaskButtonState(a.Task, userId, req.userRole)                    });
                 }
             });
         });
@@ -4033,71 +4150,99 @@ exports.getTodaysApprovedSchedule = async (req, res) => {
     }
 };
 
-// Pause a task
+// Pause a task (only allowed when is_pause_allowed = true)
 exports.pauseTask = async (req, res) => {
     try {
-        const { id } = req.params;
+        const { id: taskId } = req.params;
         const userId = req.userId;
 
-        const task = await Task.findByPk(id);
-        if (!task || task.is_deleted) return res.status(404).json({ message: 'Task not found' });
-
-        if (!task.is_pause_allowed) {
-            return res.status(400).json({ message: 'Pausing is not allowed for this task' });
+        const task = await Task.findOne({ where: { task_id: taskId, is_deleted: false } });
+        if (!task) {
+            return res.status(404).json({ message: 'Task not found' });
         }
 
-        if (task.is_paused) return res.status(400).json({ message: 'Task is already paused' });
+        // Guard: only tasks that allow pausing can be paused
+        if (!task.is_pause_allowed) {
+            return res.status(403).json({ message: 'This task does not allow pausing (is_pause_allowed is false)' });
+        }
+
+        if (task.is_paused) {
+            return res.status(400).json({ message: 'Task is already paused' });
+        }
 
         await task.update({ is_paused: true, status: 'PAUSED' });
-        
-        // Update all active assignments to 'paused'
-        const { TaskAssign } = require('../models');
+
+        // Update all active individual assignments to 'paused'
         await TaskAssign.update(
             { status: 'paused' },
-            { where: { task_id: id, status: 'in_progress' } }
+            { where: { task_id: taskId, status: { [Op.in]: ['accepted', 'in_progress'] } } }
         );
 
         await TaskLog.create({
-            task_id: id,
+            task_id: taskId,
             user_id: userId,
             action: 'pause',
-            details: `Task paused at ${new Date().toISOString()}`
+            details: `Task paused by user ${userId} at ${new Date().toISOString()}`
         });
 
-        res.json({ message: 'Task paused successfully' });
+        // After manual pause, check if status needs further adjustment (usually not, but for consistency)
+        await adjustLongTaskStatus(userId);
+
+        res.json({
+            message: 'Task paused successfully',
+            task_id: task.task_id,
+            is_paused: true
+        });
+
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
 };
 
-// Resume a task
+// Resume a paused task (only allowed when is_pause_allowed = true)
 exports.resumeTask = async (req, res) => {
     try {
-        const { id } = req.params;
+        const { id: taskId } = req.params;
         const userId = req.userId;
 
-        const task = await Task.findByPk(id);
-        if (!task || task.is_deleted) return res.status(404).json({ message: 'Task not found' });
+        const task = await Task.findOne({ where: { task_id: taskId, is_deleted: false } });
+        if (!task) {
+            return res.status(404).json({ message: 'Task not found' });
+        }
 
-        if (!task.is_paused) return res.status(400).json({ message: 'Task is not paused' });
+        // Guard: only tasks that allow pausing can be resumed
+        if (!task.is_pause_allowed) {
+            return res.status(403).json({ message: 'This task does not allow pause/resume (is_pause_allowed is false)' });
+        }
+
+        if (!task.is_paused) {
+            return res.status(400).json({ message: 'Task is not currently paused' });
+        }
 
         await task.update({ is_paused: false, status: 'RESUMED' });
-        
-        // Update all paused assignments back to 'in_progress'
-        const { TaskAssign } = require('../models');
+
+        // Update all paused assignments back to 'accepted' (and let adjustLongTaskStatus decide if it should be in_progress)
         await TaskAssign.update(
-            { status: 'in_progress' },
-            { where: { task_id: id, status: 'paused' } }
+            { status: 'accepted' },
+            { where: { task_id: taskId, status: 'paused' } }
         );
 
         await TaskLog.create({
-            task_id: id,
+            task_id: taskId,
             user_id: userId,
             action: 'resume',
-            details: `Task resumed at ${new Date().toISOString()}`
+            details: `Task resumed by user ${userId} at ${new Date().toISOString()}`
         });
 
-        res.json({ message: 'Task resumed successfully' });
+        // After manual resume, adjust status based on currents overlaps
+        await adjustLongTaskStatus(userId);
+
+        res.json({
+            message: 'Task resumed successfully',
+            task_id: task.task_id,
+            is_paused: false
+        });
+
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -4217,7 +4362,7 @@ exports.getDailyTasks = async (req, res) => {
                     shouldShow = (dateString >= startDateStr && dateString <= endDateStr);
                     // But if it's completed, we usually only want it to appear once as a finished record.
                     // Let's refine: if completed, only show on the day it was supposed to be done.
-                    if (status === 'completed' && dateString !== startDateStr) shouldShow = false; 
+                    if (status === 'completed' && dateString !== startDateStr) shouldShow = false;
                 } else {
                     // Not completed: show every day in range
                     shouldShow = (dateString >= startDateStr && dateString <= endDateStr);
@@ -4245,14 +4390,16 @@ exports.getDailyTasks = async (req, res) => {
                     venue_id: tt.venue_id,
                     start_date: startDateStr,
                     end_date: endDateStr,
-                    start_time: tt.start_time,
-                    end_time: tt.end_time,
+                    start_time: (tt.task_name === 'Long Task' || tt.task_name === 'Date-Only / Long Task')
+                        ? (tt.start_time || '08:45:00') : tt.start_time,
+                    end_time: (tt.task_name === 'Long Task' || tt.task_name === 'Date-Only / Long Task')
+                        ? (tt.end_time || '16:30:00') : tt.end_time,
                     time_quota_hours: tt.time_quota_hours,
                     max_acceptances: tt.max_acceptances,
                     sequence_order: t.sequence_order || 0,
                     task_name: tt.task_name,
-                    sub_tasks: [] 
-                };
+                    sub_tasks: [],
+                    action_button: getTaskButtonState(t, userId, req.userRole)                };
 
                 if (isFloating) floatingTasks.push(formatted);
                 else directives.push(formatted);
@@ -4260,7 +4407,7 @@ exports.getDailyTasks = async (req, res) => {
         };
 
         directAssignments.forEach(a => processTask(a.Task, a.status, a.id));
-        
+
         // Self logs are always 'Active' unless we add assignment status for them too
         selfLogsRaw.forEach(s => {
             const tt = s.TaskTypes?.[0];
@@ -4321,85 +4468,6 @@ exports.getDailyTasks = async (req, res) => {
     }
 };
 
-// Pause a task (only allowed when is_pause_allowed = true)
-exports.pauseTask = async (req, res) => {
-    try {
-        const { id: taskId } = req.params;
-        const userId = req.userId;
-
-        const task = await Task.findOne({ where: { task_id: taskId, is_deleted: false } });
-        if (!task) {
-            return res.status(404).json({ message: 'Task not found' });
-        }
-
-        // Guard: only tasks that allow pausing can be paused
-        if (!task.is_pause_allowed) {
-            return res.status(403).json({ message: 'This task does not allow pausing (is_pause_allowed is false)' });
-        }
-
-        if (task.is_paused) {
-            return res.status(400).json({ message: 'Task is already paused' });
-        }
-
-        await task.update({ is_paused: true });
-
-        await TaskLog.create({
-            task_id: taskId,
-            user_id: userId,
-            action: 'pause',
-            details: `Task paused by user ${userId} at ${new Date().toISOString()}`
-        });
-
-        res.json({
-            message: 'Task paused successfully',
-            task_id: task.task_id,
-            is_paused: true
-        });
-
-    } catch (error) {
-        res.status(500).json({ message: error.message });
-    }
-};
-
-// Resume a paused task (only allowed when is_pause_allowed = true)
-exports.resumeTask = async (req, res) => {
-    try {
-        const { id: taskId } = req.params;
-        const userId = req.userId;
-
-        const task = await Task.findOne({ where: { task_id: taskId, is_deleted: false } });
-        if (!task) {
-            return res.status(404).json({ message: 'Task not found' });
-        }
-
-        // Guard: only tasks that allow pausing can be resumed
-        if (!task.is_pause_allowed) {
-            return res.status(403).json({ message: 'This task does not allow pause/resume (is_pause_allowed is false)' });
-        }
-
-        if (!task.is_paused) {
-            return res.status(400).json({ message: 'Task is not currently paused' });
-        }
-
-        await task.update({ is_paused: false });
-
-        await TaskLog.create({
-            task_id: taskId,
-            user_id: userId,
-            action: 'resume',
-            details: `Task resumed by user ${userId} at ${new Date().toISOString()}`
-        });
-
-        res.json({
-            message: 'Task resumed successfully',
-            task_id: task.task_id,
-            is_paused: false
-        });
-
-    } catch (error) {
-        res.status(500).json({ message: error.message });
-    }
-};
 // 7.6. Get Specialized Daily Task Report (Strictly Created by User)
 exports.getDailyTaskReport = async (req, res) => {
     try {
@@ -4453,8 +4521,8 @@ exports.getDailyTaskReport = async (req, res) => {
                 {
                     model: TaskAssign,
                     required: false,
-                    include: [{ 
-                        model: User, 
+                    include: [{
+                        model: User,
                         attributes: ['user_id', 'role'],
                         include: [
                             { model: Student, attributes: ['name'] },
@@ -4484,8 +4552,8 @@ exports.getDailyTaskReport = async (req, res) => {
                     {
                         model: TaskAssign,
                         required: false,
-                        include: [{ 
-                            model: User, 
+                        include: [{
+                            model: User,
                             attributes: ['user_id', 'role'],
                             include: [
                                 { model: Student, attributes: ['name'] },
@@ -4611,7 +4679,7 @@ exports.getMyEscalations = async (req, res) => {
             where: { creator_id: userId, is_deleted: false },
             include: [
                 { model: TaskType },
-                { 
+                {
                     model: TaskAssign,
                     where: { status: { [Op.in]: ['escalated', 'rejected'] } },
                     required: true,
@@ -4621,7 +4689,7 @@ exports.getMyEscalations = async (req, res) => {
         });
 
         const taskGroups = [];
-        
+
         for (const task of escalatedTasks) {
             const tt = task.TaskTypes?.[0];
 
@@ -4926,7 +4994,7 @@ exports.reviewTaskProof = async (req, res) => {
                 await Notification.create({
                     user_id: assignment.user_id,
                     title: status === 'approved' ? 'Proof Approved' : 'Proof Rejected',
-                    msg: status === 'approved' 
+                    msg: status === 'approved'
                         ? `Your proof for task "${assignment.Task.title}" was approved.`
                         : `Your proof for task "${assignment.Task.title}" was rejected. Reason: ${reason || 'N/A'}. Please resubmit.`,
                     type: status === 'approved' ? 'task_completed' : 'task_rejected'
@@ -4940,6 +5008,59 @@ exports.reviewTaskProof = async (req, res) => {
 
     } catch (error) {
         if (t) await t.rollback();
+        res.status(500).json({ message: error.message });
+    }
+};
+exports.rescheduleTask = async (req, res) => {
+    try {
+        const { id: taskId } = req.params;
+        const { new_date, new_time, self_assign } = req.body;
+        const userId = req.userId;
+
+        const task = await Task.findByPk(taskId, {
+            include: [{ model: TaskType }]
+        });
+
+        if (!task || task.is_deleted) {
+            return res.status(404).json({ message: 'Task not found' });
+        }
+
+        // 1. Update Task Timing
+        if (task.TaskTypes && task.TaskTypes.length > 0) {
+            await TaskType.update({
+                start_date: new_date,
+                end_date: new_date, // Assume single day for now if only one date sent
+                start_time: new_time,
+                end_time: '23:59:59' // Or calculate based on original duration
+            }, {
+                where: { task_id: taskId }
+            });
+        }
+
+        // 2. Optional Self-Assignment (Common for resolutions)
+        if (self_assign) {
+            const existing = await TaskAssign.findOne({ where: { task_id: taskId, user_id: userId } });
+            if (!existing) {
+                await TaskAssign.create({
+                    task_id: taskId,
+                    user_id: userId,
+                    status: 'accepted',
+                    accepted_at: new Date()
+                });
+            } else {
+                await existing.update({ status: 'accepted', accepted_at: new Date() });
+            }
+        }
+
+        // 3. Clear Escalation Flags
+        const { resolveTaskEscalations } = require('../utils/task-utils');
+        await resolveTaskEscalations(taskId, userId);
+
+        // Ensure global flag is also cleared if manual
+        await task.update({ is_escalate: false });
+
+        res.json({ success: true, message: 'Task rescheduled successfully' });
+    } catch (error) {
         res.status(500).json({ message: error.message });
     }
 };

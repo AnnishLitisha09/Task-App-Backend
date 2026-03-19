@@ -1,4 +1,5 @@
 const { Task, TaskAssign, TaskType, User, TaskEscalation, Notification, Faculty, TaskLog, Student, Staff, RoleUser, TaskApprovalRequest } = require('../models');
+const { adjustLongTaskStatus } = require('../utils/task-utils');
 
 // Accept assigned task
 exports.acceptTask = async (req, res) => {
@@ -259,6 +260,9 @@ exports.acceptTask = async (req, res) => {
             }
         }
 
+        // After acceptance, check if any long tasks should be paused
+        await adjustLongTaskStatus(userId);
+
         res.json({
             message: 'Task accepted successfully',
             assignment: {
@@ -392,7 +396,7 @@ exports.rejectTask = async (req, res) => {
         const transferrerId = lastTransferLog ? lastTransferLog.user_id : null;
 
         if (isPermissionTask) {
-            await task.update({ is_escalate: true });
+            await task.update({ is_escalate: true, status: 'Active' });
 
             // 1. Escalate to Creator
             await TaskEscalation.create({
@@ -436,7 +440,7 @@ exports.rejectTask = async (req, res) => {
             }
         } else {
             // General escalation for non-permission tasks
-            await task.update({ is_escalate: true });
+            await task.update({ is_escalate: true, status: 'Active' });
 
             // 1. Escalate to Creator
             await TaskEscalation.create({
@@ -611,6 +615,10 @@ exports.transferTask = async (req, res) => {
             msg: `User ${userId} transferred task "${task.title}" to User ${transfer_to_user_id}.`,
             type: 'task_transfer'
         }, { transaction: t });
+
+        // --- AUTO LONG TASK ADJUSTMENT ---
+        await adjustLongTaskStatus(userId, t);
+        await adjustLongTaskStatus(transfer_to_user_id, t);
 
         await t.commit();
 

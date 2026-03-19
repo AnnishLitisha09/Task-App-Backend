@@ -9,6 +9,7 @@ const taskAcceptance = require('../controllers/task.acceptance');
 const taskAcknowledgment = require('../controllers/task.acknowledgment');
 const calendarController = require('../controllers/calendar.controller');
 const taskOTPController = require('../controllers/task.otp.controller');
+const taskLongFloating = require('../controllers/task.long_floating');
 
 const fs = require('fs');
 const path = require('path');
@@ -55,6 +56,17 @@ router.get('/venue/:id/basic', verifyToken, venueController.getVenueBasicDetails
 router.get('/calendar', verifyToken, calendarController.getUserCalendar);
 router.get('/calendar/venue', verifyToken, calendarController.getVenueCalendar); // NEW: Venue Calendar
 router.put('/venue/:id/status', verifyToken, venueController.updateVenueStatus); // NEW: Update Venue Status
+
+// ─── Long Task Actions (No OTP — Proof Required for Completion) ──────────────
+// IMPORTANT: Must be before any /:id/* routes or Express will match /long/start as /:id/start
+router.post('/long/start',    verifyToken, taskLongFloating.startLongTask);
+router.post('/long/pause',    verifyToken, taskLongFloating.pauseLongTask);
+router.post('/long/resume',   verifyToken, taskLongFloating.resumeLongTask);
+router.post('/long/complete', verifyToken, submissionUpload.single('file'), taskLongFloating.completeLongTask);
+router.get('/long/:assignment_id/sessions', verifyToken, taskLongFloating.getLongTaskSessions);
+
+// ─── Floating Task Actions ────────────────────────────────────────────────────
+router.post('/floating/complete', verifyToken, submissionUpload.single('file'), taskLongFloating.completeFloatingTask);
 
 // Task Creation
 router.post('/unified-create', verifyToken, upload.single('file'), taskController.createUnifiedTask);
@@ -137,7 +149,7 @@ router.get('/rejections/me', verifyToken, taskController.getRejectionEscalations
 router.post('/:id/escalate', verifyToken, taskController.manualEscalateTask);
 router.get('/:id/escalation-report', verifyToken, taskController.getTaskEscalationReport);
 
-// Pause & Resume
+// Pause & Resume (Generic — kept for compatibility)
 router.put('/:id/pause', verifyToken, taskController.pauseTask);
 router.put('/:id/resume', verifyToken, taskController.resumeTask);
 

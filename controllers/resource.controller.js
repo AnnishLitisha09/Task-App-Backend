@@ -584,6 +584,8 @@ exports.deleteVenue = async (req, res) => {
         // 1. Manually nullify references
         await RoleAssignment.update({ venue_id: null }, { where: { venue_id: id }, transaction: t });
         await Resource.update({ venue_id: null }, { where: { venue_id: id }, transaction: t });
+        await Task.update({ venue_id: null }, { where: { venue_id: id }, transaction: t });
+        await TaskType.update({ venue_id: null }, { where: { venue_id: id }, transaction: t });
 
         // 2. Soft delete the venue
         await venue.destroy({ transaction: t });
@@ -679,6 +681,9 @@ exports.deleteResource = async (req, res) => {
         if (!resource) {
             return res.status(404).json({ success: false, message: 'Resource not found' });
         }
+
+        // Nullify references to this resource in tasks
+        await Task.update({ resource_id: null }, { where: { resource_id: id } });
 
         await resource.destroy(); 
         res.json({ success: true, message: 'Resource deleted successfully' });

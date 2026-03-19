@@ -74,6 +74,9 @@ exports.getUserCalendar = async (req, res) => {
             floating: []
         };
 
+        const timeTasksRaw = [];
+        const floatingTasks = [];
+
         assignments.forEach(assign => {
             const task = assign.Task;
             if (!task || !task.TaskTypes) return;
@@ -91,6 +94,7 @@ exports.getUserCalendar = async (req, res) => {
 
                 const formatted = {
                     task_id: task.task_id,
+                    assignment_id: assign.id, // TaskAssign ID
                     task: task.title,
                     status: assign.status,
                     assigned_by: creatorName,
@@ -102,14 +106,74 @@ exports.getUserCalendar = async (req, res) => {
                     end_time: isLongTask ? '16:30:00' : tt.end_time,
                     task_name: tt.task_name,
                     parent_task_id: task.parent_task_id,
+                    is_long: isLongTask,
                     sub_tasks: []
                 };
 
-                if (isFloating) result.floating.push(formatted);
-                else if (isLongTask) result.all_day.push(formatted);
-                else result.time_tasks.push(formatted);
+                if (isFloating) floatingTasks.push(formatted);
+                else timeTasksRaw.push(formatted);
             });
         });
+
+        // ─── OVERLAP PREVENTION & SEGMENTATION LOGIC ───
+        // Fixed tasks have priority. Long tasks fill the gaps.
+        const fixedTasks = timeTasksRaw.filter(t => !t.is_long);
+        const longTasks = timeTasksRaw.filter(t => t.is_long);
+
+        const timeToMinutes = (t) => {
+            if (!t) return 0;
+            const [h, m] = t.split(':').map(Number);
+            return h * 60 + (m || 0);
+        };
+        const minutesToTime = (m) => {
+            const h = Math.floor(m / 60);
+            const mm = m % 60;
+            return `${String(h).padStart(2, '0')}:${String(mm).padStart(2, '0')}:00`;
+        };
+
+        const finalTimeTasks = [...fixedTasks];
+
+        longTasks.forEach(long => {
+            let segments = [{ start: timeToMinutes(long.start_time), end: timeToMinutes(long.end_time) }];
+
+            // Subtract all fixed tasks from this long task's segments
+            fixedTasks.forEach(fixed => {
+                const fStart = timeToMinutes(fixed.start_time);
+                const fEnd = timeToMinutes(fixed.end_time);
+
+                const newSegments = [];
+                segments.forEach(seg => {
+                    // Check for overlap [fStart, fEnd] and [seg.start, seg.end]
+                    if (fStart >= seg.end || fEnd <= seg.start) {
+                        // No overlap
+                        newSegments.push(seg);
+                    } else {
+                        // Overlap - split it
+                        if (fStart > seg.start) {
+                            newSegments.push({ start: seg.start, end: fStart });
+                        }
+                        if (fEnd < seg.end) {
+                            newSegments.push({ start: fEnd, end: seg.end });
+                        }
+                    }
+                });
+                segments = newSegments;
+            });
+
+            // Convert segments back to task objects
+            segments.forEach((seg, index) => {
+                finalTimeTasks.push({
+                    ...long,
+                    task_id: `${long.task_id}_seg_${index}`, // unique ID for frontend keys
+                    original_task_id: long.task_id,
+                    start_time: minutesToTime(seg.start),
+                    end_time: minutesToTime(seg.end)
+                });
+            });
+        });
+
+        result.time_tasks = finalTimeTasks;
+        result.floating = floatingTasks;
 
         // Helper: Nesting
         const buildCalendarTree = (flatTasks) => {
@@ -215,6 +279,9 @@ exports.getVenueCalendar = async (req, res) => {
             floating: []
         };
 
+        const timeTasksRaw = [];
+        const floatingTasks = [];
+
         tasks.forEach(task => {
             if (!task.TaskTypes) return;
 
@@ -243,14 +310,65 @@ exports.getVenueCalendar = async (req, res) => {
                     venue_id: task.venue_id,
                     task_name: tt.task_name,
                     parent_task_id: task.parent_task_id,
+                    is_long: isLongTask,
                     sub_tasks: []
                 };
 
-                if (isFloating) result.floating.push(formatted);
-                else if (isLongTask) result.all_day.push(formatted);
-                else result.time_tasks.push(formatted);
+                if (isFloating) floatingTasks.push(formatted);
+                else timeTasksRaw.push(formatted);
             });
         });
+
+        // ─── OVERLAP PREVENTION & SEGMENTATION LOGIC ───
+        const fixedTasks = timeTasksRaw.filter(t => !t.is_long);
+        const longTasks = timeTasksRaw.filter(t => t.is_long);
+
+        const timeToMinutes = (t) => {
+            if (!t) return 0;
+            const [h, m] = t.split(':').map(Number);
+            return h * 60 + (m || 0);
+        };
+        const minutesToTime = (m) => {
+            const h = Math.floor(m / 60);
+            const mm = m % 60;
+            return `${String(h).padStart(2, '0')}:${String(mm).padStart(2, '0')}:00`;
+        };
+
+        const finalTimeTasks = [...fixedTasks];
+
+        longTasks.forEach(long => {
+            let segments = [{ start: timeToMinutes(long.start_time), end: timeToMinutes(long.end_time) }];
+
+            // Subtract all fixed tasks from this long task's segments
+            fixedTasks.forEach(fixed => {
+                const fStart = timeToMinutes(fixed.start_time);
+                const fEnd = timeToMinutes(fixed.end_time);
+
+                const newSegments = [];
+                segments.forEach(seg => {
+                    if (fStart >= seg.end || fEnd <= seg.start) {
+                        newSegments.push(seg);
+                    } else {
+                        if (fStart > seg.start) newSegments.push({ start: seg.start, end: fStart });
+                        if (fEnd < seg.end) newSegments.push({ start: fEnd, end: seg.end });
+                    }
+                });
+                segments = newSegments;
+            });
+
+            segments.forEach((seg, index) => {
+                finalTimeTasks.push({
+                    ...long,
+                    task_id: `${long.task_id}_seg_${index}`,
+                    original_task_id: long.task_id,
+                    start_time: minutesToTime(seg.start),
+                    end_time: minutesToTime(seg.end)
+                });
+            });
+        });
+
+        result.time_tasks = finalTimeTasks;
+        result.floating = floatingTasks;
 
         // Helper: Nesting
         const buildCalendarTree = (flatTasks) => {

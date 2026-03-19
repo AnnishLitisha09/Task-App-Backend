@@ -1,4 +1,5 @@
 const { User, Student, Faculty, Staff, RoleUser, RoleAssignment, Role, Department, Task, TaskType, TaskAssign, TaskLog } = require('../models');
+const { isOccurrence, toISTDateStr } = require('../utils/task-utils');
 
 // ... (existing getAllUsersWithDetails function) ...
 
@@ -683,14 +684,47 @@ exports.getDepartmentalTasks = async (req, res) => {
             ...students.map(s => s.user_id)
         ];
 
-        // 3. Fetch Tasks created by these users
+        // 3. Time Adjustment for "Today" in IST
+        const now = new Date();
+        const istOffset = 330 * 60 * 1000;
+        const localNow = new Date(now.getTime() + (now.getTimezoneOffset() * 60000) + istOffset);
+        const dateStr = `${localNow.getFullYear()}-${String(localNow.getMonth() + 1).padStart(2, '0')}-${String(localNow.getDate()).padStart(2, '0')}`;
+
+        // Rule: Show today's tasks always, tomorrow's after 7:00 PM
+        const todayDate = new Date(localNow);
+        todayDate.setHours(0, 0, 0, 0);
+        const tomorrowDate = new Date(todayDate);
+        tomorrowDate.setDate(tomorrowDate.getDate() + 1);
+
+        const isEvening = localNow.getHours() >= 19;
+        const effectiveTodayStr = isEvening ?
+            `${tomorrowDate.getFullYear()}-${String(tomorrowDate.getMonth() + 1).padStart(2, '0')}-${String(tomorrowDate.getDate()).padStart(2, '0')}` :
+            dateStr;
+
+        const { literal } = require('sequelize');
+
+        // 4. Fetch Tasks created by these users for the effective date
         const tasks = await Task.findAndCountAll({
             where: {
                 is_deleted: false,
                 creator_id: { [Op.in]: deptUserIds }
             },
             include: [
-                { model: TaskType, required: false },
+                { 
+                    model: TaskType, 
+                    required: true,
+                    where: {
+                        [Op.or]: [
+                            literal(`DATE(start_date) = '${effectiveTodayStr}'`),
+                            {
+                                [Op.and]: [
+                                    literal(`DATE(start_date) <= '${effectiveTodayStr}'`),
+                                    literal(`DATE(end_date) >= '${effectiveTodayStr}'`)
+                                ]
+                            }
+                        ]
+                    }
+                },
                 { model: User, as: 'Creator', attributes: ['user_id', 'role'] }
             ],
             order: [['created_at', 'DESC']],
@@ -698,7 +732,7 @@ exports.getDepartmentalTasks = async (req, res) => {
             offset
         });
 
-        // 4. Batch fetch names
+        // 5. Batch fetch names
         const creatorIds = [...new Set(tasks.rows.map(t => t.creator_id))];
         const creators = await User.findAll({
             where: { user_id: { [Op.in]: creatorIds } },
@@ -1055,9 +1089,9 @@ exports.getStudentDashboard = async (req, res) => {
             return res.status(404).json({ success: false, message: "Student profile not found." });
         }
 
-        // 2. Fetch All Active Assignments (Accepted/In Progress) - regardless of date for Overdue check
+        // 2. Fetch All Relevant Assignments (Pending/Accepted/In Progress/Completed/Escalated)
         const activeAssignments = await TaskAssign.findAll({
-            where: { user_id: userId, status: { [Op.in]: ['accepted', 'in_progress', 'escalated'] } },
+            where: { user_id: userId, status: { [Op.in]: ['pending', 'accepted', 'in_progress', 'escalated', 'completed'] } },
             include: [{
                 model: Task,
                 where: { is_deleted: false },
@@ -1089,8 +1123,8 @@ exports.getStudentDashboard = async (req, res) => {
             if (!taskType) return;
 
             const isLongTask = taskType.task_name === 'Date-Only / Long Task' || taskType.task_name === 'Long Task';
-            const taskStartStr = getISTDateStr(taskType.start_date);
-            const taskEndStr = getISTDateStr(taskType.end_date) || taskStartStr;
+            const taskStartStr = toISTDateStr(taskType.start_date);
+            const taskEndStr = toISTDateStr(taskType.end_date) || taskStartStr;
 
             const taskData = {
                 assignment_id: a.id,
@@ -1140,21 +1174,24 @@ exports.getStudentDashboard = async (req, res) => {
                 }
             }
 
-            const isToday = (taskStartStr && taskEndStr)
-                ? (effectiveTodayStr >= taskStartStr && effectiveTodayStr <= taskEndStr)
-                : (taskStartStr === effectiveTodayStr || taskEndStr === effectiveTodayStr);
+            const isToday = isOccurrence(dateStr, taskType.start_date, taskType.end_date, taskType.recurrence);
 
             // Must have NO proof/closure to be truly "Overdue" as per user request
             if (isOverdue && (!a.proof || a.proof === '')) {
                 overdueTasks.push(taskData);
             } else if (isToday) {
-                // If it's effectively today and NOT overdue yet (or has proof), put in schedule
-                schedule.push(taskData);
+                // If it's actual today and NOT overdue yet (or has proof)
+                // Filter out pending tasks from todays_schedule (they should go to pending_for_approval)
+                if (a.status !== 'pending') {
+                    schedule.push(taskData);
+                }
             }
         });
 
-        // 3. Fetch Pending Tasks for Approval (Effective Today/Tomorrow rule)
-        const pendingDateLimit = isEvening ? dayAfterTomorrow : tomorrowDate;
+        // 3. Fetch Pending Tasks for Approval (Rule: Today unaccepted + Tomorrow's tasks after 7 PM)
+        const pendingStartDate = todayDate; // Always include today's unaccepted tasks
+        const pendingEndDate = isEvening ? dayAfterTomorrow : tomorrowDate;
+
         const pendingAssignments = await TaskAssign.findAll({
             where: { user_id: userId, status: 'pending' },
             include: [{
@@ -1165,11 +1202,11 @@ exports.getStudentDashboard = async (req, res) => {
                     required: true,
                     where: {
                         start_date: {
-                            [Op.gte]: effectiveTodayDate,
-                            [Op.lt]: pendingDateLimit
+                            [Op.gte]: pendingStartDate,
+                            [Op.lt]: pendingEndDate
                         }
                     },
-                    attributes: ['start_date', 'start_time', 'task_name']
+                    attributes: ['start_date', 'start_time', 'end_time', 'task_name', 'max_acceptances']
                 }]
             }]
         });
@@ -1229,7 +1266,7 @@ exports.getStudentDashboard = async (req, res) => {
         res.json({
             success: true,
             needs_acknowledgement: needsAcknowledgement,
-            today_date: effectiveTodayStr,
+            today_date: dateStr,
             is_tomorrow_preview: isEvening,
             student_details: {
                 user_id: student.user_id,

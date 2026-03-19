@@ -236,7 +236,7 @@ const escalateAssignment = async (assign, reason, cache = null, forcedSupervisor
 
         // 1. Move status to escalated
         await assign.update({ status: 'escalated' });
-        await Task.update({ is_escalate: true }, { where: { task_id: assign.task_id } });
+        await Task.update({ is_escalate: true, status: 'Escalated' }, { where: { task_id: assign.task_id } });
 
         // 2. Log Action
         await TaskLog.create({

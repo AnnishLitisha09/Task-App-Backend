@@ -85,6 +85,9 @@ exports.deleteTaskTitle = async (req, res) => {
         const record = await TaskTitle.findByPk(id);
         if (!record) return res.status(404).json({ message: 'Task title not found' });
 
+        const { Task } = require('../models');
+        await Task.update({ task_title_id: null }, { where: { task_title_id: id } });
+
         await record.destroy(); // Performs soft-delete due to paranoid: true
         res.json({ message: 'Task title deleted successfully' });
     } catch (error) {

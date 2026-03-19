@@ -70,6 +70,7 @@ router.get('/dashboard/stats', userDashboard.getSystemStats);      // System cou
 router.get('/dashboard/students/leaderboard', userDashboard.getStudentLeaderboard);
 router.get('/dashboard/faculty/leaderboard', userDashboard.getFacultyLeaderboard);
 router.post('/assign-role', userController.assignRole);
+router.post('/assign-hod', userController.assignHOD);
 router.put('/students/:id/faculty', userController.updateStudentFaculty);
 
 // Authority Allocation

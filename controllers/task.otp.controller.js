@@ -1,5 +1,6 @@
 const { Task, TaskAssign, TaskOTP, TaskLog, User, Student, Faculty, Staff, RoleUser, TaskPackageClosure, TaskClosure } = require('../models');
 const { Op } = require('sequelize');
+const { adjustLongTaskStatus } = require('../utils/task-utils');
 
 /**
  * Generate a 6-digit OTP for a task assignment.
@@ -51,8 +52,16 @@ exports.generateOTP = async (req, res) => {
 
         // Verify that the task requires an OTP
         const hasOtpClosure = task.TaskPackageClosures && task.TaskPackageClosures.some(c => c.TaskClosure && c.TaskClosure.name === 'otp');
-        if (!hasOtpClosure) {
-            return res.status(400).json({ success: false, message: "This task does not require an OTP closure method." });
+        
+        // --- NEW: Force OTP for Students ---
+        let isStudentAssignee = false;
+        if (assignment_id) {
+            const assignment = await TaskAssign.findByPk(assignment_id, { include: [{ model: User }] });
+            if (assignment?.User?.role === 'student') isStudentAssignee = true;
+        }
+
+        if (!hasOtpClosure && !isStudentAssignee) {
+            return res.status(400).json({ success: false, message: "This task does not require an OTP closure method and the assignee is not a student." });
         }
 
         // 2. Generate 6-digit OTP
@@ -278,6 +287,10 @@ exports.verifyOTP = async (req, res) => {
             if (otpRecord.assignment_id) {
                 await otpRecord.update({ is_used: true }, { transaction: t });
             }
+
+            // --- AUTO LONG TASK ADJUSTMENT ---
+            await adjustLongTaskStatus(assignment.user_id, t);
+
             await t.commit();
 
             return res.json({ success: true, message: "Attendance marked. Task is now in-progress.", status: 'in_progress' });
@@ -346,6 +359,10 @@ exports.verifyOTP = async (req, res) => {
             if (otpRecord.assignment_id) {
                 await otpRecord.update({ is_used: true }, { transaction: t });
             }
+
+            // --- AUTO LONG TASK ADJUSTMENT ---
+            await adjustLongTaskStatus(assignment.user_id, t);
+
             await t.commit();
 
             return res.json({
