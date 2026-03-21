@@ -6,36 +6,124 @@ const { Task, TaskAssign, User, Faculty, Student } = require('../models');
 const { Op } = require('sequelize');
 
 /**
- * Checks if a new task time range overlaps with any existing accepted/in-progress tasks for a user
+ * Checks if a new task time range overlaps with any existing accepted/in-progress tasks for a user.
+ * Supports priority overrides and Long Task pre-emption logic.
+ * 
  * @param {number} userId - ID of the user
- * @param {string} startTime - HH:MM:SS format
- * @param {string} endTime - HH:MM:SS format
- * @param {Date} startDate - Date object for comparison
- * @returns {Promise<boolean>} - True if overlap exists
+ * @param {object} taskDetails - { start_date, start_time, end_time, priority, task_name }
+ * @param {number|string} excludeTaskId - Optional task ID to skip (usually the task being accepted)
+ * @returns {Promise<object>} - { hasConflict, type, conflictTask, can_pause, reason }
  */
-const checkTaskOverlap = async (userId, startTime, endTime, startDate) => {
-    // Basic overlap logic: exists (start1 < end2) AND (start2 < end1)
-    const overlaps = await TaskAssign.findAll({
-        where: {
-            user_id: userId,
-            status: { [Op.in]: ['accepted', 'in_progress'] }
-        },
-        include: [{
-            model: Task,
-            include: [{
-                model: require('../models').TaskType,
-                where: {
-                    start_date: startDate,
-                    [Op.and]: [
-                        { start_time: { [Op.lt]: endTime } },
-                        { end_time: { [Op.gt]: startTime } }
-                    ]
-                }
-            }]
-        }]
-    });
+const checkTaskOverlap = async (userId, taskDetails, excludeTaskId = null) => {
+    try {
+        const { Task, TaskAssign, TaskType } = require('../models');
+        const { Op } = require('sequelize');
 
-    return overlaps.length > 0;
+        // Normalize inputs
+        let { start_date, start_time, end_time, priority, task_name } = taskDetails;
+        if (!start_date || !start_time || !end_time) {
+            return { hasConflict: false };
+        }
+
+        // Convert Date object to string (YYYY-MM-DD) if needed
+        const targetDateStr = (start_date instanceof Date) 
+            ? start_date.toISOString().split('T')[0] 
+            : new Date(start_date).toISOString().split('T')[0];
+
+        const priorityLevels = { 'low': 1, 'medium': 2, 'high': 3, 'critical': 4 };
+        const newPriorityVal = priorityLevels[priority?.toLowerCase()] || 1;
+
+        // Fetch overlapping assignments for today
+        const existingAssignments = await TaskAssign.findAll({
+            where: {
+                user_id: userId,
+                status: { [Op.in]: ['accepted', 'in_progress', 'paused'] },
+                task_id: excludeTaskId ? { [Op.ne]: excludeTaskId } : { [Op.ne]: null }
+            },
+            include: [{
+                model: Task,
+                where: { is_deleted: false },
+                include: [{
+                    model: TaskType,
+                    where: {
+                        [Op.or]: [
+                            { start_date: targetDateStr },
+                            {
+                                [Op.and]: [
+                                    { start_date: { [Op.lte]: targetDateStr } },
+                                    { end_date: { [Op.gte]: targetDateStr } }
+                                ]
+                            }
+                        ]
+                    }
+                }]
+            }]
+        });
+
+        for (const assign of existingAssignments) {
+            const extTask = assign.Task;
+            const extType = extTask.TaskTypes?.[0];
+            if (!extType) continue;
+
+            // ─── NEW: Check if the task actually occurs TODAY ───
+            if (!isOccurrence(targetDateStr, extType.start_date, extType.end_date, extType.recurrence)) {
+                continue; // Skip tasks that aren't occurring today
+            }
+
+            const isExtLong = extType.task_name === 'Long Task' || extType.task_name === 'Date-Only / Long Task';
+            const isNewLong = task_name === 'Long Task' || task_name === 'Date-Only / Long Task';
+
+            // Long Tasks (pre-emptible) have 8:45-16:30 default range for overlap checking
+            const extStart = isExtLong ? '08:45:00' : extType.start_time;
+            const extEnd = isExtLong ? '16:30:00' : extType.end_time;
+            const newStart = isNewLong ? '08:45:00' : start_time;
+            const newEnd = isNewLong ? '16:30:00' : end_time;
+
+            // Basic overlap logic: (start1 < end2) AND (start2 < end1)
+            if (newStart < extEnd && extStart < newEnd) {
+                // Conflict detected!
+                const extPriorityVal = priorityLevels[extTask.priority?.toLowerCase()] || 1;
+
+                // Rule: If new task has HIGHER priority than existing task
+                if (newPriorityVal > extPriorityVal) {
+                    return {
+                        hasConflict: true,
+                        type: 'priority_override',
+                        can_pause: isExtLong || isNewLong, // If one is flexible, it can be auto-paused/segmented
+                        conflictTask: {
+                            task_id: extTask.task_id,
+                            title: extTask.title,
+                            priority: extTask.priority
+                        },
+                        reason: `Priority override: ${priority} replaces ${extTask.priority}`
+                    };
+                } else if (isNewLong || isExtLong) {
+                    // One is a long task, so it doesn't "block" hard, but we should notify if relevant
+                    // Actually, for consistency, if priorities are equal/lower, we still flag conflict
+                    // to prevent messy overlaps unless the user confirms.
+                    return {
+                        hasConflict: true,
+                        type: 'time_conflict',
+                        conflictTask: { task_id: extTask.task_id, title: extTask.title },
+                        reason: `Overlap with existing ${extType.task_name}: ${extTask.title}`
+                    };
+                } else {
+                    // Standard task vs Standard task (Equal or Higher Existing Priority)
+                    return {
+                        hasConflict: true,
+                        type: 'blocked',
+                        conflictTask: { task_id: extTask.task_id, title: extTask.title },
+                        reason: `Tasks overlap and existing task has equal or higher priority.`
+                    };
+                }
+            }
+        }
+
+        return { hasConflict: false };
+    } catch (err) {
+        console.error('[checkTaskOverlap Error]:', err);
+        return { hasConflict: false }; // Fail safe to avoid blocking
+    }
 };
 
 /**
