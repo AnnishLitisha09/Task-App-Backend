@@ -5,10 +5,26 @@ const { Notification } = require('../models');
 exports.getNotifications = async (req, res) => {
     try {
         const userId = req.userId;
+        const { venue_id } = req.query;
+        const { Op } = require('sequelize');
+
+        const where = { user_id: userId };
+
+        if (venue_id) {
+            // Fetch notifications for a specific venue
+            where.title = { [Op.like]: `[V:${venue_id}]%` };
+        } else {
+            // Fetch only personal notifications (those NOT starting with a venue prefix)
+            where.title = { [Op.notLike]: '[V:%]' };
+        }
+
         const notifications = await Notification.findAll({
-            where: { user_id: userId },
+            where,
             order: [['created_at', 'DESC']]
         });
+
+        // Optional: Strip the prefix [V:ID] before sending to frontend if preferred, 
+        // but here we send as-is and let the frontend handle the display.
         res.json({ total: notifications.length, notifications });
     } catch (error) {
         res.status(500).json({ message: error.message });

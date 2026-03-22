@@ -2,7 +2,7 @@ const { Task, TaskAssign, TaskType, TaskPackageClosure, TaskClosure, User, Stude
 const XLSX = require('xlsx');
 const os = require('os');
 const { canAssignTo } = require('./task.assignment');
-const { checkTaskOverlap, isWithinWorkHours, getWorkingMinutes, toISTDateStr, isOccurrence, adjustLongTaskStatus } = require('../utils/task-utils');
+const { checkTaskOverlap, isWithinWorkHours, getWorkingMinutes, toISTDateStr, isOccurrence, adjustLongTaskStatus, createNotification } = require('../utils/task-utils');
 const { MAX_DAILY_TASKS, PRIORITY_WEIGHTS } = require('../config/constants');
 
 
@@ -42,76 +42,84 @@ const canCreateTask = (userRole) => {
 /**
  * Helper: Determine the primary UI action button for a task based on user context.
  * Returns { type: string, label: string, action: string } or null.
+ *
+ * Priority Order:
+ *  1. Designated approver (approve_task)
+ *  2. Pending assignment acceptance (request)
+ *  3. Escalated directive (escalated)
+ *  4. Proof verification by manager/creator (verify_proof)
+ *  5. OTP generation for creator/faculty
+ *  6. Assignee lifecycle: accepted → in_progress → completed
+ *     - in_progress + is_pause_allowed (long task): pause/resume + end (frontend shows 2 buttons)
+ *     - in_progress + !is_pause_allowed + is_document: submit_proof (single button)
+ *     - in_progress + !is_pause_allowed: end (single button)
+ *     - accepted + is_document (student): submit proof waiting
+ *     - accepted: start activity (with timing checks)
+ *  7. Manager/creator (no assignment): manage task
  */
 const getTaskButtonState = (task, userId, userRole) => {
     try {
         const now = new Date();
         const uId = userId ? String(userId) : null;
         const uRole = userRole?.toLowerCase() || '';
-        
+
         // Ensure associations exist
         const assignments = task.TaskAssigns || [];
         const taskTypes = task.TaskTypes || [];
         const escalations = task.TaskEscalations || [];
         const taskType = taskTypes[0];
 
-        // 1. Find the current user's assignment
+        // Find the current user's assignment
         const assignment = assignments.find(a => String(a.user_id) === uId);
-        
+
         // Role Checks
         const isManager = ['admin', 'role-user', 'faculty', 'hod', 'principal', 'dean', 'incharge', 'registrar', 'director', 'staff'].includes(uRole);
         const isCreator = String(task.creator_id) === uId;
         const isAssignedFaculty = task.is_faculty && String(task.faculty_id) === uId;
 
-        // 2. Acceptance Step (Request)
-        if (assignment && (['pending', 'review', 'Review'].includes(assignment.status))) {
+        // ── 1. Higher Authority Approval ──────────────────────────────────────
+        // Designated approver who hasn't approved yet — different from proof verification
+        if (task.approver_id && String(task.approver_id) === uId && !task.is_approved) {
+            return { type: 'approve_task', label: 'Approve Task', action: 'approve' };
+        }
+
+        // ── 2. Acceptance Step ────────────────────────────────────────────────
+        // Assignee hasn't accepted/rejected yet
+        if (assignment && ['pending', 'review', 'Review'].includes(assignment.status)) {
             return { type: 'request', label: 'Accept / Reject', action: 'acceptance' };
         }
 
-        // 3. Escalation / Directive Step
+        // ── 3. Escalation / Directive ─────────────────────────────────────────
         const hasActiveEscalation = escalations.some(e => ['pending', 'active'].includes(e.status)) || task.is_escalate;
         if (hasActiveEscalation || task.status?.toLowerCase() === 'escalated') {
-            // Show to managers, creators, or faculty supervisor
             if (isManager || isCreator || isAssignedFaculty) {
                 return { type: 'escalated', label: 'Execute Directive', action: 'execute' };
             }
         }
 
-        // 4. Verification Step (Review Submissions)
-        const hasProofsToVerify = assignments.some(a => (a.status === 'completed' || a.status === 'Review') && a.proof);
+        // ── 4. Proof Verification ─────────────────────────────────────────────
+        // Manager/creator reviews submitted proof documents (DIFFERENT from task approval)
+        const hasProofsToVerify = assignments.some(a =>
+            (a.status === 'completed' || a.status === 'Review') && a.proof
+        );
         if (hasProofsToVerify && (isManager || isCreator || isAssignedFaculty)) {
-             return { type: 'verify_proof', label: 'Review Submissions', action: 'verify' };
+            return { type: 'verify_proof', label: 'Review Submissions', action: 'verify' };
         }
 
-        // 5. Combined Logic (Proof + End Activity)
-        if (assignment && task.is_document) {
-            const s = assignment.status?.toLowerCase();
-            if (['in_progress', 'started', 'in progress', 'ongoing'].includes(s)) {
-                return { type: 'activity', label: 'submit proof and end activity', action: 'submit_proof' }; // Action 'submit_proof' will lead to the same flow
-            }
-        }
-
-        // 6. Proof Submission Step (Assignee - Just accepted but student)
-        if (assignment && task.is_document) {
-            const s = assignment.status?.toLowerCase();
-            if (s === 'accepted' && uRole === 'student') {
-                return { type: 'pending_proof', label: 'Submit Proof', action: 'submit_proof' };
-            }
-        }
-
-        // 7. OTP Generation (For Creator/Faculty if task is in_progress and requires OTP)
+        // ── 5. OTP Generation ─────────────────────────────────────────────────
         const requiresOtp = task.TaskPackageClosures?.some(c => c.TaskClosure?.name === 'otp');
         if (requiresOtp && (isCreator || isAssignedFaculty)) {
             const hasInProgress = assignments.some(a => a.status === 'in_progress' || a.status === 'accepted');
             if (hasInProgress) {
-                return { type: 'generate_otp', label: 'generate otp', action: 'otp' };
+                return { type: 'generate_otp', label: 'Generate OTP', action: 'otp' };
             }
         }
 
-        // 8. Standard Activity Lifecycle
+        // ── 6. Standard Assignee Activity Lifecycle ───────────────────────────
         if (assignment) {
             const status = assignment.status?.toLowerCase();
-            
+
+            // ── 6a. Accepted ──────────────────────────────────────────────────
             if (status === 'accepted') {
                 if (taskType) {
                     const startDate = taskType.start_date ? new Date(taskType.start_date) : null;
@@ -135,29 +143,38 @@ const getTaskButtonState = (task, userId, userRole) => {
                         return { type: 'activity', label: 'Starts Soon', action: 'too_early' };
                     }
                     if (endDateTime && now > endDateTime) {
-                        return { type: 'activity', label: 'missed start time', action: 'missed' };
+                        return { type: 'activity', label: 'Activity Missed', action: 'missed' };
                     }
                 }
-                return { type: 'activity', label: 'start activity', action: 'start' };
+                return { type: 'activity', label: 'Start Activity', action: 'start' };
             }
 
+            // ── 6b. In Progress ───────────────────────────────────────────────
             if (['in_progress', 'started', 'in progress', 'ongoing'].includes(status)) {
+                // Long task (pause allowed): return pause/resume action.
+                // Frontend renders 2-button row: Pause/Resume + "Submit Proof & End" or "End Activity"
                 if (task.is_pause_allowed) {
                     if (assignment.is_paused) {
-                        return { type: 'activity', label: 'Resume / End Activity', action: 'resume' };
+                        return { type: 'activity', label: 'Resume', action: 'resume' };
                     } else {
-                        return { type: 'activity', label: 'Pause / End Activity', action: 'pause' };
+                        return { type: 'activity', label: 'Pause', action: 'pause' };
                     }
                 }
-                return { type: 'activity', label: 'end activity', action: 'end' };
+                // Regular task with proof: single "Submit Proof & End" button
+                if (task.is_document) {
+                    return { type: 'activity', label: 'Submit Proof & End', action: 'submit_proof' };
+                }
+                // Regular task without proof: single "End Activity" button
+                return { type: 'activity', label: 'End Activity', action: 'end' };
             }
 
+            // ── 6c. Completed / Closed ────────────────────────────────────────
             if (['completed', 'closed', 'finished'].includes(status)) {
-                return { type: 'activity', label: 'completed', action: 'completed' };
+                return { type: 'activity', label: 'Completed', action: 'completed' };
             }
         }
 
-        // 8. Management Level (Non-assignee Manager/Creator)
+        // ── 7. Management Level (Non-assignee Manager/Creator) ────────────────
         if (!assignment && (isManager || isCreator)) {
             let isExpired = false;
             if (taskType) {
@@ -169,10 +186,10 @@ const getTaskButtonState = (task, userId, userRole) => {
                     isExpired = now > endDateTime;
                 }
             }
-            return { 
-                type: 'manage', 
-                label: 'Manage Task', 
-                action: isExpired ? 'reschedule' : 'self_assign' 
+            return {
+                type: 'manage',
+                label: 'Manage Task',
+                action: isExpired ? 'reschedule' : 'self_assign'
             };
         }
     } catch (e) {
@@ -962,13 +979,34 @@ exports.startActivity = async (req, res) => {
         }
 
         const taskType = assignment.Task.TaskTypes && assignment.Task.TaskTypes[0];
+        const now = new Date();
 
-        // Deadline check
-        if (taskType && taskType.end_date) {
-            const timeStr = taskType.end_time || '23:59:59';
-            const deadline = new Date(`${taskType.end_date}T${timeStr}`);
-            if (new Date() > deadline) {
-                return res.status(400).json({ message: "Activity window has passed. This task is marked as missed." });
+        // Window Enforcement
+        if (taskType) {
+            const dateStr = taskType.start_date ? new Date(taskType.start_date).toISOString().split('T')[0] : new Date().toISOString().split('T')[0];
+            
+            // 1. Start Time Check
+            if (taskType.start_time) {
+                const startDateTime = new Date(`${dateStr}T${taskType.start_time}`);
+                if (now < startDateTime) {
+                    return res.status(403).json({
+                        message: 'Activity Cannot Be Started Yet',
+                        details: `This task is scheduled to start at ${startDateTime.toLocaleString()}.`
+                    });
+                }
+            }
+
+            // 2. End Time Check (Deadline)
+            if (taskType.end_date) {
+                const endDateStr = new Date(taskType.end_date).toISOString().split('T')[0];
+                const timeStr = taskType.end_time || '23:59:59';
+                const deadline = new Date(`${endDateStr}T${timeStr}`);
+                if (now > deadline) {
+                    return res.status(400).json({ 
+                        message: "Activity window has passed. This task is marked as missed.",
+                        details: `Deadline was at ${deadline.toLocaleString()}.`
+                    });
+                }
             }
         }
 
@@ -982,6 +1020,10 @@ exports.startActivity = async (req, res) => {
             action: 'start_activity',
             details: 'Activity started manually'
         });
+
+        // After starting activity, adjust long task status (it will pause any active long tasks)
+        const { adjustLongTaskStatus } = require('../utils/task-utils');
+        await adjustLongTaskStatus(userId);
 
         res.json({
             message: 'Activity started successfully',
@@ -1086,8 +1128,12 @@ exports.submitTaskProof = async (req, res) => {
         });
 
         // Resolve any existing escalations for this user/task
-        const { resolveTaskEscalations } = require('../utils/task-utils');
+        const { resolveTaskEscalations, adjustLongTaskStatus } = require('../utils/task-utils');
         await resolveTaskEscalations(id, userId);
+
+        // After completing task, adjust long task status (it will resume another long task if nothing else is active)
+        await adjustLongTaskStatus(userId);
+
         // Update User Profile (Student, Faculty, or RoleUser)
         const user = await User.findByPk(userId);
         let profile = null;
@@ -4927,8 +4973,9 @@ exports.notifyPendingAssignees = async (req, res) => {
         for (const assign of pendingAssignments) {
             if (assign.User && assign.User.role && assign.User.role.toLowerCase() === 'student') {
                 // Send notification
-                await Notification.create({
-                    user_id: assign.user_id,
+                await createNotification({
+                    userId: assign.user_id,
+                    venueId: task.venue_id,
                     title: 'Action Required: Accept Task',
                     msg: `You have a pending task "${task.title}". Please accept or reject it.`,
                     type: 'task_reminder'

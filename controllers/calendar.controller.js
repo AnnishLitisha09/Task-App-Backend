@@ -1,5 +1,6 @@
 const { Task, TaskType, TaskAssign, User, Student, Faculty, RoleUser, Staff } = require('../models');
 const { Op } = require('sequelize');
+const { isOccurrence } = require('../utils/task-utils');
 
 // PERSONAL CALENDAR: Shows tasks assigned directly to the user
 exports.getUserCalendar = async (req, res) => {
@@ -81,7 +82,11 @@ exports.getUserCalendar = async (req, res) => {
             const task = assign.Task;
             if (!task || !task.TaskTypes) return;
 
+            const dateStr = date || new Date().toISOString().split('T')[0];
+
             task.TaskTypes.forEach(tt => {
+                // Filter by occurrence
+                if (!isOccurrence(dateStr, tt.start_date, tt.end_date, tt.recurrence)) return;
                 let creatorName = 'System';
                 if (task.Creator) {
                     const u = task.Creator;

@@ -173,6 +173,9 @@ exports.closeTask = async (req, res) => {
                 details: `Task marked as ${is_completed ? 'Inactive' : 'Active'}`
             }, { transaction: t });
         }
+        // After closing/completing task, adjust long task status
+        const { adjustLongTaskStatus } = require('../utils/task-utils');
+        await adjustLongTaskStatus(userId, t);
 
         await t.commit();
         res.json({ message: 'Task closed successfully' });
@@ -233,25 +236,47 @@ exports.startTask = async (req, res) => {
         });
         const taskType = taskWithTypes.TaskTypes?.[0];
 
-        if (taskType && taskType.start_date) {
+        // --- Window Enforcement ---
+        if (taskType) {
             const now = new Date();
-            // Create a Date object representing the task start time in the local timezone (assuming IST based on previous constraints, but using server time for comparison)
-            // It's safer to compare the start_date directly if no start_time is provided
-            let startDateTime = new Date(taskType.start_date);
-            
+            const dateStr = taskType.start_date ? new Date(taskType.start_date).toISOString().split('T')[0] : new Date().toISOString().split('T')[0];
+
+            // 1. Start Time Check
             if (taskType.start_time) {
-                const [h, m] = taskType.start_time.split(':');
-                startDateTime.setHours(parseInt(h, 10), parseInt(m, 10), 0, 0);
+                const startDateTime = new Date(`${dateStr}T${taskType.start_time}`);
+                if (now < startDateTime) {
+                    await t.rollback();
+                    return res.status(403).json({
+                        message: 'Task Cannot Be Started Yet',
+                        details: `This task is scheduled to start at ${startDateTime.toLocaleString()}.`
+                    });
+                }
+            } else if (taskType.start_date) {
+                const startDateTime = new Date(taskType.start_date);
+                if (now < startDateTime) {
+                    await t.rollback();
+                    return res.status(403).json({
+                        message: 'Task Cannot Be Started Yet',
+                        details: `This task is scheduled to start on ${startDateTime.toLocaleDateString()}.`
+                    });
+                }
             }
 
-            if (now < startDateTime) {
-                await t.rollback();
-                return res.status(403).json({
-                    message: 'Task Cannot Be Started Yet',
-                    details: `This task is scheduled to start at ${startDateTime.toLocaleString()}. You cannot start it before this time.`
-                });
+            // 2. End Time Check (Deadline)
+            if (taskType.end_date) {
+                const endDateStr = new Date(taskType.end_date).toISOString().split('T')[0];
+                const endTimeStr = taskType.end_time || '23:59:59';
+                const deadline = new Date(`${endDateStr}T${endTimeStr}`);
+                if (now > deadline) {
+                    await t.rollback();
+                    return res.status(400).json({
+                        message: 'Task Window Has Passed',
+                        details: `The deadline for starting this task was ${deadline.toLocaleString()}.`
+                    });
+                }
             }
         }
+        // --- END WINDOW ENFORCEMENT ---
         // --- END NEW RULE ---
 
         // Update status to in_progress
@@ -265,6 +290,10 @@ exports.startTask = async (req, res) => {
             action: 'start_task',
             details: `Task started by user ${userId}. Status moved to in_progress.`
         }, { transaction: t });
+
+        // After starting task, adjust long task status
+        const { adjustLongTaskStatus } = require('../utils/task-utils');
+        await adjustLongTaskStatus(userId, t);
 
         await t.commit();
         res.json({ 

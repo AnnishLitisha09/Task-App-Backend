@@ -1,5 +1,5 @@
 const { Task, TaskAssign, TaskType, User, TaskEscalation, Notification, Faculty, TaskLog, Student, Staff, RoleUser, TaskApprovalRequest } = require('../models');
-const { adjustLongTaskStatus } = require('../utils/task-utils');
+const { adjustLongTaskStatus, createNotification } = require('../utils/task-utils');
 
 // Accept assigned task
 exports.acceptTask = async (req, res) => {
@@ -338,16 +338,18 @@ exports.rejectTask = async (req, res) => {
             });
 
             // Notify target user
-            await Notification.create({
-                user_id: transfer_to_user_id,
+            await createNotification({
+                userId: transfer_to_user_id,
+                venueId: task.venue_id,
                 title: 'Task Transferred to You',
                 msg: `Task "${task.title}" has been transferred to you by another user.`,
                 type: 'task_transfer'
             });
 
             // Notify creator about transfer
-            await Notification.create({
-                user_id: task.creator_id,
+            await createNotification({
+                userId: task.creator_id,
+                venueId: task.venue_id,
                 title: 'Task Transferred',
                 msg: `User ${userId} transferred task "${task.title}" to User ${transfer_to_user_id}.`,
                 type: 'task_transfer'
@@ -372,8 +374,9 @@ exports.rejectTask = async (req, res) => {
 
         // Notify creator about rejection
         if (!transfer_to_user_id) { // Only notify creator of rejection if not transferred
-            await Notification.create({
-                user_id: task.creator_id,
+            await createNotification({
+                userId: task.creator_id,
+                venueId: task.venue_id,
                 title: 'Task Rejected',
                 msg: `User ${userId} rejected task "${task.title}". Reason: ${reason}`,
                 type: 'task_rejected'
@@ -423,16 +426,18 @@ exports.rejectTask = async (req, res) => {
             }
 
             // Specific notification for escalation
-            await Notification.create({
-                user_id: task.creator_id,
+            await createNotification({
+                userId: task.creator_id,
+                venueId: task.venue_id,
                 title: 'URGENT: Permission Denied',
                 msg: `A critical permission task "${task.title}" was rejected! Immediate action required.`,
                 type: 'task_escalation'
             });
 
             if (transferrerId && transferrerId != task.creator_id) {
-                await Notification.create({
-                    user_id: transferrerId,
+                await createNotification({
+                    userId: transferrerId,
+                    venueId: task.venue_id,
                     title: 'URGENT: Transferred Permission Denied',
                     msg: `The permission task "${task.title}" you transferred was rejected by the new assignee.`,
                     type: 'task_escalation'
@@ -467,8 +472,9 @@ exports.rejectTask = async (req, res) => {
                     is_read: false
                 });
 
-                await Notification.create({
-                    user_id: transferrerId,
+                await createNotification({
+                    userId: transferrerId,
+                    venueId: task.venue_id,
                     title: 'Transfer Rejected',
                     msg: `User ${userId} rejected the task "${task.title}" you transferred to them.`,
                     type: 'task_escalation'
@@ -602,19 +608,23 @@ exports.transferTask = async (req, res) => {
         }, { transaction: t });
 
         // 6. Notify both users and creator
-        await Notification.create({
-            user_id: transfer_to_user_id,
+        await createNotification({
+            userId: transfer_to_user_id,
+            venueId: task.venue_id,
             title: 'Task Transferred to You',
             msg: `Task "${task.title}" has been transferred to you.`,
-            type: 'task_transfer'
-        }, { transaction: t });
+            type: 'task_transfer',
+            transaction: t
+        });
 
-        await Notification.create({
-            user_id: task.creator_id,
+        await createNotification({
+            userId: task.creator_id,
+            venueId: task.venue_id,
             title: 'Task Transferred',
             msg: `User ${userId} transferred task "${task.title}" to User ${transfer_to_user_id}.`,
-            type: 'task_transfer'
-        }, { transaction: t });
+            type: 'task_transfer',
+            transaction: t
+        });
 
         // --- AUTO LONG TASK ADJUSTMENT ---
         await adjustLongTaskStatus(userId, t);
@@ -829,12 +839,14 @@ exports.cancelApproval = async (req, res) => {
             ? `User ${userId} declined the transferred task "${task.title}". Reason: ${reason || 'Not specified'}.`
             : `Action required: User ${userId} has cancelled their approval for "${task.title}".`;
 
-        await Notification.create({
-            user_id: task.creator_id,
+        await createNotification({
+            userId: task.creator_id,
+            venueId: task.venue_id,
             title: notifTitle,
             msg: notifMsg,
-            type: 'task_escalation'
-        }, { transaction: t });
+            type: 'task_escalation',
+            transaction: t
+        });
 
         // 5. Log Action
         await TaskLog.create({
@@ -896,9 +908,17 @@ exports.approveRequest = async (req, res) => {
         // Mark request as approved
         await request.update({ status: 'approved' });
 
+        // Get venue_id from task_payload or task if possible
+        let venueId = null;
+        try {
+            const payload = typeof request.task_payload === 'string' ? JSON.parse(request.task_payload) : request.task_payload;
+            venueId = payload?.venue_id;
+        } catch (e) {}
+
         // Notify creator
-        await Notification.create({
-            user_id: request.creator_id,
+        await createNotification({
+            userId: request.creator_id,
+            venueId: venueId,
             title: 'Task Approved!',
             msg: `Your task request was approved and has been assigned.`,
             type: 'task_approved'
@@ -934,9 +954,17 @@ exports.rejectRequest = async (req, res) => {
         // Mark as rejected and store reason
         await request.update({ status: 'rejected', reason: reason || 'No reason provided' });
 
+        // Get venue_id from task_payload or task if possible
+        let venueId = null;
+        try {
+            const payload = typeof request.task_payload === 'string' ? JSON.parse(request.task_payload) : request.task_payload;
+            venueId = payload?.venue_id;
+        } catch (e) {}
+
         // Notify creator only
-        await Notification.create({
-            user_id: request.creator_id,
+        await createNotification({
+            userId: request.creator_id,
+            venueId: venueId,
             title: 'Task Request Rejected',
             msg: `Your task request was rejected by the approver. Reason: ${reason || 'No reason provided'}`,
             type: 'task_rejected'

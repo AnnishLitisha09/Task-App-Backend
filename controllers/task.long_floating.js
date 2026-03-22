@@ -1,6 +1,7 @@
 const { Task, TaskType, TaskAssign, TaskLog, User, Student, Faculty, Staff, RoleUser, Notification } = require('../models');
 const { Op } = require('sequelize');
 const path = require('path');
+const { createNotification } = require('../utils/task-utils');
 
 // ─── HELPERS ─────────────────────────────────────────────────────────────────
 
@@ -27,9 +28,9 @@ const getTaskTypeCategory = (taskTypes) => {
     return name;
 };
 
-const sendNotification = async (userId, title, msg, type) => {
+const sendNotification = async (userId, title, msg, type, venueId = null) => {
     try {
-        await Notification.create({ user_id: userId, title, msg, type });
+        await createNotification({ userId, title, msg, type, venueId });
     } catch (e) {
         console.error('Notification error:', e.message);
     }
@@ -74,34 +75,60 @@ exports.startLongTask = async (req, res) => {
             });
         }
 
-        // Date range check
+        // Window Enforcement
         const tt = task.TaskTypes[0];
         const now = new Date();
-        const startDate = tt.start_date ? new Date(tt.start_date) : null;
-        const endDate = tt.end_date ? new Date(new Date(tt.end_date).setHours(23, 59, 59, 999)) : null;
+        const dateStr = tt.start_date ? new Date(tt.start_date).toISOString().split('T')[0] : new Date().toISOString().split('T')[0];
 
-        if (startDate && now < startDate) {
+        // 1. Start Time Check
+        const startTimeStr = tt.start_time || '08:45:00';
+        const startDateTime = new Date(`${dateStr}T${startTimeStr}`);
+        if (now < startDateTime) {
             await t.rollback();
             return res.status(403).json({
                 success: false,
-                message: `Task hasn't started yet. Start date: ${tt.start_date}.`
+                message: 'Task Cannot Be Started Yet',
+                details: `This task is scheduled to start at ${startDateTime.toLocaleString()}.`
             });
         }
-        if (endDate && now > endDate) {
+
+        // 2. End Time Check (Deadline)
+        const endDateStr = tt.end_date ? new Date(tt.end_date).toISOString().split('T')[0] : dateStr;
+        const endTimeStr = tt.end_time || '16:30:00';
+        const deadline = new Date(`${endDateStr}T${endTimeStr}`);
+        if (now > deadline) {
             await t.rollback();
             return res.status(400).json({
                 success: false,
-                message: `Task deadline has passed (${tt.end_date}). Cannot start.`
+                message: 'Task Window Has Passed',
+                details: `The deadline for starting this task was ${deadline.toLocaleString()}.`
+            });
+        }
+        
+        // Prevent starting if another task is already in progress
+        const { adjustLongTaskStatus } = require('../utils/task-utils');
+        const activeAssignments = await TaskAssign.findAll({
+            where: { user_id: userId, status: 'in_progress' }
+        });
+        if (activeAssignments.length > 0) {
+            await t.rollback();
+            return res.status(400).json({ 
+                success: false, 
+                message: 'Cannot start as another task is already in progress. Please complete or pause it first.' 
             });
         }
 
         await assignment.update({ status: 'in_progress' }, { transaction: t });
+
         await TaskLog.create({
             task_id: task.task_id,
             user_id: userId,
             action: 'long_task_started',
             details: `Long Task started by user ${userId} at ${now.toISOString()}`
         }, { transaction: t });
+
+        // Adjust other long tasks
+        await adjustLongTaskStatus(userId, t);
 
         await t.commit();
 
@@ -355,10 +382,14 @@ exports.completeLongTask = async (req, res) => {
             details: `Long Task completed at ${now.toISOString()}. Proof: ${proofPath}. Score: ${earnedScore}, Penalty: ${penalty}`
         }, { transaction: t });
 
+        // Adjust status (potential resume of next long task)
+        const { adjustLongTaskStatus } = require('../utils/task-utils');
+        await adjustLongTaskStatus(userId, t);
+
         await t.commit();
 
         sendNotification(task.creator_id, 'Long Task Proof Submitted',
-            `"${task.title}" has been completed by user ${userId}. Please review the proof.`, 'task_proof_submitted');
+            `"${task.title}" has been completed by user ${userId}. Please review the proof.`, 'task_proof_submitted', task.venue_id);
 
         res.json({
             success: true,
@@ -555,7 +586,7 @@ exports.completeFloatingTask = async (req, res) => {
         await t.commit();
 
         sendNotification(task.creator_id, 'Floating Task Completed',
-            `"${task.title}" was completed by user ${userId}.`, 'task_completed');
+            `"${task.title}" was completed by user ${userId}.`, 'task_completed', task.venue_id);
 
         res.json({
             success: true,

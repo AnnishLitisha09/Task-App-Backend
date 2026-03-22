@@ -141,7 +141,7 @@ const isWithinWorkHours = () => {
     const totalMinutes = hour * 60 + minute;
 
     const startMinutes = 8 * 60 + 45; // 08:45
-    const endMinutes = 16 * 60;      // 16:00
+    const endMinutes = 16 * 60 + 30; // 16:30 (User requested 4:30 PM)
     
     return totalMinutes >= startMinutes && totalMinutes <= endMinutes;
 };
@@ -164,8 +164,8 @@ const getWorkingMinutes = (start, end) => {
         const m = current.getUTCMinutes();
         const totalNow = h * 60 + m;
         
-        // 08:45 to 16:00
-        if (totalNow >= (8 * 60 + 45) && totalNow < (16 * 60)) {
+        // 08:45 to 16:30
+        if (totalNow >= (8 * 60 + 45) && totalNow < (16 * 60 + 30)) {
             totalMins++;
         }
         current.setUTCMinutes(current.getUTCMinutes() + 1);
@@ -303,11 +303,15 @@ const adjustLongTaskStatus = async (userId, transaction = null) => {
         const hasScheduledFixedTask = activeFixedTasks.some(a => {
             const tt = a.Task.TaskTypes[0];
             if (!tt.start_time || !tt.end_time) return false;
+            
+            // Check if this recurrence/date actually applies today
+            if (!isOccurrence(dateStr, tt.start_date, tt.end_date, tt.recurrence)) return false;
+
             const nowTime = `${String(localNow.getHours()).padStart(2, '0')}:${String(localNow.getMinutes()).padStart(2, '0')}:00`;
             return nowTime >= tt.start_time && nowTime <= tt.end_time;
         });
 
-        // 3. Find all Long Tasks assignments
+        // 3. Find all Long Tasks assignments for TODAY
         const longTaskAssignments = await TaskAssign.findAll({
             where: {
                 user_id: userId,
@@ -319,7 +323,18 @@ const adjustLongTaskStatus = async (userId, transaction = null) => {
                 include: [{
                     model: TaskType,
                     required: true,
-                    where: { task_name: { [Op.in]: ['Long Task', 'Date-Only / Long Task'] } }
+                    where: { 
+                        task_name: { [Op.in]: ['Long Task', 'Date-Only / Long Task'] },
+                        [Op.or]: [
+                            { start_date: dateStr },
+                            {
+                                [Op.and]: [
+                                    { start_date: { [Op.lte]: dateStr } },
+                                    { end_date: { [Op.gte]: dateStr } }
+                                ]
+                            }
+                        ]
+                    }
                 }]
             }],
             transaction
@@ -327,21 +342,23 @@ const adjustLongTaskStatus = async (userId, transaction = null) => {
 
         // Logic:
         // - If ANY task is In Progress -> Pause all OTHER long tasks.
-        // - If a Fixed Task is scheduled for NOW -> Pause all long tasks.
+        // - If a Fixed Task (inc. Recurring) is scheduled for NOW -> Pause all long tasks.
         // - If NOTHING is In Progress and NO Fixed Task is scheduled -> Resume the 'latest' long task.
 
         const shouldPauseAllLong = !!inProgressTask || hasScheduledFixedTask;
 
         for (const la of longTaskAssignments) {
             // Skip the one that is currently in_progress if we are NOT pausing all
-            if (inProgressTask && la.task_id === inProgressTask.task_id) continue;
+            const isSelfInProgress = inProgressTask && la.task_id === inProgressTask.task_id;
 
             if (shouldPauseAllLong) {
-                // Pause it
-                if (la.status !== 'paused') {
+                // Pause it (unless it's a fixed task that IS the inProgressTask, which longTaskAssignments filters out anyway by task_name)
+                if (la.status !== 'paused' && !isSelfInProgress) {
                     await la.update({ status: 'paused' }, { transaction });
                     await Task.update({ is_paused: true, status: 'PAUSED' }, { where: { task_id: la.task_id }, transaction });
                 }
+            } else if (isSelfInProgress) {
+                // If it should NOT be paused but it is in_progress, ensure it stays that way
             }
         }
 
@@ -362,6 +379,25 @@ const adjustLongTaskStatus = async (userId, transaction = null) => {
     }
 };
 
+/**
+ * Unified notification creator that handles venue-specific prefixing.
+ */
+async function createNotification({ userId, title, msg, type = 'general', venueId = null, transaction = null }) {
+    const { Notification } = require('../models');
+    
+    let finalTitle = title;
+    if (venueId) {
+        finalTitle = `[V:${venueId}] ${title}`;
+    }
+
+    return await Notification.create({
+        user_id: userId,
+        title: finalTitle,
+        msg,
+        type
+    }, { transaction });
+}
+
 module.exports = { 
     checkTaskOverlap, 
     isWithinWorkHours, 
@@ -369,5 +405,6 @@ module.exports = {
     resolveTaskEscalations, 
     toISTDateStr, 
     isOccurrence,
-    adjustLongTaskStatus
+    adjustLongTaskStatus,
+    createNotification
 };
