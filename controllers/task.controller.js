@@ -92,7 +92,7 @@ const getTaskButtonState = (task, userId, userRole) => {
         // ── 3. Escalation / Directive ─────────────────────────────────────────
         const hasActiveEscalation = escalations.some(e => ['pending', 'active'].includes(e.status)) || task.is_escalate;
         if (hasActiveEscalation || task.status?.toLowerCase() === 'escalated') {
-            if (isManager || isCreator || isAssignedFaculty) {
+            if (isManager || isCreator || isAssignedFaculty || assignment) {
                 return { type: 'escalated', label: 'Execute Directive', action: 'execute' };
             }
         }
@@ -106,9 +106,20 @@ const getTaskButtonState = (task, userId, userRole) => {
             return { type: 'verify_proof', label: 'Review Submissions', action: 'verify' };
         }
 
-        // ── 5. OTP Generation ─────────────────────────────────────────────────
+        // ── 5. Pending Proof Submission (assignee + accepted + is_document) ─────
+        // Must be BEFORE OTP check: self-log students are also isCreator,
+        // and OTP check would fire otherwise showing "Generate OTP" instead.
+        if (assignment && task.is_document) {
+            const s = assignment.status?.toLowerCase();
+            if (s === 'accepted') {
+                return { type: 'pending_proof', label: 'Submit Proof', action: 'submit_proof' };
+            }
+        }
+
+        // ── 6. OTP Generation ─────────────────────────────────────────────────
+        // Only for the creator/faculty who generates the code (not for the assignee)
         const requiresOtp = task.TaskPackageClosures?.some(c => c.TaskClosure?.name === 'otp');
-        if (requiresOtp && (isCreator || isAssignedFaculty)) {
+        if (requiresOtp && (isCreator || isAssignedFaculty) && !assignment) {
             const hasInProgress = assignments.some(a => a.status === 'in_progress' || a.status === 'accepted');
             if (hasInProgress) {
                 return { type: 'generate_otp', label: 'Generate OTP', action: 'otp' };

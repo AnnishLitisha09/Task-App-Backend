@@ -383,6 +383,14 @@ exports.selfAssignTask = async (req, res) => {
         // Check if already assigned
         const existing = await TaskAssign.findOne({ where: { task_id: taskId, user_id: assigneeId } });
         if (existing) {
+            // If escalated, allow re-assignment to update status to accepted and resolve
+            const isEscalated = task.status?.toLowerCase() === 'escalated' || task.is_escalate;
+            if (isEscalated) {
+                await existing.update({ status: 'accepted', accepted_at: new Date() });
+                const { resolveTaskEscalations } = require('../utils/task-utils');
+                await resolveTaskEscalations(taskId, assigneeId);
+                return res.json({ message: 'Task status updated for execution' });
+            }
             return res.status(400).json({ message: 'You are already assigned to this task' });
         }
 
