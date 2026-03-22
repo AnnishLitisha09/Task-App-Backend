@@ -1,4 +1,23 @@
 const { Task, TaskAssign, TaskType, TaskPackageClosure, TaskClosure, User, Student, Faculty, Staff, RoleUser, RoleAssignment, Role, Department, TaskEscalation, AuthAccount, Notification, TaskLog, TaskTitle, Venue, TaskApprovalRequest } = require('../models');
+const { Op } = require('sequelize');
+
+function calculateEndDateTime(startDate, startTime, durationHours) {
+    if (!startDate || !startTime || !durationHours) return null;
+    const [h, m, s] = startTime.split(':').map(Number);
+    const date = new Date(startDate);
+    date.setHours(h, m, s || 0);
+    
+    // Use UTC for relative calculation then format back
+    const endDateTime = new Date(date.getTime() + durationHours * 60 * 60 * 1000);
+    
+    // Format YYYY-MM-DD
+    const end_date = endDateTime.toISOString().split('T')[0];
+    
+    // Format HH:mm:ss
+    const end_time = endDateTime.toTimeString().split(' ')[0];
+    
+    return { end_date, end_time };
+}
 const XLSX = require('xlsx');
 const os = require('os');
 const { canAssignTo } = require('./task.assignment');
@@ -452,14 +471,30 @@ exports.createTask = async (req, res) => {
             status: 'Active'
         }, { transaction: t });
 
+        // Auto-calculate end date/time if duration provided
+        let finalEndDate = task_type_data.end_date;
+        let finalEndTime = task_type_data.end_time;
+
+        if (task_type_data.time_quota_hours && !task_type_data.end_time) {
+            const calculated = calculateEndDateTime(
+                task_type_data.start_date,
+                task_type_data.start_time,
+                task_type_data.time_quota_hours
+            );
+            if (calculated) {
+                finalEndDate = calculated.end_date;
+                finalEndTime = calculated.end_time;
+            }
+        }
+
         // Create TaskType
         await TaskType.create({
             task_id: task.task_id,
             task_name: task_type_data.task_name,
             start_date: task_type_data.start_date || null,
-            end_date: task_type_data.end_date || null,
+            end_date: finalEndDate || null,
             start_time: task_type_data.start_time || null,
-            end_time: task_type_data.end_time || null,
+            end_time: finalEndTime || null,
             time_quota_hours: task_type_data.time_quota_hours || null,
             venue_id: task_type_data.venue_id || null,
             recurrence: task_type_data.recurrence || 'none',
@@ -1445,7 +1480,7 @@ exports.createUnifiedTask = async (req, res) => {
     try {
         const userId = req.userId;
         const userRole = req.userRole;
-        const { Op } = require('sequelize');
+        // const { Op } = require('sequelize'); // Already imported at the top
 
         if (!canCreateTask(userRole)) {
             await t.rollback();
@@ -1739,16 +1774,30 @@ exports.createUnifiedTask = async (req, res) => {
 
             createdTaskIds.push(parentTask.task_id);
 
+            // Auto-calculate end date/time for parent task if duration provided
+            let parentFinalEndDate = (task_type_data.task_name === 'Recurring Task') ? oDate : (task_type_data.end_date || oDate);
+            let parentFinalEndTime = task_type_data.end_time || null;
+
+            if (task_type_data.time_quota_hours && !task_type_data.end_time) {
+                const calculated = calculateEndDateTime(
+                    oDate, // Use occurrence date for recurring tasks
+                    task_type_data.start_time,
+                    task_type_data.time_quota_hours
+                );
+                if (calculated) {
+                    parentFinalEndDate = calculated.end_date;
+                    parentFinalEndTime = calculated.end_time;
+                }
+            }
+
             // 2. Create TaskType for Parent
             await TaskType.create({
                 task_id: parentTask.task_id,
                 task_name: task_type_data.task_name,
                 start_date: oDate,
-                // For Recurring tasks, end_date is same as start_date (single day occurrence)
-                // For Long Tasks / Floating Tasks, preserve the original end_date
-                end_date: (task_type_data.task_name === 'Recurring Task') ? oDate : (task_type_data.end_date || oDate),
+                end_date: parentFinalEndDate,
                 start_time: task_type_data.start_time || null,
-                end_time: task_type_data.end_time || null,
+                end_time: parentFinalEndTime,
                 time_quota_hours: task_type_data.time_quota_hours || null,
                 venue_id: task_type_data.venue_id || null,
                 recurrence: 'none',
@@ -1811,9 +1860,9 @@ exports.createUnifiedTask = async (req, res) => {
                             } else {
                                 const overlap = await checkTaskOverlap(assigneeId, {
                                     start_date: oDate,
-                                    end_date: (task_type_data.task_name === 'Recurring Task') ? oDate : (task_type_data.end_date || oDate),
+                                    end_date: parentFinalEndDate, // Use calculated end date
                                     start_time: task_type_data.start_time,
-                                    end_time: task_type_data.end_time,
+                                    end_time: parentFinalEndTime, // Use calculated end time
                                     task_name: task_type_data.task_name,
                                     priority: priority
                                 }, parentTask.task_id);
