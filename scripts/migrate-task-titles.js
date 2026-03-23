@@ -1,4 +1,4 @@
-const { sequelize } = require('./models');
+const { sequelize } = require('../models');
 
 async function migrate() {
     try {
@@ -8,9 +8,6 @@ async function migrate() {
 
         // 1. Remove FK from tasks (handling possible existing constraint)
         try {
-            // Find constraint name (usually tasks_task_title_id_foreign_idx or similar)
-            // But queryInterface.removeColumn often handles it or we can try removing by name if we know it.
-            // A safer way is to just drop the column and recreate it if we are reset-ing.
             await queryInterface.removeColumn('tasks', 'task_title_id');
         } catch (e) {
             console.log('Column task_title_id might not exist or constraint already removed.');
@@ -23,7 +20,11 @@ async function migrate() {
         console.log('--- Recreating simplified task_titles table ---');
         await queryInterface.createTable('task_titles', {
             id: { type: require('sequelize').DataTypes.BIGINT.UNSIGNED, autoIncrement: true, primaryKey: true },
-            title: { type: require('sequelize').DataTypes.STRING(255), allowNull: false, unique: true }
+            task_title: { type: require('sequelize').DataTypes.STRING(255), allowNull: false, unique: true },
+            target_role: { type: require('sequelize').DataTypes.ENUM('student', 'faculty', 'staff', 'admin', 'all'), defaultValue: 'all' },
+            created_at: { type: require('sequelize').DataTypes.DATE, defaultValue: require('sequelize').DataTypes.NOW },
+            updated_at: { type: require('sequelize').DataTypes.DATE, defaultValue: require('sequelize').DataTypes.NOW },
+            deleted_at: { type: require('sequelize').DataTypes.DATE, allowNull: true }
         });
 
         // 4. Add column back to tasks

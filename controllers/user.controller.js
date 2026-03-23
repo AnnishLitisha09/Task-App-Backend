@@ -1540,6 +1540,70 @@ exports.getAllIncharges = async (req, res) => {
     }
 };
 
+exports.getInchargeCandidates = async (req, res) => {
+    try {
+        const [faculty, staffs, roleUsers] = await Promise.all([
+            Faculty.findAll({ attributes: ['user_id', 'name', 'email', 'reg_no'], order: [['name', 'ASC']] }),
+            Staff.findAll({ attributes: ['user_id', 'name', 'email', 'designation'], order: [['name', 'ASC']] }),
+            RoleUser.findAll({ 
+                attributes: ['user_id', 'name', 'email'],
+                include: [{
+                    model: User,
+                    required: true,
+                    include: [{
+                        model: RoleAssignment,
+                        include: [{ model: Role, attributes: ['user_role'] }],
+                        required: false
+                    }]
+                }],
+                order: [['name', 'ASC']]
+            })
+        ]);
+
+        const candidates = [];
+
+        faculty.forEach(f => {
+            candidates.push({
+                user_id: f.user_id,
+                name: f.name,
+                email: f.email,
+                category: 'Faculty',
+                sub_role: f.reg_no || 'Faculty'
+            });
+        });
+
+        staffs.forEach(s => {
+            candidates.push({
+                user_id: s.user_id,
+                name: s.name,
+                email: s.email,
+                category: 'Staff',
+                sub_role: s.designation || 'Staff'
+            });
+        });
+
+        roleUsers.forEach(ru => {
+            // Get the primary role from assignments if available
+            const ra = ru.User?.RoleAssignments?.find(a => a.Role?.user_role);
+            candidates.push({
+                user_id: ru.user_id,
+                name: ru.name,
+                email: ru.email,
+                category: 'General',
+                sub_role: ra?.Role?.user_role || 'Role User'
+            });
+        });
+
+        // Sort combined list by name
+        candidates.sort((a, b) => a.name.localeCompare(b.name));
+
+        res.json(candidates);
+    } catch (error) {
+        console.error('getInchargeCandidates Error:', error);
+        res.status(500).json({ message: error.message });
+    }
+};
+
 exports.getUnifiedUsers = async (req, res) => {
     try {
         const { role, department_id } = req.query;

@@ -127,23 +127,38 @@ const checkTaskOverlap = async (userId, taskDetails, excludeTaskId = null) => {
 };
 
 /**
- * Checks if current time is within official working hours (08:45 AM - 04:00 PM)
- * @returns {boolean}
+ * Checks if provided task times are within official working hours (08:45 AM - 04:30 PM)
+ * Rule 6: Only critical tasks can be scheduled outside these hours.
+ * @param {string} startTime - HH:mm:ss
+ * @param {string} endTime - HH:mm:ss
+ * @param {string} priority - low, medium, high, critical
+ * @returns {object} - { isWithin, reason }
  */
-const isWithinWorkHours = () => {
-    const now = new Date();
-    // Convert to IST (UTC+5:30)
-    const istOffset = 330 * 60 * 1000;
-    const localNow = new Date(now.getTime() + istOffset);
-    
-    const hour = localNow.getUTCHours();
-    const minute = localNow.getUTCMinutes();
-    const totalMinutes = hour * 60 + minute;
+const isWithinWorkHours = (startTime, endTime, priority = 'low') => {
+    if (priority?.toLowerCase() === 'critical') {
+        return { isWithin: true };
+    }
 
-    const startMinutes = 8 * 60 + 45; // 08:45
-    const endMinutes = 16 * 60 + 30; // 16:30 (User requested 4:30 PM)
-    
-    return totalMinutes >= startMinutes && totalMinutes <= endMinutes;
+    if (!startTime || !endTime) return { isWithin: true };
+
+    const toMinutes = (timeStr) => {
+        const [h, m] = timeStr.split(':').map(Number);
+        return h * 60 + m;
+    };
+
+    const taskStart = toMinutes(startTime);
+    const taskEnd = toMinutes(endTime);
+    const workStart = 8 * 60 + 45; // 08:45
+    const workEnd = 16 * 60 + 30;  // 16:30 (04:30 PM)
+
+    if (taskStart < workStart || taskEnd > workEnd) {
+        return {
+            isWithin: false,
+            reason: `Task time (${startTime} - ${endTime}) is outside official working hours (08:45 AM - 04:30 PM). Only critical tasks are allowed outside these hours.`
+        };
+    }
+
+    return { isWithin: true };
 };
 
 /**

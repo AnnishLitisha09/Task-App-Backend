@@ -218,10 +218,9 @@ exports.getAllVenues = async (req, res) => {
                             model: User,
                             attributes: ['user_id', 'role', 'status'],
                             include: [
-                                {
-                                    model: RoleUser,
-                                    attributes: ['name', 'email', 'score', 'penalty']
-                                }
+                                { model: RoleUser, attributes: ['name', 'email', 'score', 'penalty'] },
+                                { model: Faculty, attributes: ['name', 'email', 'score', 'penalty'] },
+                                { model: Staff, attributes: ['name', 'email', 'score', 'penalty'] }
                             ]
                         },
                         {
@@ -262,15 +261,18 @@ exports.getAllVenues = async (req, res) => {
             // Check if there's an assigned incharge
             if (venue.RoleAssignments && venue.RoleAssignments.length > 0) {
                 const assignment = venue.RoleAssignments[0]; // Get first assignment
-                if (assignment.User && assignment.User.RoleUser) {
-                    venueData.incharge = {
-                        user_id: assignment.User.user_id,
-                        name: assignment.User.RoleUser.name,
-                        email: assignment.User.RoleUser.email,
-                        role: assignment.Role?.user_role || 'Unknown',
-                        score: assignment.User.RoleUser.score,
-                        penalty: assignment.User.RoleUser.penalty
-                    };
+                if (assignment.User) {
+                    const profile = assignment.User.RoleUser || assignment.User.Faculty || assignment.User.Staff;
+                    if (profile) {
+                        venueData.incharge = {
+                            user_id: assignment.User.user_id,
+                            name: profile.name,
+                            email: profile.email,
+                            role: assignment.Role?.user_role || 'Incharge',
+                            score: profile.score,
+                            penalty: profile.penalty
+                        };
+                    }
                 }
             }
 
@@ -306,10 +308,9 @@ exports.getMyVenue = async (req, res) => {
                             model: User,
                             attributes: ['user_id', 'role', 'status'],
                             include: [
-                                {
-                                    model: RoleUser,
-                                    attributes: ['name', 'email', 'score', 'penalty']
-                                }
+                                { model: RoleUser, attributes: ['name', 'email', 'score', 'penalty'] },
+                                { model: Faculty, attributes: ['name', 'email', 'score', 'penalty'] },
+                                { model: Staff, attributes: ['name', 'email', 'score', 'penalty'] }
                             ]
                         },
                         {
@@ -372,15 +373,18 @@ exports.getMyVenue = async (req, res) => {
 
         if (venue.RoleAssignments && venue.RoleAssignments.length > 0) {
             const roleAssignment = venue.RoleAssignments[0];
-            if (roleAssignment.User && roleAssignment.User.RoleUser) {
-                venueData.incharge = {
-                    user_id: roleAssignment.User.user_id,
-                    name: roleAssignment.User.RoleUser.name,
-                    email: roleAssignment.User.RoleUser.email,
-                    role: roleAssignment.Role?.user_role || 'Unknown',
-                    score: roleAssignment.User.RoleUser.score,
-                    penalty: roleAssignment.User.RoleUser.penalty
-                };
+            if (roleAssignment.User) {
+                const profile = roleAssignment.User.RoleUser || roleAssignment.User.Faculty || roleAssignment.User.Staff;
+                if (profile) {
+                    venueData.incharge = {
+                        user_id: roleAssignment.User.user_id,
+                        name: profile.name,
+                        email: profile.email,
+                        role: roleAssignment.Role?.user_role || 'Incharge',
+                        score: profile.score,
+                        penalty: profile.penalty
+                    };
+                }
             }
         }
 
@@ -1053,7 +1057,7 @@ exports.manageResource = async (req, res) => {
         }
 
         // 3. Handle Faulty Report if provided
-        if (faulty_report && faulty_report.quantity > 0) {
+        if (faulty_report && faulty_report.quantity !== undefined && faulty_report.quantity >= 0) {
             const { quantity, status, reason } = faulty_report;
             
             if (!['damaged', 'broken', 'under maintenance'].includes(status)) {
@@ -1061,40 +1065,52 @@ exports.manageResource = async (req, res) => {
                 return res.status(400).json({ success: false, message: 'Invalid faulty status' });
             }
 
-            // Fresh check of available quantity after potential adjustment
-            if (availableResource.quantity < quantity) {
-                await t.rollback();
-                return res.status(400).json({ success: false, message: 'Not enough available quantity to report faulty items' });
-            }
-
-            // Move from available
-            await availableResource.update({ quantity: availableResource.quantity - quantity }, { transaction: t });
-
-            // Create/Update faulty entry
             let targetResource = resources.find(r => r.status === status);
-            if (targetResource) {
-                await targetResource.update({ quantity: targetResource.quantity + quantity }, { transaction: t });
-            } else {
-                targetResource = await Resource.create({
-                    venue_id,
-                    name,
-                    description: availableResource.description,
-                    quantity,
-                    status
-                }, { transaction: t });
-            }
+            const currentFaultyQty = targetResource ? (targetResource.quantity || 0) : 0;
+            const diffFaulty = quantity - currentFaultyQty;
 
-            // Create Maintenance Log
-            const { MaintenanceLog } = require('../models');
-            await MaintenanceLog.create({
-                venue_id,
-                resource_id: targetResource.resource_id,
-                category: 'Fault Reporting',
-                issue_title: `${name} reported as ${status.toUpperCase()}`,
-                description: reason || `Reported ${quantity} items as ${status}`,
-                status: 'pending',
-                start_time: new Date()
-            }, { transaction: t });
+            if (diffFaulty !== 0) {
+                // Fresh check of available quantity after potential adjustment
+                if (diffFaulty > 0 && availableResource.quantity < diffFaulty) {
+                    await t.rollback();
+                    return res.status(400).json({ success: false, message: 'Not enough available quantity to report faulty items' });
+                }
+
+                // Move from/to available
+                await availableResource.update({ quantity: availableResource.quantity - diffFaulty }, { transaction: t });
+
+                // Create/Update/Delete faulty entry
+                if (targetResource) {
+                    if (quantity === 0) {
+                        await targetResource.destroy({ transaction: t });
+                        targetResource = null;
+                    } else {
+                        await targetResource.update({ quantity }, { transaction: t });
+                    }
+                } else if (quantity > 0) {
+                    targetResource = await Resource.create({
+                        venue_id,
+                        name,
+                        description: availableResource.description,
+                        quantity,
+                        status
+                    }, { transaction: t });
+                }
+
+                // Create Maintenance Log ONLY if items became faulty
+                if (diffFaulty > 0 && targetResource) {
+                    const { MaintenanceLog } = require('../models');
+                    await MaintenanceLog.create({
+                        venue_id,
+                        resource_id: targetResource.resource_id,
+                        category: 'Fault Reporting',
+                        issue_title: `${name} reported as ${status.toUpperCase()}`,
+                        description: reason || `Reported ${diffFaulty} new items as ${status}`,
+                        status: 'pending',
+                        start_time: new Date()
+                    }, { transaction: t });
+                }
+            }
         }
 
         await t.commit();

@@ -1,5 +1,5 @@
 'use strict';
-const { TaskTitle } = require('./models');
+const { TaskTitle } = require('../models');
 
 const seedData = [
     // Faculty/Staff Tasks
