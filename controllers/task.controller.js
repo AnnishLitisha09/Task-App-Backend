@@ -125,31 +125,15 @@ const getTaskButtonState = (task, userId, userRole) => {
             return { type: 'verify_proof', label: 'Review Submissions', action: 'verify' };
         }
 
-        // ── 5. Pending Proof Submission (assignee + accepted + is_document) ─────
-        // Must be BEFORE OTP check: self-log students are also isCreator,
-        // and OTP check would fire otherwise showing "Generate OTP" instead.
-        if (assignment && task.is_document) {
-            const s = assignment.status?.toLowerCase();
-            if (s === 'accepted') {
-                return { type: 'pending_proof', label: 'Submit Proof', action: 'submit_proof' };
-            }
-        }
-
-        // ── 6. OTP Generation ─────────────────────────────────────────────────
-        // Only for the creator/faculty who generates the code (not for the assignee)
+        // ── 6. OTP Generation (Non-Assignee) ──────────────────────────────────
+        // Removed as per request.
         const requiresOtp = task.TaskPackageClosures?.some(c => c.TaskClosure?.name === 'otp');
-        if (requiresOtp && (isCreator || isAssignedFaculty) && !assignment) {
-            const hasInProgress = assignments.some(a => a.status === 'in_progress' || a.status === 'accepted');
-            if (hasInProgress) {
-                return { type: 'generate_otp', label: 'Generate OTP', action: 'otp' };
-            }
-        }
 
         // ── 6. Standard Assignee Activity Lifecycle ───────────────────────────
         if (assignment) {
             const status = assignment.status?.toLowerCase();
 
-            // ── 6a. Accepted ──────────────────────────────────────────────────
+            // ── 6a. Accepted (Requires Start) ─────────────────────────────────
             if (status === 'accepted') {
                 if (taskType) {
                     const startDate = taskType.start_date ? new Date(taskType.start_date) : null;
@@ -176,13 +160,16 @@ const getTaskButtonState = (task, userId, userRole) => {
                         return { type: 'activity', label: 'Activity Missed', action: 'missed' };
                     }
                 }
+                
+                if (requiresOtp) {
+                    return { type: 'activity', label: 'Start OTP', action: 'start_otp' };
+                }
                 return { type: 'activity', label: 'Start Activity', action: 'start' };
             }
 
-            // ── 6b. In Progress ───────────────────────────────────────────────
+            // ── 6b. In Progress (Requires End/Proof) ──────────────────────────
             if (['in_progress', 'started', 'in progress', 'ongoing'].includes(status)) {
                 // Long task (pause allowed): return pause/resume action.
-                // Frontend renders 2-button row: Pause/Resume + "Submit Proof & End" or "End Activity"
                 if (task.is_pause_allowed) {
                     if (assignment.is_paused) {
                         return { type: 'activity', label: 'Resume', action: 'resume' };
@@ -190,11 +177,16 @@ const getTaskButtonState = (task, userId, userRole) => {
                         return { type: 'activity', label: 'Pause', action: 'pause' };
                     }
                 }
-                // Regular task with proof: single "Submit Proof & End" button
+                
+                if (requiresOtp && task.is_document) {
+                    return { type: 'activity', label: 'Submit Proof & End OTP', action: 'end_otp' };
+                }
+                if (requiresOtp) {
+                    return { type: 'activity', label: 'End OTP', action: 'end_otp' };
+                }
                 if (task.is_document) {
                     return { type: 'activity', label: 'Submit Proof & End', action: 'submit_proof' };
                 }
-                // Regular task without proof: single "End Activity" button
                 return { type: 'activity', label: 'End Activity', action: 'end' };
             }
 
