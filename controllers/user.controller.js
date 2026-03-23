@@ -67,6 +67,7 @@ exports.createStudent = async (req, res) => {
             faculty_id: faculty_id || null,
             score: score || 0,
             penalty: penalty || 0,
+            total_score: (parseFloat(score) || 0) + (parseFloat(penalty) || 0),
             created_at: new Date(),
             updated_at: new Date()
         }, { transaction: t });
@@ -111,6 +112,9 @@ exports.createFaculty = async (req, res) => {
             email,
             department_id,
             type: type || null,
+            score: 0,
+            penalty: 0,
+            total_score: 0,
             created_at: new Date(),
             updated_at: new Date()
         }, { transaction: t });
@@ -169,6 +173,9 @@ exports.createStaff = async (req, res) => {
             name,
             email,
             designation,
+            score: 0,
+            penalty: 0,
+            total_score: 0,
             created_at: new Date(),
             updated_at: new Date()
         }, { transaction: t });
@@ -231,6 +238,9 @@ exports.createRoleUser = async (req, res) => {
             user_id: user.user_id,
             name,
             email,
+            score: 0,
+            penalty: 0,
+            total_score: 0,
             created_at: new Date(),
             updated_at: new Date()
         }, { transaction: t });

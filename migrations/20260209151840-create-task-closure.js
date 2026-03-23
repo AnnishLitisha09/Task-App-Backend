@@ -10,7 +10,7 @@ module.exports = {
         allowNull: false
       },
       name: {
-        type: Sequelize.ENUM('otp','document','image'),
+        type: Sequelize.STRING(50),
         allowNull: false
       },
       created_at: {
