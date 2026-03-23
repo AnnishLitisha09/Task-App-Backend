@@ -21,7 +21,7 @@ function calculateEndDateTime(startDate, startTime, durationHours) {
 const XLSX = require('xlsx');
 const os = require('os');
 const { canAssignTo } = require('./task.assignment');
-const { checkTaskOverlap, isWithinWorkHours, getWorkingMinutes, toISTDateStr, isOccurrence, adjustLongTaskStatus, createNotification } = require('../utils/task-utils');
+const { checkTaskOverlap, isWithinWorkHours, getWorkingMinutes, toISTDateStr, isOccurrence, adjustLongTaskStatus, createNotification, resolveTaskEscalations } = require('../utils/task-utils');
 const { MAX_DAILY_TASKS, PRIORITY_WEIGHTS } = require('../config/constants');
 
 
@@ -2617,6 +2617,9 @@ exports.updateTask = async (req, res) => {
 
             const taskType = task.TaskTypes && task.TaskTypes[0];
             if (taskType) {
+                const oldEndDate = taskType.end_date;
+                const oldEndTime = taskType.end_time;
+
                 await taskType.update({
                     task_name: typeData.task_name || taskType.task_name,
                     start_date: typeData.start_date !== undefined ? typeData.start_date : taskType.start_date,
@@ -2627,6 +2630,22 @@ exports.updateTask = async (req, res) => {
                     venue_id: typeData.venue_id !== undefined ? typeData.venue_id : taskType.venue_id,
                     recurrence: typeData.recurrence || taskType.recurrence
                 }, { transaction: t });
+
+                // If end date/time extended, resolve any pending escalations
+                const newEndDate = typeData.end_date || oldEndDate;
+                const newEndTime = typeData.end_time || oldEndTime;
+
+                if (newEndDate > oldEndDate || (newEndDate === oldEndDate && newEndTime > oldEndTime)) {
+                    // Check if new deadline is in the future
+                    const now = new Date();
+                    const istOffset = 330 * 60 * 1000;
+                    const localNow = new Date(now.getTime() + (now.getTimezoneOffset() * 60000) + istOffset);
+                    const deadline = new Date(`${newEndDate}T${newEndTime || '23:59:59'}`);
+
+                    if (deadline > localNow) {
+                        await resolveTaskEscalations(id, userId, t);
+                    }
+                }
             }
         }
 

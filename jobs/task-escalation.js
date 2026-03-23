@@ -19,7 +19,7 @@ const processAllEscalations = async () => {
     }
     isProcessingEscalations = true;
     try {
-        if (new Date().getDay() === 0) return; // Skip Sunday
+        // if (new Date().getDay() === 0) return; // Skip Sunday (TEMPORARILY DISABLED FOR TESTING)
 
         const now = new Date();
         const istOffset = 330 * 60 * 1000;
@@ -92,7 +92,10 @@ const processAllEscalations = async () => {
                 {
                     model: Task,
                     where: { is_deleted: false },
-                    include: [{ model: TaskType }]
+                    include: [
+                        { model: TaskType },
+                        { model: TaskAssign, attributes: ['id'] } // NEW: to check single vs multiple assignees
+                    ]
                 },
                 { model: User, attributes: ['user_id', 'role'] }
             ]
@@ -107,6 +110,10 @@ const processAllEscalations = async () => {
             const taskEndTime = isLongTask ? '16:30:00' : tt.end_time;
             if (!taskEndTime) continue;
 
+            // Check if single person assignment
+            const assigneeCount = a.Task?.TaskAssigns?.length || 0;
+            const isSinglePerson = assigneeCount === 1;
+
             // Student Check: No escalation at 1 hour for students
             const user = a.User;
             const isStudent = user && user.role && user.role.toLowerCase() === 'student';
@@ -118,23 +125,37 @@ const processAllEscalations = async () => {
                 const elapsedWorkingMins = getWorkingMinutes(endDateTime, localNow);
 
                 if (localNow > endDateTime) {
+                    console.log(`[DEBUG] Task ${a.task_id} is OVERDUE. localNow: ${localNow.toISOString()}, endDateTime: ${endDateTime.toISOString()}`);
                     if (isDocumentRequired) {
                         // Rule: 6 working hours for proof submission
                         if (elapsedWorkingMins >= (6 * 60)) {
+                            console.log(`[DEBUG] Task ${a.task_id} escalating due to Document Timeout`);
                             await escalateAssignment(a, 'Proof Submission Deadline Expired (6 Working Hours)', supervisorCache);
                             continue;
                         }
                     } else {
-                        // Standard: 1 hour buffer for non-document tasks
+                        // Standard: Check for buffer
                         const [h, m] = taskEndTime.split(':').map(Number);
-                        const endMinutes = h * 60 + m + 60; 
+                        
+                        // NEW: Single person task escalates IMMEDIATELY (no buffer)
+                        // Multiple person tasks still get 1 hour buffer
+                        const bufferMinutes = isSinglePerson ? 0 : 60;
+                        const endMinutesWithBuffer = h * 60 + m + bufferMinutes; 
+                        
                         const currentMinutes = localNow.getHours() * 60 + localNow.getMinutes();
+                        console.log(`[DEBUG] Task ${a.task_id} buffer check: currentMinutes: ${currentMinutes}, endMinutesWithBuffer: ${endMinutesWithBuffer}, isSinglePerson: ${isSinglePerson}`);
 
-                        if (taskEndStr < todayStr || (taskEndStr === todayStr && currentMinutes > endMinutes)) {
-                            await escalateAssignment(a, 'Task Overdue (Not completed 1 hour after end time)', supervisorCache);
+                        if (taskEndStr < todayStr || (taskEndStr === todayStr && currentMinutes > endMinutesWithBuffer)) {
+                            const reason = isSinglePerson 
+                                ? 'Task Overdue (Immediate escalation for single assignee)' 
+                                : 'Task Overdue (Not completed 1 hour after end time)';
+                            console.log(`[DEBUG] Task ${a.task_id} escalating due to Standard Timeout: ${reason}`);
+                            await escalateAssignment(a, reason, supervisorCache);
                             continue;
                         }
                     }
+                } else {
+                    console.log(`[DEBUG] Task ${a.task_id} NOT overdue yet. localNow: ${localNow.toISOString()}, endDateTime: ${endDateTime.toISOString()}`);
                 }
             }
 
@@ -236,7 +257,7 @@ const escalateAssignment = async (assign, reason, cache = null, forcedSupervisor
 
         // 1. Move status to escalated
         await assign.update({ status: 'escalated' });
-        await Task.update({ is_escalate: true, status: 'Escalated' }, { where: { task_id: assign.task_id } });
+        await Task.update({ is_escalate: true }, { where: { task_id: assign.task_id } });
 
         // 2. Log Action
         await TaskLog.create({

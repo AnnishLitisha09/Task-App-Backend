@@ -645,14 +645,13 @@ exports.getHodDashboard = async (req, res) => {
 };
 
 /**
- * Dedicated API for HOD to fetch all tasks created in their department (Paginated)
+ * Dedicated API for HOD to fetch all tasks created in their department
  * GET /api/users/dashboard/department-tasks
  */
 exports.getDepartmentalTasks = async (req, res) => {
     try {
         const userId = req.userId;
         const { Op } = require('sequelize');
-        const { limit, offset, page } = getPagination(req.query);
 
         // 1. Identify HOD and their Department
         const hodAssignment = await RoleAssignment.findOne({
@@ -704,7 +703,7 @@ exports.getDepartmentalTasks = async (req, res) => {
         const { literal } = require('sequelize');
 
         // 4. Fetch Tasks created by these users for the effective date
-        const tasks = await Task.findAndCountAll({
+        const tasks = await Task.findAll({
             where: {
                 is_deleted: false,
                 creator_id: { [Op.in]: deptUserIds }
@@ -727,13 +726,11 @@ exports.getDepartmentalTasks = async (req, res) => {
                 },
                 { model: User, as: 'Creator', attributes: ['user_id', 'role'] }
             ],
-            order: [['created_at', 'DESC']],
-            limit,
-            offset
+            order: [['created_at', 'DESC']]
         });
 
         // 5. Batch fetch names
-        const creatorIds = [...new Set(tasks.rows.map(t => t.creator_id))];
+        const creatorIds = [...new Set(tasks.map(t => t.creator_id))];
         const creators = await User.findAll({
             where: { user_id: { [Op.in]: creatorIds } },
             include: [
@@ -750,7 +747,7 @@ exports.getDepartmentalTasks = async (req, res) => {
             creatorMap[c.user_id] = p ? p.name : `User #${c.user_id}`;
         });
 
-        const formatted = tasks.rows.map(t => ({
+        const formatted = tasks.map(t => ({
             task_id: t.task_id,
             title: t.title,
             category: t.category,
@@ -762,9 +759,7 @@ exports.getDepartmentalTasks = async (req, res) => {
 
         res.json({
             success: true,
-            totalItems: tasks.count,
-            totalPages: Math.ceil(tasks.count / limit),
-            currentPage: page,
+            totalItems: tasks.length,
             items: formatted
         });
 

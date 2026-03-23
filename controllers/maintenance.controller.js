@@ -141,7 +141,7 @@ exports.getMaintenanceLogs = async (req, res) => {
     try {
         const { venue_id, resource_id, date } = req.query;
         const userId = req.userId;
-        const userRole = req.role; // Assuming verifyToken populates this
+        const userRole = req.userRole; // Changed from req.role to req.userRole
 
         const where = {};
         
@@ -182,32 +182,11 @@ exports.getMaintenanceLogs = async (req, res) => {
             if (resource_id) where.resource_id = resource_id;
         }
 
-        // 2. Date Filter
         if (date) {
-            const startOfDate = new Date(date);
-            startOfDate.setHours(0, 0, 0, 0);
-            const endOfDate = new Date(date);
-            endOfDate.setHours(23, 59, 59, 999);
-
-            where[Op.or] = [
-                // Created on this date
-                {
-                    created_at: {
-                        [Op.between]: [startOfDate, endOfDate]
-                    }
-                },
-                // OR Active during this date (start_time <= end and end_time >= start)
-                {
-                    [Op.and]: [
-                        { start_time: { [Op.lte]: endOfDate } },
-                        { 
-                            [Op.or]: [
-                                { end_time: null },
-                                { end_time: { [Op.gte]: startOfDate } }
-                            ]
-                        }
-                    ]
-                }
+            // Using literal DATE() comparison to filter strictly by created_at date
+            where[Op.and] = [
+                ...(where[Op.and] || []),
+                literal(`DATE(MaintenanceLog.created_at) = '${date}'`)
             ];
         }
 
@@ -217,7 +196,7 @@ exports.getMaintenanceLogs = async (req, res) => {
                 { model: Venue, attributes: ['name'] },
                 { model: Resource, attributes: ['name'] }
             ],
-            order: [['created_at', 'DESC']]
+            order: [['createdAt', 'DESC']]
         });
 
         res.json({ success: true, logs });
@@ -263,7 +242,7 @@ exports.getMaintenanceLogsByVenue = async (req, res) => {
                 { model: Venue, attributes: ['name'] },
                 { model: Resource, attributes: ['name'] }
             ],
-            order: [['created_at', 'DESC']]
+            order: [['createdAt', 'DESC']]
         });
 
         res.json({ success: true, venue_id: venueId, total: logs.length, logs });

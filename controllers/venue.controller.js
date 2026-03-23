@@ -28,25 +28,24 @@ async function fetchCreatorNames(userIds) {
     const map = {};
     creators.forEach(c => {
         const profile = c.Student || c.Faculty || c.Staff || c.RoleUser;
-        let roleLabel = c.role ? (c.role.charAt(0).toUpperCase() + c.role.slice(1).toLowerCase()) : 'User';
+        let roleName = c.role ? (c.role.charAt(0).toUpperCase() + c.role.slice(1).toLowerCase()) : 'User';
 
-        // If it's a role-user, prioritize the specific roles assigned
+        // Advanced role-label for role-user (HOD, Principal, etc.)
         if (c.role === 'role-user' && c.RoleAssignments && c.RoleAssignments.length > 0) {
             const specificRoles = c.RoleAssignments
                 .map(ra => ra.Role?.user_role)
                 .filter(Boolean);
             if (specificRoles.length > 0) {
-                // Join multiple roles if they exist, e.g. "HOD, Principal"
-                roleLabel = [...new Set(specificRoles)].join(', ');
+                roleName = [...new Set(specificRoles)].join(', ');
             }
         }
 
         if (profile) {
-            map[c.user_id] = `${profile.name} (${roleLabel})`;
+            map[c.user_id] = `${profile.name} (${roleName})`;
         } else if (c.role && c.role.toLowerCase() === 'admin') {
-            map[c.user_id] = 'Admin';
+            map[c.user_id] = `Administrator (Admin)`;
         } else {
-            map[c.user_id] = `${roleLabel} #${c.user_id}`;
+            map[c.user_id] = `User #${c.user_id} (${roleName})`;
         }
     });
     return map;
@@ -186,7 +185,7 @@ exports.getVenueDashboard = async (req, res) => {
                     description: t.description,
                     category: t.category,
                     priority: t.priority,
-                    booked_by: creatorMap[t.creator_id] || `User #${t.creator_id}`,
+                    booked_by: creatorMap[t.creator_id] || `Unknown User (${t.creator_id})`,
                     venue_approval_status: inchargeStatus || 'not_assigned',
                     timing: tt ? {
                         start_time: tt.start_time,
@@ -367,7 +366,7 @@ exports.getVenueHistory = async (req, res) => {
                 task_id: t.task_id,
                 title: t.title,
                 category: t.category,
-                booked_by: creatorMap[t.creator_id] || `User #${t.creator_id}`,
+                booked_by: creatorMap[t.creator_id] || `Unknown User (${t.creator_id})`,
                 venue_approval_status: inchargeStatus,
                 date: tt?.start_date,
                 timing: tt ? `${tt.start_time} - ${tt.end_time}` : 'N/A'
@@ -496,7 +495,7 @@ exports.getVenueDetails = async (req, res) => {
                 timing: tt ? `${tt.start_time} - ${tt.end_time}` : 'N/A',
                 from_time: tt ? tt.start_time : null,
                 to_time: tt ? tt.end_time : null,
-                booked_by: creatorMap[t.creator_id] || `User #${t.creator_id}`
+                booked_by: creatorMap[t.creator_id] || `Unknown User (${t.creator_id})`
             };
 
             if (status === 'accepted') confirmedBookings.push(entry);
@@ -656,7 +655,7 @@ exports.getManagedVenuesDetails = async (req, res) => {
                     title: t.title,
                     from_time: tt ? tt.start_time : null,
                     to_time: tt ? tt.end_time : null,
-                    booked_by: creatorMap[t.creator_id] || `User #${t.creator_id}`
+                    booked_by: creatorMap[t.creator_id] || `Unknown User (${t.creator_id})`
                 };
 
                 if (status === 'accepted') confirmedBookings.push(entry);
