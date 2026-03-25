@@ -147,13 +147,23 @@ const getTaskButtonState = (task, userId, userRole) => {
         // Find the current user's assignment
         const assignment = assignments.find(a => String(a.user_id) === uId);
 
-        // ── 0. Final States (Completed / Cancelled) ───────────────────────────
-        if (['completed', 'cancelled', 'inactive', 'closed'].includes(task.status?.toLowerCase())) {
-            // If already an assignee, they'll see their badge later (priority 6)
-            // But for managers/creators who aren't assigned, we should show nothing or Manage Task
+        // ── 0. Final & Intermediate States ──────────────────────────────────
+        const taskStatus = task.status?.toLowerCase();
+        
+        // 0a. Task Inactive/Queued (For sequential sub-tasks)
+        if (taskStatus === 'inactive') {
+            if (assignment) {
+                return { type: 'activity', label: 'Queued', action: 'queued' };
+            }
+            // For managers, we show nothing or let them click 'Execute/Manage' if they need to override
+        }
+
+        // 0b. Final States (Completed / Cancelled)
+        if (['completed', 'cancelled', 'closed'].includes(taskStatus)) {
             if (!assignment) {
                 return null;
             }
+            // Assignees see their final status badge below (Priority 6)
         }
 
         // Role Checks
@@ -162,20 +172,23 @@ const getTaskButtonState = (task, userId, userRole) => {
         const isAssignedFaculty = task.is_faculty && String(task.faculty_id) === uId;
 
         // ── 1. Higher Authority Approval ──────────────────────────────────────
-        // Designated approver who hasn't approved yet — different from proof verification
+        // Designated approver who hasn't approved yet
         if (task.approver_id && String(task.approver_id) === uId && !task.is_approved) {
             return { type: 'approve_task', label: 'Approve Task', action: 'approve' };
         }
 
         // ── 2. Acceptance Step ────────────────────────────────────────────────
         // Assignee hasn't accepted/rejected yet
-        if (assignment && ['pending', 'review', 'Review'].includes(assignment.status)) {
-            return { type: 'request', label: 'Accept / Reject', action: 'acceptance' };
+        if (assignment && (['pending', 'review', 'Review', 'queued'].includes(assignment.status))) {
+            // Only allow acceptance if task is Active (or it's a root task)
+            if (taskStatus !== 'inactive') {
+                return { type: 'request', label: 'Accept / Reject', action: 'acceptance' };
+            }
         }
 
         // ── 3. Escalation / Directive ─────────────────────────────────────────
         const hasActiveEscalation = (escalations && escalations.some(e => ['pending', 'active'].includes(e.status))) || task.is_escalate;
-        if (hasActiveEscalation || task.status?.toLowerCase() === 'escalated') {
+        if (hasActiveEscalation || taskStatus === 'escalated') {
             // ONLY show to manager/creator/assigned faculty who are NOT the current active performer
             if (isManager || isCreator || isAssignedFaculty) {
                 // If I have an assignment, only show escalated if it's not already beyond acceptance
@@ -186,7 +199,6 @@ const getTaskButtonState = (task, userId, userRole) => {
         }
 
         // ── 4. Proof Verification ─────────────────────────────────────────────
-        // Manager/creator reviews submitted proof documents (DIFFERENT from task approval)
         const hasProofsToVerify = assignments.some(a =>
             (a.status === 'completed' || a.status === 'Review') && a.proof
         );
@@ -194,13 +206,8 @@ const getTaskButtonState = (task, userId, userRole) => {
             return { type: 'verify_proof', label: 'Review Submissions', action: 'verify' };
         }
 
-        // ── 6. OTP Generation (Non-Assignee) ──────────────────────────────────
-        // Removed as per request.
-        // --- UPDATED: OTP requirement for Students Only ---
-        const requiresOtp = uRole === 'student';
-
         // ── 6. Standard Assignee Activity Lifecycle ───────────────────────────
-        if (assignment) {
+        if (assignment && taskStatus === 'active') {
             const status = assignment.status?.toLowerCase();
 
             // ── 6a. Accepted (Requires Start) ─────────────────────────────────
@@ -231,6 +238,7 @@ const getTaskButtonState = (task, userId, userRole) => {
                     }
                 }
                 
+                const requiresOtp = uRole === 'student';
                 if (requiresOtp) {
                     return { type: 'activity', label: 'Start OTP', action: 'start_otp' };
                 }
@@ -239,7 +247,7 @@ const getTaskButtonState = (task, userId, userRole) => {
 
             // ── 6b. In Progress (Requires End/Proof) ──────────────────────────
             if (['in_progress', 'started', 'in progress', 'ongoing'].includes(status)) {
-                // Long task (pause allowed): return pause/resume action.
+                // Long task (pause allowed)
                 if (task.is_pause_allowed) {
                     if (assignment.is_paused) {
                         return { type: 'activity', label: 'Resume', action: 'resume' };
