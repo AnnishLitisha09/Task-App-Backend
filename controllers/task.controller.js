@@ -381,6 +381,9 @@ const normalizeTaskPayload = async (body) => {
     payload.assignee_ids = finalIds;
 
     // Faculty specific normalization & PK Resolution
+    if (payload.faculty_ids && Array.isArray(payload.faculty_ids) && payload.faculty_ids.length > 0) {
+        if (!payload.faculty_id) payload.faculty_id = payload.faculty_ids[0];
+    }
     if (payload.facultyId && !payload.faculty_id) payload.faculty_id = payload.facultyId;
     if (payload.isFaculty !== undefined && payload.is_faculty === undefined) payload.is_faculty = payload.isFaculty;
 
