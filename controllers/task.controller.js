@@ -1,6 +1,62 @@
 const { Task, TaskAssign, TaskType, TaskPackageClosure, TaskClosure, User, Student, Faculty, Staff, RoleUser, RoleAssignment, Role, Department, TaskEscalation, AuthAccount, Notification, TaskLog, TaskTitle, Venue, TaskApprovalRequest } = require('../models');
 const { Op } = require('sequelize');
 
+function calculateEndWorkingDateTime(startDate, startTime, durationHours) {
+    if (!startDate || !startTime || !durationHours) return null;
+    
+    let [h, m, s] = startTime.split(':').map(Number);
+    let current = new Date(startDate);
+    current.setHours(h, m, s || 0);
+
+    const workStartMinutes = 8 * 60 + 45; // 08:45
+    const workEndMinutes = 16 * 60 + 30;  // 16:30
+    const dailyWorkMinutes = workEndMinutes - workStartMinutes;
+
+    let remainingMinutes = parseFloat(durationHours) * 60;
+
+    // 1. Initial Adjustment: If start time is before working hours, move to start of work
+    let currentTotalMinutes = current.getHours() * 60 + current.getMinutes();
+    if (currentTotalMinutes < workStartMinutes) {
+        current.setHours(8, 45, 0);
+        currentTotalMinutes = workStartMinutes;
+    } else if (currentTotalMinutes >= workEndMinutes) {
+        // Move to next day
+        current.setDate(current.getDate() + 1);
+        current.setHours(8, 45, 0);
+        currentTotalMinutes = workStartMinutes;
+    }
+
+    // 2. Walk forward
+    while (remainingMinutes > 0) {
+        // Skip Sundays
+        if (current.getDay() === 0) {
+            current.setDate(current.getDate() + 1);
+            current.setHours(8, 45, 0);
+            currentTotalMinutes = workStartMinutes;
+            continue;
+        }
+
+        let minutesAvailableToday = workEndMinutes - currentTotalMinutes;
+        
+        if (remainingMinutes <= minutesAvailableToday) {
+            // Fits in today
+            current.setMinutes(current.getMinutes() + remainingMinutes);
+            remainingMinutes = 0;
+        } else {
+            // Use up today and move to next day
+            remainingMinutes -= minutesAvailableToday;
+            current.setDate(current.getDate() + 1);
+            current.setHours(8, 45, 0);
+            currentTotalMinutes = workStartMinutes;
+        }
+    }
+
+    const end_date = current.toISOString().split('T')[0];
+    const end_time = current.toTimeString().split(' ')[0];
+    
+    return { end_date, end_time };
+}
+
 function calculateEndDateTime(startDate, startTime, durationHours) {
     if (!startDate || !startTime || !durationHours) return null;
     const [h, m, s] = startTime.split(':').map(Number);
@@ -317,13 +373,9 @@ const normalizeTaskPayload = async (body) => {
         console.error('Payload Normalization Parsing error:', e);
     }
 
-    // Consolidate different frontend assignment formats
+    // Consolidate assignee_id and assignee_ids
     let finalIds = [];
-    
-    // 1. Root level IDs
     if (payload.assignee_id) finalIds.push(parseInt(payload.assignee_id));
-    
-    // 2. assignee_ids array
     if (payload.assignee_ids) {
         const ids = Array.isArray(payload.assignee_ids) ? payload.assignee_ids : [payload.assignee_ids];
         ids.forEach(id => {
@@ -331,30 +383,10 @@ const normalizeTaskPayload = async (body) => {
             if (!isNaN(numericId) && !finalIds.includes(numericId)) finalIds.push(numericId);
         });
     }
-
-    // 3. Handle 'assignees' array of objects (Flutter specific)
-    if (payload.assignees && Array.isArray(payload.assignees)) {
-        payload.assignees.forEach(a => {
-            const uid = parseInt(a?.user_id || a?.userId || a?.id);
-            if (!isNaN(uid) && !finalIds.includes(uid)) finalIds.push(uid);
-        });
-    }
-
-    // 4. Handle 'faculty_ids' array (Frontend specific)
-    if (payload.faculty_ids && Array.isArray(payload.faculty_ids)) {
-        payload.faculty_ids.forEach(fid => {
-            const numericFid = parseInt(fid);
-            if (!isNaN(numericFid) && !finalIds.includes(numericFid)) finalIds.push(numericFid);
-        });
-    }
-
     payload.assignee_ids = finalIds;
 
     // Faculty specific normalization & PK Resolution
     if (payload.facultyId && !payload.faculty_id) payload.faculty_id = payload.facultyId;
-    if (!payload.faculty_id && payload.faculty_ids && payload.faculty_ids.length > 0) {
-        payload.faculty_id = payload.faculty_ids[0];
-    }
     if (payload.isFaculty !== undefined && payload.is_faculty === undefined) payload.is_faculty = payload.isFaculty;
 
     if (payload.faculty_id) {
@@ -381,9 +413,6 @@ const normalizeTaskPayload = async (body) => {
                 }
             }
         }
-    } else if (payload.is_faculty) {
-        // If is_faculty is true but no faculty_id given, check if any assignee is faculty
-        // This is handled later by auto-detect
     }
 
     // Staff specific normalization & PK Resolution
@@ -413,12 +442,6 @@ const normalizeTaskPayload = async (body) => {
     }
 
     if (typeof payload.is_faculty === 'string') payload.is_faculty = (payload.is_faculty === 'true' || payload.is_faculty === '1');
-    
-    // Auto-detect faculty task if any assignee is a faculty
-    if (!payload.is_faculty && payload.assignee_ids.length > 0) {
-        const facultyCount = await Faculty.count({ where: { user_id: { [Op.in]: payload.assignee_ids } } });
-        if (facultyCount > 0) payload.is_faculty = true;
-    }
     payload.is_faculty = !!payload.is_faculty;
 
     // Consistency: Map generic names to canonical names
@@ -439,16 +462,14 @@ const normalizeTaskPayload = async (body) => {
     else if (payload.approver_id) payload.requires_approval = true; // NEW: If ID is given, assume approval is needed
     else payload.requires_approval = !!payload.requires_approval;
 
-    if (typeof payload.is_document === 'string') payload.is_document = (payload.is_document === 'true');
-    payload.is_document = !!payload.is_document;
-
     if (typeof payload.is_approved === 'string') payload.is_approved = payload.is_approved === 'true';
     if (typeof payload.is_mandatory === 'string') payload.is_mandatory = payload.is_mandatory === 'true';
     if (typeof payload.is_package === 'string') payload.is_package = payload.is_package === 'true';
+    if (typeof payload.is_document === 'string') payload.is_document = payload.is_document === 'true';
+    payload.is_document = !!payload.is_document;
 
     return payload;
 };
-
 // Create Task
 exports.createTask = async (req, res) => {
     const t = await Task.sequelize.transaction();
@@ -1820,7 +1841,17 @@ exports.createUnifiedTask = async (req, res) => {
             let parentFinalEndDate = (task_type_data.task_name === 'Recurring Task') ? oDate : (task_type_data.end_date || oDate);
             let parentFinalEndTime = task_type_data.end_time || null;
 
-            if (task_type_data.time_quota_hours && !task_type_data.end_time) {
+            if (max_duration_hours && !task_type_data.end_time) {
+                const calculated = calculateEndWorkingDateTime(
+                    oDate,
+                    task_type_data.start_time,
+                    max_duration_hours
+                );
+                if (calculated) {
+                    parentFinalEndDate = calculated.end_date;
+                    parentFinalEndTime = calculated.end_time;
+                }
+            } else if (task_type_data.time_quota_hours && !task_type_data.end_time) {
                 const calculated = calculateEndDateTime(
                     oDate, // Use occurrence date for recurring tasks
                     task_type_data.start_time,
@@ -1841,6 +1872,7 @@ exports.createUnifiedTask = async (req, res) => {
                 start_time: task_type_data.start_time || null,
                 end_time: parentFinalEndTime,
                 time_quota_hours: task_type_data.time_quota_hours || null,
+                max_duration_hours: max_duration_hours || null,
                 venue_id: task_type_data.venue_id || null,
                 recurrence: 'none',
                 max_acceptances: task_type_data.max_acceptances || null
@@ -1996,13 +2028,28 @@ exports.createUnifiedTask = async (req, res) => {
                         status: requires_approval ? 'Pending Approval' : 'Active'
                     }, { transaction: t });
 
+                    let childFinalEndDate = sub.end_date || sub.start_date || oDate;
+                    let childFinalEndTime = sub.end_time || null;
+
+                    if (sub.max_duration_hours && (sub.start_time || task_type_data.start_time)) {
+                        const calculated = calculateEndWorkingDateTime(
+                            sub.start_date || oDate,
+                            sub.start_time || task_type_data.start_time,
+                            sub.max_duration_hours
+                        );
+                        if (calculated) {
+                            childFinalEndDate = calculated.end_date;
+                            childFinalEndTime = calculated.end_time;
+                        }
+                    }
+
                     await TaskType.create({
                         task_id: childTask.task_id,
                         task_name: sub.task_name || 'Fixed Time Task',
                         start_date: sub.start_date || oDate,
-                        end_date: sub.end_date || oDate,
+                        end_date: childFinalEndDate,
                         start_time: sub.start_time || task_type_data.start_time || null,
-                        end_time: sub.end_time || task_type_data.end_time || null,
+                        end_time: childFinalEndTime || sub.end_time || task_type_data.end_time || null,
                         max_duration_hours: sub.max_duration_hours || null,
                         venue_id: sub.venue_id || venue_id || null,
                         recurrence: 'none'
@@ -5187,11 +5234,22 @@ exports.reviewTaskProof = async (req, res) => {
         res.status(500).json({ message: error.message });
     }
 };
+
 exports.rescheduleTask = async (req, res) => {
     try {
         const { id: taskId } = req.params;
         const { new_date, new_time, self_assign } = req.body;
         const userId = req.userId;
+
+        // --- NEW: Future Time Constraint ---
+        const now = new Date();
+        const istOffset = 330 * 60 * 1000;
+        const localNow = new Date(now.getTime() + (now.getTimezoneOffset() * 60000) + istOffset);
+
+        const scheduledTime = new Date(`${new_date}T${new_time || '00:00:00'}`);
+        if (scheduledTime < localNow) {
+            return res.status(400).json({ message: 'Rescheduled time must be in the future.' });
+        }
 
         const task = await Task.findByPk(taskId, {
             include: [{ model: TaskType }]
@@ -5240,5 +5298,4 @@ exports.rescheduleTask = async (req, res) => {
         res.status(500).json({ message: error.message });
     }
 };
-
 module.exports = exports;

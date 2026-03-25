@@ -178,13 +178,13 @@ const processAllEscalations = async () => {
         }
 
 
-        // Trigger 4: Sub-task TIMEOUT (max_duration_hours in working hours)
-        const subTasksWithTimeout = await TaskAssign.findAll({
+        // Trigger 4: UNIVERSAL Man-Time TIMEOUT (max_duration_hours in working hours)
+        const tasksWithTimeout = await TaskAssign.findAll({
             where: { status: { [Op.in]: ['pending', 'accepted', 'in_progress'] } },
             include: [
                 {
                     model: Task,
-                    where: { is_deleted: false, parent_task_id: { [Op.ne]: null } },
+                    where: { is_deleted: false },
                     include: [{ 
                         model: TaskType,
                         where: { max_duration_hours: { [Op.ne]: null } }
@@ -194,24 +194,26 @@ const processAllEscalations = async () => {
             ]
         });
 
-        for (const a of subTasksWithTimeout) {
+        for (const a of tasksWithTimeout) {
             const tt = a.Task?.TaskTypes?.[0];
             if (!tt || !tt.max_duration_hours) continue;
 
             const user = a.User;
             const isStudent = user && user.role && user.role.toLowerCase() === 'student';
 
-            // For sub-tasks, the "active" time starts from when it was unqueued/created (updated_at)
-            // or when it was specifically accepted.
-            const startTime = (a.status === 'pending') ? new Date(a.updated_at) : (a.accepted_at ? new Date(a.accepted_at) : new Date(a.updated_at));
+            // Start time for timeout calculation:
+            // If pending: use assignment creation/update time
+            // If accepted/in_progress: use accepted_at time
+            const startTime = (a.status === 'pending') ? new Date(a.updated_at) : (a.accepted_at ? new Date(a.accepted_at) : new Date(a.created_at));
             const istStartTime = new Date(startTime.getTime() + (startTime.getTimezoneOffset() * 60000) + istOffset);
             
             const elapsedWorkingMins = getWorkingMinutes(istStartTime, localNow);
             const maxMins = parseFloat(tt.max_duration_hours) * 60;
 
             if (elapsedWorkingMins > maxMins) {
-                // For sub-tasks, if no supervisor or if specifically requested, escalate to creator
-                const reason = `Sub-task timeout: Exceeded ${tt.max_duration_hours} working hours (${a.status})`;
+                // Escalate directly to CREATOR as requested by the user
+                const reason = `Man-Time timeout: Exceeded ${tt.max_duration_hours} working hours (${a.status})`;
+                console.log(`[ESCALATION] Task ${a.task_id} User ${a.user_id} TIMEOUT. Elapsed: ${elapsedWorkingMins}m, Max: ${maxMins}m. Escalating to Creator: ${a.Task.creator_id}`);
                 await escalateAssignment(a, reason, supervisorCache, a.Task.creator_id);
             }
         }

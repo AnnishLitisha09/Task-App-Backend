@@ -413,6 +413,36 @@ async function createNotification({ userId, title, msg, type = 'general', venueI
     }, { transaction });
 }
 
+/**
+ * Checks if an escalated task is scheduled for a future time.
+ * @param {number} taskId 
+ * @returns {Promise<boolean>}
+ */
+const isEscalatedTaskFuture = async (taskId) => {
+    const { Task, TaskType } = require('../models');
+    const task = await Task.findByPk(taskId, { include: [TaskType] });
+    if (!task) return true;
+
+    const isEscalated = task.status?.toLowerCase() === 'escalated' || task.is_escalate;
+    if (!isEscalated) return true;
+
+    if (task.TaskTypes && task.TaskTypes.length > 0) {
+        const tt = task.TaskTypes[0];
+        const now = new Date();
+        const istOffset = 330 * 60 * 1000;
+        // Local now in IST
+        const localNow = new Date(now.getTime() + (now.getTimezoneOffset() * 60000) + istOffset);
+
+        // Deadline check
+        const dateStr = tt.end_date ? new Date(tt.end_date).toISOString().split('T')[0] : new Date(tt.start_date).toISOString().split('T')[0];
+        const timeStr = tt.end_time || '23:59:59';
+        const deadline = new Date(`${dateStr}T${timeStr}`);
+
+        return deadline > localNow;
+    }
+    return true;
+};
+
 module.exports = { 
     checkTaskOverlap, 
     isWithinWorkHours, 
@@ -421,5 +451,6 @@ module.exports = {
     toISTDateStr, 
     isOccurrence,
     adjustLongTaskStatus,
-    createNotification
+    createNotification,
+    isEscalatedTaskFuture
 };
