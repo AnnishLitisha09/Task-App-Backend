@@ -472,10 +472,18 @@ exports.addVenue = async (req, res) => {
                 return res.status(404).json({ message: 'Incharge user not found' });
             }
 
-            const role = await Role.findOne({ where: { user_role: role_name } });
+            let role = await Role.findOne({ where: { user_role: role_name } });
+
+            // --- Fallback Logic: If specific role not found, find any 'INCHARGE' role ---
+            if (!role) {
+                role = await Role.findOne({ 
+                    where: { user_role: { [Op.like]: '%INCHARGE%' } } 
+                });
+            }
+
             if (!role) {
                 await t.rollback();
-                return res.status(404).json({ message: `Role '${role_name}' not found` });
+                return res.status(404).json({ message: `Role '${role_name}' and generic 'INCHARGE' role not found` });
             }
 
             await RoleAssignment.create({
@@ -537,10 +545,18 @@ exports.updateVenue = async (req, res) => {
                 return res.status(404).json({ message: 'Incharge user not found' });
             }
 
-            const role = await Role.findOne({ where: { user_role: role_name } });
+            let role = await Role.findOne({ where: { user_role: role_name } });
+            
+            // --- Fallback Logic: If specific role not found, find any 'INCHARGE' role ---
+            if (!role) {
+                role = await Role.findOne({ 
+                    where: { user_role: { [Op.like]: '%INCHARGE%' } } 
+                });
+            }
+
             if (!role) {
                 await t.rollback();
-                return res.status(404).json({ message: `Role '${role_name}' not found` });
+                return res.status(404).json({ message: `Role '${role_name}' and generic 'INCHARGE' role not found` });
             }
 
             // Remove any existing assignments for this venue
@@ -847,13 +863,22 @@ exports.assignVenueIncharge = async (req, res) => {
             return res.status(404).json({ message: 'User not found' });
         }
 
-        const role = await Role.findOne({
+        let role = await Role.findOne({
             where: { user_role: role_name },
             include: [{ model: Scope }]
         });
+
+        // --- Fallback Logic: If specific role not found, find any 'INCHARGE' role ---
+        if (!role) {
+            role = await Role.findOne({ 
+                where: { user_role: { [Op.like]: '%INCHARGE%' } },
+                include: [{ model: Scope }]
+            });
+        }
+
         if (!role) {
             await t.rollback();
-            return res.status(404).json({ message: `Role '${role_name}' not found` });
+            return res.status(404).json({ message: `Role '${role_name}' and generic 'INCHARGE' role not found` });
         }
 
         // --- NEW: Sync RoleUser Profile ---
