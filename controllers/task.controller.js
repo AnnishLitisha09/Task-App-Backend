@@ -556,7 +556,8 @@ exports.createTask = async (req, res) => {
             faculty_id: faculty_id || null,
             creator_id: userId,
             is_approved: true,
-            status: 'Active'
+            status: 'Active',
+            stage: 'Active'
         }, { transaction: t });
 
         // Auto-calculate end date/time if duration provided
@@ -1265,6 +1266,9 @@ exports.submitTaskProof = async (req, res) => {
         // Resolve any existing escalations for this user/task
         const { resolveTaskEscalations, adjustLongTaskStatus } = require('../utils/task-utils');
         await resolveTaskEscalations(id, userId);
+        
+        // Update Task Stage to Inactive
+        await task.update({ stage: 'Inactive' });
 
         // After completing task, adjust long task status (it will resume another long task if nothing else is active)
         await adjustLongTaskStatus(userId);
@@ -1910,7 +1914,8 @@ exports.createUnifiedTask = async (req, res) => {
                 faculty_id: faculty_id || null,
                 creator_id: userId,
                 origin_type: origin_type || 'directive',
-                status: requires_approval ? 'Pending Approval' : 'Active'
+                status: requires_approval ? 'Pending Approval' : 'Active',
+                stage: 'Active'
             }, { transaction: t });
 
             createdTaskIds.push(parentTask.task_id);
@@ -2093,7 +2098,8 @@ exports.createUnifiedTask = async (req, res) => {
                         creator_id: userId,
                         origin_type: origin_type || 'directive',
                         status: requires_approval ? 'Pending Approval' : (sequenceOrder === 1 ? 'Active' : 'Inactive'),
-                        sequence_order: sequenceOrder++
+                        sequence_order: sequenceOrder++,
+                        stage: 'Active'
                     }, { transaction: t });
 
                     const isFirstSub = (childTask.sequence_order === 1);
@@ -2285,7 +2291,8 @@ exports.createUnifiedTask = async (req, res) => {
                             parent_task_id: parentTask.task_id,
                             venue_id: vid,
                             creator_id: userId,
-                            status: 'Active'
+                            status: 'Active',
+                            stage: 'Active'
                         }, { transaction: t });
 
                         await TaskType.create({
@@ -2444,7 +2451,8 @@ exports.finalizeTaskAssignments = async (approvalRequest, transaction = null) =>
         // 1. Update all tasks to Active and Approved
         await Task.update({
             is_approved: true,
-            status: 'Active'
+            status: 'Active',
+            stage: 'Active'
         }, {
             where: { task_id: taskIds },
             transaction: t
@@ -2504,7 +2512,7 @@ exports.finalizeTaskAssignments = async (approvalRequest, transaction = null) =>
                     if (!childTask) continue;
 
                     // Update child task
-                    await childTask.update({ is_approved: true, status: 'Active' }, { transaction: t });
+                    await childTask.update({ is_approved: true, status: 'Active', stage: 'Active' }, { transaction: t });
 
                     const subAssigneeIds = [];
                     if (sub.assignee_id) subAssigneeIds.push(parseInt(sub.assignee_id));
@@ -2600,7 +2608,8 @@ exports.finalizeTaskAssignments = async (approvalRequest, transaction = null) =>
                         parent_task_id: taskId,
                         venue_id: vid,
                         creator_id: userId,
-                        status: 'Active'
+                        status: 'Active',
+                        stage: 'Active'
                     }, { transaction: t });
 
                     if (taskType) {
@@ -5355,7 +5364,7 @@ exports.rescheduleTask = async (req, res) => {
         const { resolveTaskEscalations } = require('../utils/task-utils');
         await resolveTaskEscalations(taskId, userId);
         // Explicitly clear task status and flags
-        await task.update({ is_escalate: false, status: 'Active' });
+        await task.update({ is_escalate: false, status: 'Active', stage: 'Active' });
 
         // 3. Optional Self-Assignment (Common for directed resolutions)
         if (self_assign) {

@@ -210,7 +210,7 @@ const resolveTaskEscalations = async (taskId, userId, transaction = null) => {
         );
 
         // 2. Clear the global flag on the Task
-        await Task.update({ is_escalate: false, status: 'Active' }, { 
+        await Task.update({ is_escalate: false, status: 'Active', stage: 'Active' }, { 
             where: { task_id: taskId },
             transaction 
         });
