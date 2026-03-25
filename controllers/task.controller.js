@@ -127,7 +127,8 @@ const getTaskButtonState = (task, userId, userRole) => {
 
         // ── 6. OTP Generation (Non-Assignee) ──────────────────────────────────
         // Removed as per request.
-        const requiresOtp = task.TaskPackageClosures?.some(c => c.TaskClosure?.name === 'otp');
+        // --- UPDATED: OTP requirement for Students Only ---
+        const requiresOtp = uRole === 'student';
 
         // ── 6. Standard Assignee Activity Lifecycle ───────────────────────────
         if (assignment) {
@@ -175,6 +176,19 @@ const getTaskButtonState = (task, userId, userRole) => {
                         return { type: 'activity', label: 'Resume', action: 'resume' };
                     } else {
                         return { type: 'activity', label: 'Pause', action: 'pause' };
+                    }
+                }
+                
+                // --- NEW: Restricted End Activity Timing ---
+                if (taskType) {
+                    const endDate = taskType.end_date ? new Date(taskType.end_date) : new Date();
+                    const dateStr = endDate.toISOString().split('T')[0];
+                    const endTime = taskType.end_time || '23:59:59';
+                    const endDateTime = new Date(`${dateStr}T${endTime}`);
+                    
+                    const threshold = new Date(endDateTime.getTime() - 10 * 60 * 1000); // 10 mins before end
+                    if (now < threshold) {
+                        return null; // Too early to end
                     }
                 }
                 
@@ -303,9 +317,13 @@ const normalizeTaskPayload = async (body) => {
         console.error('Payload Normalization Parsing error:', e);
     }
 
-    // Consolidate assignee_id and assignee_ids
+    // Consolidate different frontend assignment formats
     let finalIds = [];
+    
+    // 1. Root level IDs
     if (payload.assignee_id) finalIds.push(parseInt(payload.assignee_id));
+    
+    // 2. assignee_ids array
     if (payload.assignee_ids) {
         const ids = Array.isArray(payload.assignee_ids) ? payload.assignee_ids : [payload.assignee_ids];
         ids.forEach(id => {
@@ -313,10 +331,30 @@ const normalizeTaskPayload = async (body) => {
             if (!isNaN(numericId) && !finalIds.includes(numericId)) finalIds.push(numericId);
         });
     }
+
+    // 3. Handle 'assignees' array of objects (Flutter specific)
+    if (payload.assignees && Array.isArray(payload.assignees)) {
+        payload.assignees.forEach(a => {
+            const uid = parseInt(a?.user_id || a?.userId || a?.id);
+            if (!isNaN(uid) && !finalIds.includes(uid)) finalIds.push(uid);
+        });
+    }
+
+    // 4. Handle 'faculty_ids' array (Frontend specific)
+    if (payload.faculty_ids && Array.isArray(payload.faculty_ids)) {
+        payload.faculty_ids.forEach(fid => {
+            const numericFid = parseInt(fid);
+            if (!isNaN(numericFid) && !finalIds.includes(numericFid)) finalIds.push(numericFid);
+        });
+    }
+
     payload.assignee_ids = finalIds;
 
     // Faculty specific normalization & PK Resolution
     if (payload.facultyId && !payload.faculty_id) payload.faculty_id = payload.facultyId;
+    if (!payload.faculty_id && payload.faculty_ids && payload.faculty_ids.length > 0) {
+        payload.faculty_id = payload.faculty_ids[0];
+    }
     if (payload.isFaculty !== undefined && payload.is_faculty === undefined) payload.is_faculty = payload.isFaculty;
 
     if (payload.faculty_id) {
@@ -343,6 +381,9 @@ const normalizeTaskPayload = async (body) => {
                 }
             }
         }
+    } else if (payload.is_faculty) {
+        // If is_faculty is true but no faculty_id given, check if any assignee is faculty
+        // This is handled later by auto-detect
     }
 
     // Staff specific normalization & PK Resolution
@@ -372,6 +413,12 @@ const normalizeTaskPayload = async (body) => {
     }
 
     if (typeof payload.is_faculty === 'string') payload.is_faculty = (payload.is_faculty === 'true' || payload.is_faculty === '1');
+    
+    // Auto-detect faculty task if any assignee is a faculty
+    if (!payload.is_faculty && payload.assignee_ids.length > 0) {
+        const facultyCount = await Faculty.count({ where: { user_id: { [Op.in]: payload.assignee_ids } } });
+        if (facultyCount > 0) payload.is_faculty = true;
+    }
     payload.is_faculty = !!payload.is_faculty;
 
     // Consistency: Map generic names to canonical names
@@ -391,6 +438,9 @@ const normalizeTaskPayload = async (body) => {
     else if (payload.approver == 1 || payload.approver === '1' || payload.approver === 'true') payload.requires_approval = true;
     else if (payload.approver_id) payload.requires_approval = true; // NEW: If ID is given, assume approval is needed
     else payload.requires_approval = !!payload.requires_approval;
+
+    if (typeof payload.is_document === 'string') payload.is_document = (payload.is_document === 'true');
+    payload.is_document = !!payload.is_document;
 
     if (typeof payload.is_approved === 'string') payload.is_approved = payload.is_approved === 'true';
     if (typeof payload.is_mandatory === 'string') payload.is_mandatory = payload.is_mandatory === 'true';
@@ -1817,9 +1867,9 @@ exports.createUnifiedTask = async (req, res) => {
                     const facultyAutoAccept = isFacultyAssignee ? (assigneeId === userId) : false;
 
                     // Auto-accept if it's mandatory (and not a faculty member being assigned by someone else), 
-                    // or if it's staff, or if it's a faculty assigning to themselves.
-                    // CRITICAL: If is_faculty = 1, we force it to pending so the faculty can explicitly accept/reject.
-                    let autoAccept = (is_mandatory && (!isFacultyAssignee || facultyAutoAccept)) || isStaff || facultyAutoAccept;
+                    // or if it's staff.
+                    // CRITICAL: Faculty members MUST always accept/reject manually, even if they are the creator.
+                    let autoAccept = (is_mandatory && !isFacultyAssignee) || (isStaff && !isFacultyAssignee);
                     if (is_faculty) autoAccept = false;
 
                     if (allowed) {
@@ -1936,7 +1986,7 @@ exports.createUnifiedTask = async (req, res) => {
                         venue_id: sub.venue_id || venue_id || null,
                         score: sub.score || 0,
                         penalty_per_hour: sub.penalty_per_hour || 0,
-                        is_document: sub.is_document || is_document || false,
+                        is_document: sub.is_document !== undefined ? (sub.is_document === true || sub.is_document === 'true') : (is_document || false),
                         is_mandatory: sub.is_mandatory || is_mandatory || false,
                         is_approved: requires_approval ? false : true,
                         approver_id: requires_approval ? approver_id : null,
