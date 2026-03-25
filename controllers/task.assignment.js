@@ -430,6 +430,9 @@ exports.selfAssignTask = async (req, res) => {
         // Resolve any existing escalations for this user/task
         const { resolveTaskEscalations } = require('../utils/task-utils');
         await resolveTaskEscalations(taskId, assigneeId);
+        
+        // Update Task Stage
+        await task.update({ stage: 'activity_start' });
 
         res.json({ message: 'Task self-assigned successfully' });
 

@@ -137,6 +137,7 @@ const getTaskButtonState = (task, userId, userRole) => {
         const now = new Date();
         const uId = userId ? String(userId) : null;
         const uRole = userRole?.toLowerCase() || '';
+        const stage = task.stage;
 
         // Ensure associations exist
         const assignments = task.TaskAssigns || [];
@@ -147,169 +148,141 @@ const getTaskButtonState = (task, userId, userRole) => {
         // Find the current user's assignment
         const assignment = assignments.find(a => String(a.user_id) === uId);
 
-        // ── 0. Final & Intermediate States ──────────────────────────────────
-        const taskStatus = task.status?.toLowerCase();
-        
-        // 0a. Task Inactive/Queued (For sequential sub-tasks)
-        if (taskStatus === 'inactive') {
-            if (assignment) {
-                return { type: 'activity', label: 'Queued', action: 'queued' };
-            }
-            // For managers, we show nothing or let them click 'Execute/Manage' if they need to override
-        }
-
-        // 0b. Final States (Completed / Cancelled)
-        if (['completed', 'cancelled', 'closed'].includes(taskStatus)) {
-            if (!assignment) {
-                return null;
-            }
-            // Assignees see their final status badge below (Priority 6)
-        }
-
-        // Role Checks
+        // ── 0. Permissions ──────────────────────────────────────────────────
         const isManager = ['admin', 'role-user', 'faculty', 'hod', 'principal', 'dean', 'incharge', 'registrar', 'director', 'staff'].includes(uRole);
         const isCreator = String(task.creator_id) === uId;
         const isAssignedFaculty = task.is_faculty && String(task.faculty_id) === uId;
+        const isAuthority = isManager || isCreator || isAssignedFaculty;
 
-        // ── 1. Higher Authority Approval ──────────────────────────────────────
-        // Designated approver who hasn't approved yet
-        if (task.approver_id && String(task.approver_id) === uId && !task.is_approved) {
+        // ── 1. Global / Termination States ──────────────────────────────────
+        if (['completed', 'cancelled', 'closed', 'Inactive'].includes(task.status)) {
+            if (assignment && ['completed', 'closed'].includes(assignment.status?.toLowerCase())) {
+                return { type: 'activity', label: 'Completed', action: 'completed' };
+            }
+            return null;
+        }
+
+        // ── 2. STAGE-DRIVEN LOGIC HIGH PRIORITY ──────────────────────────────
+        
+        // 2a. Authority Approval (Designated Approver)
+        if (stage === 'approval' || (task.approver_id && String(task.approver_id) === uId && !task.is_approved)) {
             return { type: 'approve_task', label: 'Approve Task', action: 'approve' };
         }
 
-        // ── 2. Acceptance Step ────────────────────────────────────────────────
-        // Assignee hasn't accepted/rejected yet
-        if (assignment && (['pending', 'review', 'Review', 'queued'].includes(assignment.status))) {
-            // Only allow acceptance if task is Active (or it's a root task)
-            if (taskStatus !== 'inactive') {
-                return { type: 'request', label: 'Accept / Reject', action: 'acceptance' };
+        // 2b. Executive Directive (Escalated)
+        if (stage === 'escalated' || task.is_escalate) {
+            if (isAuthority && (!assignment || assignment.status === 'pending')) {
+                return { type: 'escalated', label: 'Execute Directive', action: 'execute' };
             }
         }
 
-        // ── 3. Escalation / Directive ─────────────────────────────────────────
-        const hasActiveEscalation = (escalations && escalations.some(e => ['pending', 'active'].includes(e.status))) || task.is_escalate;
-        if (hasActiveEscalation || taskStatus === 'escalated') {
-            // ONLY show to manager/creator/assigned faculty who are NOT the current active performer
-            if (isManager || isCreator || isAssignedFaculty) {
-                // If I have an assignment, only show escalated if it's not already beyond acceptance
-                if (!assignment || assignment.status === 'pending') {
-                    return { type: 'escalated', label: 'Execute Directive', action: 'execute' };
-                }
+        // 2c. Manager Verification (Review Submissions)
+        if (stage === 'verification' || (assignments.some(a => ['completed', 'Review'].includes(a.status)) && isAuthority)) {
+            // Check if there are actual proofs to verify
+            const hasProofs = assignments.some(a => (a.status === 'completed' || a.status === 'Review') && a.proof);
+            if (hasProofs) {
+                return { type: 'verify_proof', label: 'Review Submissions', action: 'verify' };
             }
         }
 
-        // ── 4. Proof Verification ─────────────────────────────────────────────
-        const hasProofsToVerify = assignments.some(a =>
-            (a.status === 'completed' || a.status === 'Review') && a.proof
-        );
-        if (hasProofsToVerify && (isManager || isCreator || isAssignedFaculty)) {
-            return { type: 'verify_proof', label: 'Review Submissions', action: 'verify' };
-        }
-
-        // ── 6. Standard Assignee Activity Lifecycle ───────────────────────────
-        if (assignment && taskStatus === 'active') {
+        // ── 3. ASSIGNEE LIFECYCLE (Driven by Stage + Assignment Status) ──────
+        if (assignment) {
             const status = assignment.status?.toLowerCase();
 
-            // ── 6a. Accepted (Requires Start) ─────────────────────────────────
-            if (status === 'accepted') {
+            // 3a. Acceptance Stage
+            if (status === 'pending' || status === 'review' || stage === 'acceptance') {
+                return { type: 'request', label: 'Accept / Reject', action: 'acceptance' };
+            }
+
+            // 3b. Activity Start Stage
+            if (status === 'accepted' || stage === 'activity_start') {
+                // Timing logic still applies for "Start"
                 if (taskType) {
                     const startDate = taskType.start_date ? new Date(taskType.start_date) : null;
                     const startTime = taskType.start_time || '00:00:00';
                     const endDate = taskType.end_date ? new Date(taskType.end_date) : null;
                     const endTime = taskType.end_time || '23:59:59';
 
-                    let startDateTime = null;
+                    let startDT = null;
                     if (startDate) {
                         const dateStr = startDate.toISOString().split('T')[0];
-                        startDateTime = new Date(`${dateStr}T${startTime}`);
+                        startDT = new Date(`${dateStr}T${startTime}`);
                     }
 
-                    let endDateTime = null;
+                    let endDT = null;
                     if (endDate) {
                         const dateStr = endDate.toISOString().split('T')[0];
-                        endDateTime = new Date(`${dateStr}T${endTime}`);
+                        endDT = new Date(`${dateStr}T${endTime}`);
                     }
 
-                    if (startDateTime && now < startDateTime) {
+                    if (startDT && now < startDT) {
                         return { type: 'activity', label: 'Starts Soon', action: 'too_early' };
                     }
-                    if (endDateTime && now > endDateTime) {
+                    if (endDT && now > endDT) {
                         return { type: 'activity', label: 'Activity Missed', action: 'missed' };
                     }
                 }
                 
-                const requiresOtp = uRole === 'student';
-                if (requiresOtp) {
+                if (uRole === 'student') {
                     return { type: 'activity', label: 'Start OTP', action: 'start_otp' };
                 }
                 return { type: 'activity', label: 'Start Activity', action: 'start' };
             }
 
-            // ── 6b. In Progress (Requires End/Proof) ──────────────────────────
-            if (['in_progress', 'started', 'in progress', 'ongoing'].includes(status)) {
-                // Long task (pause allowed)
-                if (task.is_pause_allowed) {
-                    if (assignment.is_paused) {
+            // 3c. In Progress Lifecycle (End / Pause / Resume)
+            if (['in_progress', 'started', 'ongoing'].includes(status) || ['pauses', 'resume', 'activity_end'].includes(stage)) {
+                
+                // Pause/Resume Logic
+                if (task.is_pause_allowed || stage === 'pauses' || stage === 'resume') {
+                    if (assignment.is_paused || stage === 'pauses') {
                         return { type: 'activity', label: 'Resume', action: 'resume' };
-                    } else {
+                    }
+                    // Only show Pause if not explicitly in resume sub-stage
+                    if (stage !== 'resume') {
                         return { type: 'activity', label: 'Pause', action: 'pause' };
                     }
                 }
-                
-                // --- NEW: Restricted End Activity Timing ---
+
+                // End Activity Logic (with 10 min window)
                 if (taskType) {
                     const endDate = taskType.end_date ? new Date(taskType.end_date) : new Date();
                     const dateStr = endDate.toISOString().split('T')[0];
                     const endTime = taskType.end_time || '23:59:59';
                     const endDateTime = new Date(`${dateStr}T${endTime}`);
+                    const threshold = new Date(endDateTime.getTime() - 10 * 60 * 1000);
                     
-                    const threshold = new Date(endDateTime.getTime() - 10 * 60 * 1000); // 10 mins before end
-                    if (now < threshold) {
-                        return null; // Too early to end
+                    if (now < threshold && uRole === 'student') {
+                        return null; // Students wait until last 10 mins
                     }
                 }
-                
-                if (requiresOtp && task.is_document) {
-                    return { type: 'activity', label: 'Submit Proof & End OTP', action: 'end_otp' };
-                }
+
+                const requiresOtp = uRole === 'student';
                 if (requiresOtp) {
-                    return { type: 'activity', label: 'End OTP', action: 'end_otp' };
+                    return { type: 'activity', label: task.is_document ? 'Submit Proof & End OTP' : 'End OTP', action: 'end_otp' };
                 }
                 if (task.is_document) {
                     return { type: 'activity', label: 'Submit Proof & End', action: 'submit_proof' };
                 }
                 return { type: 'activity', label: 'End Activity', action: 'end' };
             }
-
-            // ── 6c. Completed / Closed ────────────────────────────────────────
-            if (['completed', 'closed', 'finished'].includes(status)) {
-                return { type: 'activity', label: 'Completed', action: 'completed' };
-            }
         }
 
-        // ── 7. Management Level (Non-assignee Manager/Creator) ────────────────
-        if (!assignment && (isManager || isCreator)) {
+        // ── 4. Fallback: Management (No Assignment) ──────────────────────────
+        if (isAuthority) {
             let isExpired = false;
-            if (taskType) {
-                const endDate = taskType.end_date ? new Date(taskType.end_date) : null;
-                const endTime = taskType.end_time || '23:59:59';
-                if (endDate) {
-                    const dateStr = endDate.toISOString().split('T')[0];
-                    const endDateTime = new Date(`${dateStr}T${endTime}`);
-                    isExpired = now > endDateTime;
-                }
+            if (taskType && taskType.end_date) {
+                const dateStr = new Date(taskType.end_date).toISOString().split('T')[0];
+                const endDateTime = new Date(`${dateStr}T${taskType.end_time || '23:59:59'}`);
+                isExpired = now > endDateTime;
             }
-            return {
-                type: 'manage',
-                label: 'Manage Task',
-                action: isExpired ? 'reschedule' : 'self_assign'
-            };
+            return { type: 'manage', label: 'Manage Task', action: isExpired ? 'reschedule' : 'self_assign' };
         }
-    } catch (e) {
-        console.error('CRITICAL: Error in getTaskButtonState:', e);
-    }
 
-    return null;
+        return null;
+    } catch (e) {
+        console.error("Button Logic Error:", e);
+        return null;
+    }
 };
 
 const validateTaskType = (taskTypeData, priority = 'low') => {
@@ -675,7 +648,11 @@ exports.getTaskById = async (req, res) => {
             return res.status(404).json({ message: 'Task not found' });
         }
 
-        res.json(task);
+        res.json({
+            ...task.toJSON(),
+            stage: task.stage,
+            action_button: getTaskButtonState(task, req.userId, req.userRole)
+        });
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -998,6 +975,7 @@ exports.getExhaustiveTaskDetails = async (req, res) => {
                     status: a.status
                 }))
             })),
+            stage: task.stage,
             action_button: getTaskButtonState(task, req.userId, req.userRole)
         };
 
@@ -1150,6 +1128,9 @@ exports.startActivity = async (req, res) => {
             status: 'in_progress'
         });
 
+        // Update Task Stage to reflect activity start
+        await assignment.Task.update({ stage: 'activity_end' });
+
         await TaskLog.create({
             task_id: id,
             user_id: userId,
@@ -1267,8 +1248,11 @@ exports.submitTaskProof = async (req, res) => {
         const { resolveTaskEscalations, adjustLongTaskStatus } = require('../utils/task-utils');
         await resolveTaskEscalations(id, userId);
         
-        // Update Task Stage to Inactive
-        await task.update({ stage: 'Inactive' });
+        // Update Task Stage to verification or Inactive
+        await task.update({ 
+            stage: task.is_document ? 'verification' : 'Inactive',
+            status: 'completed'
+        });
 
         // After completing task, adjust long task status (it will resume another long task if nothing else is active)
         await adjustLongTaskStatus(userId);
@@ -1915,7 +1899,7 @@ exports.createUnifiedTask = async (req, res) => {
                 creator_id: userId,
                 origin_type: origin_type || 'directive',
                 status: requires_approval ? 'Pending Approval' : 'Active',
-                stage: 'Active'
+                stage: requires_approval ? 'approval' : 'acceptance'
             }, { transaction: t });
 
             createdTaskIds.push(parentTask.task_id);
@@ -2099,7 +2083,7 @@ exports.createUnifiedTask = async (req, res) => {
                         origin_type: origin_type || 'directive',
                         status: requires_approval ? 'Pending Approval' : (sequenceOrder === 1 ? 'Active' : 'Inactive'),
                         sequence_order: sequenceOrder++,
-                        stage: 'Active'
+                        stage: requires_approval ? 'approval' : 'acceptance'
                     }, { transaction: t });
 
                     const isFirstSub = (childTask.sequence_order === 1);
@@ -5379,6 +5363,7 @@ exports.rescheduleTask = async (req, res) => {
             } else {
                 await existing.update({ status: 'accepted', accepted_at: new Date(), reason: 'Rescheduled for execution' });
             }
+            await task.update({ stage: 'activity_start' });
         }
 
         res.json({ success: true, message: 'Task rescheduled and resolved successfully' });

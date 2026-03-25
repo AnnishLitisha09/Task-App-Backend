@@ -171,6 +171,9 @@ exports.acceptTask = async (req, res) => {
         // Resolve any existing escalations for this user/task
         const { resolveTaskEscalations } = require('../utils/task-utils');
         await resolveTaskEscalations(taskId, userId);
+        
+        // Update Task Stage
+        await assignment.Task.update({ stage: 'activity_start' });
 
         // --- NEW: Auto-accept Remaining Days in Series ---
         try {
@@ -399,7 +402,7 @@ exports.rejectTask = async (req, res) => {
         const transferrerId = lastTransferLog ? lastTransferLog.user_id : null;
 
         if (isPermissionTask) {
-            await task.update({ is_escalate: true, status: 'Active' });
+            await task.update({ is_escalate: true, status: 'Active', stage: 'escalated' });
 
             // 1. Escalate to Creator
             await TaskEscalation.create({
@@ -445,7 +448,7 @@ exports.rejectTask = async (req, res) => {
             }
         } else {
             // General escalation for non-permission tasks
-            await task.update({ is_escalate: true, status: 'Active' });
+            await task.update({ is_escalate: true, status: 'Active', stage: 'escalated' });
 
             // 1. Escalate to Creator
             await TaskEscalation.create({
