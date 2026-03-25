@@ -364,6 +364,9 @@ const normalizeTaskPayload = async (body) => {
         if (typeof payload.assign_to_groups === 'string') payload.assign_to_groups = JSON.parse(payload.assign_to_groups);
         if (typeof payload.closure_ids === 'string') payload.closure_ids = JSON.parse(payload.closure_ids);
         if (typeof payload.sub_tasks === 'string') payload.sub_tasks = JSON.parse(payload.sub_tasks);
+        if (typeof payload.faculty_ids === 'string') {
+            try { payload.faculty_ids = JSON.parse(payload.faculty_ids); } catch (e) { payload.faculty_ids = [payload.faculty_ids]; }
+        }
     } catch (e) {
         console.error('Payload Normalization Parsing error:', e);
     }
