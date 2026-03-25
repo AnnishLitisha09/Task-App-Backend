@@ -147,6 +147,15 @@ const getTaskButtonState = (task, userId, userRole) => {
         // Find the current user's assignment
         const assignment = assignments.find(a => String(a.user_id) === uId);
 
+        // ── 0. Final States (Completed / Cancelled) ───────────────────────────
+        if (['completed', 'cancelled', 'inactive', 'closed'].includes(task.status?.toLowerCase())) {
+            // If already an assignee, they'll see their badge later (priority 6)
+            // But for managers/creators who aren't assigned, we should show nothing or Manage Task
+            if (!assignment) {
+                return null;
+            }
+        }
+
         // Role Checks
         const isManager = ['admin', 'role-user', 'faculty', 'hod', 'principal', 'dean', 'incharge', 'registrar', 'director', 'staff'].includes(uRole);
         const isCreator = String(task.creator_id) === uId;
@@ -165,10 +174,14 @@ const getTaskButtonState = (task, userId, userRole) => {
         }
 
         // ── 3. Escalation / Directive ─────────────────────────────────────────
-        const hasActiveEscalation = escalations.some(e => ['pending', 'active'].includes(e.status)) || task.is_escalate;
+        const hasActiveEscalation = (escalations && escalations.some(e => ['pending', 'active'].includes(e.status))) || task.is_escalate;
         if (hasActiveEscalation || task.status?.toLowerCase() === 'escalated') {
-            if (isManager || isCreator || isAssignedFaculty || assignment) {
-                return { type: 'escalated', label: 'Execute Directive', action: 'execute' };
+            // ONLY show to manager/creator/assigned faculty who are NOT the current active performer
+            if (isManager || isCreator || isAssignedFaculty) {
+                // If I have an assignment, only show escalated if it's not already beyond acceptance
+                if (!assignment || assignment.status === 'pending') {
+                    return { type: 'escalated', label: 'Execute Directive', action: 'execute' };
+                }
             }
         }
 

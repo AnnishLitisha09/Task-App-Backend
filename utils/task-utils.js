@@ -199,28 +199,21 @@ const resolveTaskEscalations = async (taskId, userId, transaction = null) => {
     try {
         const { TaskEscalation } = require('../models');
         
-        // 1. Resolve pending escalations for this task/user
+        // 1. Resolve ALL pending escalations for this task
+        // When a manager/creator take action, we resolve the entire task's escalation state
         await TaskEscalation.update(
             { status: 'resolved', resolved_at: new Date() },
             { 
-                where: { task_id: taskId, user_id: userId, status: 'pending' },
+                where: { task_id: taskId, status: 'pending' },
                 transaction 
             }
         );
 
-        // 2. Check if there are any other PENDING escalations for this task (by other users)
-        const anyEscalationsLeft = await TaskEscalation.findOne({
-            where: { task_id: taskId, status: 'pending' },
-            transaction
+        // 2. Clear the global flag on the Task
+        await Task.update({ is_escalate: false, status: 'Active' }, { 
+            where: { task_id: taskId },
+            transaction 
         });
-
-        // 3. If no pending escalations left, clear the global flag on the Task
-        if (!anyEscalationsLeft) {
-            await Task.update({ is_escalate: false, status: 'Active' }, { 
-                where: { task_id: taskId },
-                transaction 
-            });
-        }
     } catch (err) {
         console.error(`[resolveTaskEscalations Error] Task ${taskId}, User ${userId}:`, err);
     }
