@@ -1,0 +1,16 @@
+{
+    "title": "SEQ_TEST_V3",
+    "is_package": true,
+    "category": "Academic",
+    "priority": "medium",
+    "faculty_id": 1,
+    "task_type_data": {
+        "task_name": "Fixed Time Task",
+        "start_date": "2026-03-25",
+        "start_time": "10:00:00"
+    },
+    "sub_tasks": [
+        { "title": "Sub Alpha", "max_duration_hours": 1, "assignee_ids": [3] },
+        { "title": "Sub Beta", "max_duration_hours": 1, "assignee_ids": [3] }
+    ]
+}

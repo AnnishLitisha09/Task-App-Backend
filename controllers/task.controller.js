@@ -468,6 +468,10 @@ const normalizeTaskPayload = async (body) => {
     if (typeof payload.is_document === 'string') payload.is_document = payload.is_document === 'true';
     payload.is_document = !!payload.is_document;
 
+    // Normalization of Max Duration (Man Time)
+    if (payload.max_hours && !payload.max_duration_hours) payload.max_duration_hours = payload.max_hours;
+    if (payload.max_duration_hours) payload.max_duration_hours = parseFloat(payload.max_duration_hours) || null;
+
     return payload;
 };
 // Create Task
@@ -488,7 +492,7 @@ exports.createTask = async (req, res) => {
             title, description, category, priority, is_package, venue_id,
             is_pause_allowed, score, penalty_per_hour, is_document, is_mandatory,
             resource_id, is_faculty, faculty_id,
-            task_type_data
+            task_type_data, sub_tasks, max_duration_hours
         } = payload;
 
         // Validate required fields
@@ -559,6 +563,7 @@ exports.createTask = async (req, res) => {
             start_time: task_type_data.start_time || null,
             end_time: finalEndTime || null,
             time_quota_hours: task_type_data.time_quota_hours || null,
+            max_duration_hours: max_duration_hours || null,
             venue_id: task_type_data.venue_id || null,
             recurrence: task_type_data.recurrence || 'none',
             max_acceptances: task_type_data.max_acceptances || null
@@ -1297,6 +1302,57 @@ exports.submitTaskProof = async (req, res) => {
                     type: 'task_completed'
                 });
 
+                // 1.5. Trigger Next Sub-task (Sequential Package Logic)
+                if (task.parent_task_id) {
+                    const nextSubTask = await Task.findOne({
+                        where: { 
+                            parent_task_id: task.parent_task_id,
+                            sequence_order: task.sequence_order + 1,
+                            is_deleted: false
+                        },
+                        include: [{ model: TaskType }]
+                    });
+
+                    if (nextSubTask) {
+                        const nextTT = nextSubTask.TaskTypes?.[0];
+                        if (nextTT && nextTT.max_duration_hours) {
+                            const calculated = calculateEndWorkingDateTime(
+                                new Date(),
+                                new Date().toTimeString().split(' ')[0],
+                                nextTT.max_duration_hours
+                            );
+                            if (calculated) {
+                                await nextTT.update({
+                                    start_date: new Date(),
+                                    start_time: new Date().toTimeString().split(' ')[0],
+                                    end_date: calculated.end_date,
+                                    end_time: calculated.end_time
+                                });
+                            }
+                        }
+
+                        // Activate Task
+                        await nextSubTask.update({ status: 'Active' });
+
+                        // Activate Assignments
+                        const nextAssignments = await TaskAssign.findAll({
+                            where: { task_id: nextSubTask.task_id, status: 'queued' }
+                        });
+
+                        for (const na of nextAssignments) {
+                            await na.update({ status: 'pending' });
+                            
+                            // Notify next assignee
+                            await Notification.create({
+                                user_id: na.user_id,
+                                title: 'Task Activated',
+                                msg: `Next phase "${nextSubTask.title}" in the package is now active for you.`,
+                                type: 'task_created'
+                            });
+                        }
+                    }
+                }
+
                 // 2. Resume Paused Long Tasks for this user
                 const pausedTasks = await TaskAssign.findAll({
                     where: { user_id: userId },
@@ -1564,7 +1620,8 @@ exports.createUnifiedTask = async (req, res) => {
             task_title_id, // NEW: ID of the master title
             origin_type, // 'directive' or 'self-log'
             sub_tasks, // NEW: [ { title, description, assignee_id, assignee_ids }, ... ]
-            requires_approval // NEW: if true, task goes for approval before being created
+            requires_approval, // NEW: if true, task goes for approval before being created
+            max_duration_hours
         } = payload;
 
         // Normalization is now handled by normalizeTaskPayload helper
@@ -1841,17 +1898,7 @@ exports.createUnifiedTask = async (req, res) => {
             let parentFinalEndDate = (task_type_data.task_name === 'Recurring Task') ? oDate : (task_type_data.end_date || oDate);
             let parentFinalEndTime = task_type_data.end_time || null;
 
-            if (max_duration_hours && !task_type_data.end_time) {
-                const calculated = calculateEndWorkingDateTime(
-                    oDate,
-                    task_type_data.start_time,
-                    max_duration_hours
-                );
-                if (calculated) {
-                    parentFinalEndDate = calculated.end_date;
-                    parentFinalEndTime = calculated.end_time;
-                }
-            } else if (task_type_data.time_quota_hours && !task_type_data.end_time) {
+            if (task_type_data.time_quota_hours && !task_type_data.end_time) {
                 const calculated = calculateEndDateTime(
                     oDate, // Use occurrence date for recurring tasks
                     task_type_data.start_time,
@@ -2023,19 +2070,23 @@ exports.createUnifiedTask = async (req, res) => {
                         is_approved: requires_approval ? false : true,
                         approver_id: requires_approval ? approver_id : null,
                         creator_id: userId,
-                        sequence_order: sequenceOrder++,
                         origin_type: origin_type || 'directive',
-                        status: requires_approval ? 'Pending Approval' : 'Active'
+                        status: requires_approval ? 'Pending Approval' : (sequenceOrder === 1 ? 'Active' : 'Inactive'),
+                        sequence_order: sequenceOrder++
                     }, { transaction: t });
+
+                    const isFirstSub = (childTask.sequence_order === 1);
 
                     let childFinalEndDate = sub.end_date || sub.start_date || oDate;
                     let childFinalEndTime = sub.end_time || null;
 
-                    if (sub.max_duration_hours && (sub.start_time || task_type_data.start_time)) {
+                    // If it's the 1st sub-task and has max_duration_hours, calculate absolute deadline NOW
+                    if (isFirstSub && (sub.max_duration_hours || sub.max_hours)) {
+                        const mHours = sub.max_duration_hours || sub.max_hours;
                         const calculated = calculateEndWorkingDateTime(
-                            sub.start_date || oDate,
-                            sub.start_time || task_type_data.start_time,
-                            sub.max_duration_hours
+                            new Date(),
+                            new Date().toTimeString().split(' ')[0],
+                            mHours
                         );
                         if (calculated) {
                             childFinalEndDate = calculated.end_date;
@@ -2046,11 +2097,11 @@ exports.createUnifiedTask = async (req, res) => {
                     await TaskType.create({
                         task_id: childTask.task_id,
                         task_name: sub.task_name || 'Fixed Time Task',
-                        start_date: sub.start_date || oDate,
+                        start_date: isFirstSub ? new Date() : (sub.start_date || oDate),
                         end_date: childFinalEndDate,
-                        start_time: sub.start_time || task_type_data.start_time || null,
+                        start_time: isFirstSub ? new Date().toTimeString().split(' ')[0] : (sub.start_time || task_type_data.start_time || null),
                         end_time: childFinalEndTime || sub.end_time || task_type_data.end_time || null,
-                        max_duration_hours: sub.max_duration_hours || null,
+                        max_duration_hours: sub.max_duration_hours || sub.max_hours || null,
                         venue_id: sub.venue_id || venue_id || null,
                         recurrence: 'none'
                     }, { transaction: t });
@@ -5238,7 +5289,7 @@ exports.reviewTaskProof = async (req, res) => {
 exports.rescheduleTask = async (req, res) => {
     try {
         const { id: taskId } = req.params;
-        const { new_date, new_time, self_assign } = req.body;
+        const { new_date, new_time, new_end_date, new_end_time, self_assign } = req.body;
         const userId = req.userId;
 
         // --- NEW: Future Time Constraint ---
@@ -5261,17 +5312,31 @@ exports.rescheduleTask = async (req, res) => {
 
         // 1. Update Task Timing
         if (task.TaskTypes && task.TaskTypes.length > 0) {
+            // Logic: If no end time given, default to +2 hours from start if same day, or 23:59:59
+            let endTime = new_end_time || '23:59:59';
+            if (!new_end_time && new_time) {
+                const [h, m] = new_time.split(':');
+                const endH = (parseInt(h) + 2) % 24;
+                endTime = `${String(endH).padStart(2, '0')}:${m}:00`;
+            }
+
             await TaskType.update({
                 start_date: new_date,
-                end_date: new_date, // Assume single day for now if only one date sent
-                start_time: new_time,
-                end_time: '23:59:59' // Or calculate based on original duration
+                end_date: new_end_date || new_date,
+                start_time: new_time || '08:00:00',
+                end_time: endTime
             }, {
                 where: { task_id: taskId }
             });
         }
 
-        // 2. Optional Self-Assignment (Common for resolutions)
+        // 2. Resolve Escalation State completely
+        const { resolveTaskEscalations } = require('../utils/task-utils');
+        await resolveTaskEscalations(taskId, userId);
+        // Explicitly clear task status and flags
+        await task.update({ is_escalate: false, status: 'Active' });
+
+        // 3. Optional Self-Assignment (Common for directed resolutions)
         if (self_assign) {
             const existing = await TaskAssign.findOne({ where: { task_id: taskId, user_id: userId } });
             if (!existing) {
@@ -5282,18 +5347,11 @@ exports.rescheduleTask = async (req, res) => {
                     accepted_at: new Date()
                 });
             } else {
-                await existing.update({ status: 'accepted', accepted_at: new Date() });
+                await existing.update({ status: 'accepted', accepted_at: new Date(), reason: 'Rescheduled for execution' });
             }
         }
 
-        // 3. Clear Escalation Flags
-        const { resolveTaskEscalations } = require('../utils/task-utils');
-        await resolveTaskEscalations(taskId, userId);
-
-        // Ensure global flag is also cleared if manual
-        await task.update({ is_escalate: false });
-
-        res.json({ success: true, message: 'Task rescheduled successfully' });
+        res.json({ success: true, message: 'Task rescheduled and resolved successfully' });
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
