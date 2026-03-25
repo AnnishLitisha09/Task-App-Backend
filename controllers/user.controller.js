@@ -779,6 +779,7 @@ exports.getFacultyDetailsWithStudents = async (req, res) => {
 exports.getFacultyDailyStats = async (req, res) => {
     try {
         const userId = req.userId;
+        const requestedVenueId = req.query.venue_id;
         const { Op } = require('sequelize');
         const { TaskAssign, Task, TaskType, Department, Faculty, Student, TaskAcknowledgment } = require('../models');
 
@@ -833,11 +834,19 @@ exports.getFacultyDailyStats = async (req, res) => {
         const needsAcknowledgement = !hasAcknowledgedToday && totalMinutes >= (6 * 60 + 30) && totalMinutes <= (8 * 60 + 45);
 
         // 4. Fetch Tasks
+        const taskWhere = { is_deleted: false };
+        if (requestedVenueId) {
+            taskWhere[Op.or] = [
+                { venue_id: requestedVenueId },
+                { '$TaskTypes.venue_id$': requestedVenueId }
+            ];
+        }
+
         const assignments = await TaskAssign.findAll({
             where: { user_id: userId },
             include: [{
                 model: Task,
-                where: { is_deleted: false },
+                where: taskWhere,
                 include: [{
                     model: TaskType,
                     required: true

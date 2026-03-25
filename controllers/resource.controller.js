@@ -288,17 +288,30 @@ exports.getAllVenues = async (req, res) => {
 exports.getMyVenue = async (req, res) => {
     try {
         const userId = req.userId;
-        const assignment = await RoleAssignment.findOne({
-            where: { user_id: userId, venue_id: { [Op.not]: null } }
-        });
+        const requestedVenueId = req.query.venue_id;
 
-        if (!assignment) {
-            return res.json(null); // Return null instead of 404 so frontend can handle gracefully
+        let assignment;
+        if (requestedVenueId) {
+            // If a specific venue is requested, verify the user is assigned to it
+            assignment = await RoleAssignment.findOne({
+                where: { 
+                    user_id: userId, 
+                    venue_id: requestedVenueId 
+                }
+            });
         }
 
-        const venueId = assignment.venue_id;
+        if (!assignment) {
+            assignment = await RoleAssignment.findOne({
+                where: { user_id: userId, venue_id: { [Op.not]: null } }
+            });
+        }
 
-        const venue = await Venue.findByPk(venueId, {
+        if (!assignment) {
+            return res.json(null);
+        }
+
+        const venue = await Venue.findByPk(assignment.venue_id, {
             include: [
                 {
                     model: RoleAssignment,
