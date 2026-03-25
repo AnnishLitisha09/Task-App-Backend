@@ -57,6 +57,10 @@ const processAllEscalations = async () => {
                 const user = a.User;
                 if (user && user.role && user.role.toLowerCase() === 'student') {
                     await a.update({ status: 'rejected', reason: 'Not Accepted by Start Time' });
+                    // Even if we don't create a formal TaskEscalation record for students, 
+                    // we must mark the task as escalated so the manager can "Execute Directive"
+                    await Task.update({ is_escalate: true, stage: 'escalated' }, { where: { task_id: a.task_id } });
+                    
                     await TaskLog.create({
                         task_id: a.task_id,
                         user_id: a.user_id,
@@ -259,7 +263,7 @@ const escalateAssignment = async (assign, reason, cache = null, forcedSupervisor
 
         // 1. Move status to escalated
         await assign.update({ status: 'escalated' });
-        await Task.update({ is_escalate: true, stage: 'Escalated' }, { where: { task_id: assign.task_id } });
+        await Task.update({ is_escalate: true, stage: 'escalated' }, { where: { task_id: assign.task_id } });
 
         // 2. Log Action
         await TaskLog.create({

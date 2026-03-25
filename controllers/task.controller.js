@@ -170,8 +170,9 @@ const getTaskButtonState = (task, userId, userRole) => {
         }
 
         // 2b. Executive Directive (Escalated)
-        if (stage === 'escalated' || task.is_escalate) {
-            if (isAuthority && (!assignment || assignment.status === 'pending')) {
+        const hasRejections = assignments.some(a => a.status?.toLowerCase() === 'rejected');
+        if (stage === 'escalated' || task.is_escalate || hasRejections) {
+            if (isAuthority && (!assignment || ['pending', 'rejected'].includes(assignment.status?.toLowerCase()))) {
                 return { type: 'escalated', label: 'Execute Directive', action: 'execute' };
             }
         }
@@ -650,7 +651,8 @@ exports.getTaskById = async (req, res) => {
 
         res.json({
             ...task.toJSON(),
-            stage: task.stage,
+            stage: (task.TaskAssigns?.some(a => a.status === 'rejected') && !['completed', 'cancelled', 'closed'].includes(task.status)) ? 'escalated' : task.stage,
+            is_escalate: task.is_escalate || task.TaskAssigns?.some(a => a.status === 'rejected'),
             action_button: getTaskButtonState(task, req.userId, req.userRole)
         });
     } catch (error) {
@@ -975,7 +977,8 @@ exports.getExhaustiveTaskDetails = async (req, res) => {
                     status: a.status
                 }))
             })),
-            stage: task.stage,
+            stage: (assignments_list.some(a => a.status === 'rejected') && !['completed', 'cancelled', 'closed'].includes(task.status)) ? 'escalated' : task.stage,
+            is_escalate: task.is_escalate || assignments_list.some(a => a.status === 'rejected'),
             action_button: getTaskButtonState(task, req.userId, req.userRole)
         };
 
