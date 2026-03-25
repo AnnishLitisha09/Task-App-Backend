@@ -653,7 +653,14 @@ exports.getTaskById = async (req, res) => {
             ...task.toJSON(),
             stage: (task.TaskAssigns?.some(a => a.status === 'rejected') && !['completed', 'cancelled', 'closed'].includes(task.status)) ? 'escalated' : task.stage,
             is_escalate: task.is_escalate || task.TaskAssigns?.some(a => a.status === 'rejected'),
-            action_button: getTaskButtonState(task, req.userId, req.userRole)
+            action_button: getTaskButtonState(task, req.userId, req.userRole),
+            // Ensure compatibility with standard detail response expectations
+            assignees: task.TaskAssigns?.map(a => ({
+                user_id: a.user_id,
+                status: a.status,
+                name: a.User?.Student?.name || a.User?.Faculty?.name || 'User ' + a.user_id,
+                role: a.User?.role
+            })) || []
         });
     } catch (error) {
         res.status(500).json({ message: error.message });
