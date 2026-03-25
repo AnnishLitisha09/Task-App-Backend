@@ -1992,7 +1992,7 @@ exports.createUnifiedTask = async (req, res) => {
                         let finalStatus = autoAccept ? 'accepted' : 'pending';
                         let finalAcceptedAt = autoAccept ? new Date() : null;
 
-                        // If it's mandatory, check for overlap before auto-accepting
+                        // If auto-accepting, enforce FULL overlap check for ALL user types
                         if (autoAccept) {
                             // 1. Daily Task Limit Check
                             const dailyCount = await TaskAssign.count({
@@ -2016,21 +2016,22 @@ exports.createUnifiedTask = async (req, res) => {
                                     status: 'pending'
                                 }, { transaction: t });
                             } else {
+                                // 2. Time Overlap Check — APPLIES TO ALL USERS (students, staff, faculty, role-users)
                                 const overlap = await checkTaskOverlap(assigneeId, {
                                     start_date: oDate,
-                                    end_date: parentFinalEndDate, // Use calculated end date
+                                    end_date: parentFinalEndDate,
                                     start_time: task_type_data.start_time,
-                                    end_time: parentFinalEndTime, // Use calculated end time
+                                    end_time: parentFinalEndTime,
                                     task_name: task_type_data.task_name,
                                     priority: priority
                                 }, parentTask.task_id);
 
                                 if (overlap.hasConflict) {
+                                    // Downgrade from auto-accept to pending — user must resolve conflict manually
                                     finalStatus = 'pending';
                                     finalAcceptedAt = null;
 
                                     if (overlap.type === 'priority_override') {
-                                        // Higher priority task can request override
                                         await TaskEscalation.create({
                                             task_id: parentTask.task_id,
                                             reason: `Priority Override Requested`,
@@ -2055,8 +2056,8 @@ exports.createUnifiedTask = async (req, res) => {
 
                                         await TaskEscalation.create({
                                             task_id: parentTask.task_id,
-                                            reason: overlap.type === 'work_hours' ? 'Work Hours Violation' : 'Conflict: Mandatory Task Blocked',
-                                            msg: overlap.reason || `Conflict for User ${assigneeId} with "${overlap.conflictTask?.title}".`,
+                                            reason: overlap.type === 'work_hours' ? 'Work Hours Violation' : `Time Conflict with "${overlap.conflictTask?.title}"`,
+                                            msg: overlap.reason || `Time conflict for User ${assigneeId} with "${overlap.conflictTask?.title}". Auto-acceptance downgraded to pending.`,
                                             creator_id: userId,
                                             rejected_user_id: assigneeId,
                                             status: 'pending'
@@ -4944,9 +4945,10 @@ exports.getDailyTaskReport = async (req, res) => {
             };
         };
 
-        // Filter and Categorize
+        // Filter, Categorize, and Group
         const directiveTasks = [];
         const selfLogTasks = [];
+        const formattedMap = new Map();
 
         tasks.forEach(task => {
             const type = task.TaskTypes?.[0];
@@ -4958,7 +4960,31 @@ exports.getDailyTaskReport = async (req, res) => {
 
             if (matchesDate) {
                 const formatted = formatTask(task);
-                if (task.origin_type === 'self-log') {
+                formatted.parent_task_id = task.parent_task_id; // Store temporarily for grouping
+                formattedMap.set(formatted.task_id, formatted);
+            }
+        });
+
+        // Hierarchy Builder
+        formattedMap.forEach(formatted => {
+            // Check if this task is a child AND its parent is in the same report
+            if (formatted.parent_task_id && formattedMap.has(formatted.parent_task_id)) {
+                const parent = formattedMap.get(formatted.parent_task_id);
+                
+                if (formatted.title && (formatted.title.startsWith('Permission:') || formatted.title.startsWith('Approval Request:'))) {
+                    parent.approvals = parent.approvals || [];
+                    parent.approvals.push(formatted);
+                } else {
+                    parent.sub_tasks = parent.sub_tasks || [];
+                    parent.sub_tasks.push(formatted);
+                }
+                
+                delete formatted.parent_task_id;
+            } else {
+                // Top Level Task
+                delete formatted.parent_task_id;
+
+                if (formatted.origin_type === 'self-log') {
                     selfLogTasks.push(formatted);
                 } else {
                     directiveTasks.push(formatted);
@@ -4969,7 +4995,7 @@ exports.getDailyTaskReport = async (req, res) => {
         res.json({
             report_for_user: userId,
             date: req.query.date || "All",
-            total_task: directiveTasks.length + selfLogTasks.length,
+            total_task: directiveTasks.length + selfLogTasks.length, // Only count top-level tasks
             directive_task_count: directiveTasks.length,
             self_log_count: selfLogTasks.length,
             directive_tasks: directiveTasks,

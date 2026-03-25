@@ -836,10 +836,7 @@ exports.getFacultyDailyStats = async (req, res) => {
         // 4. Fetch Tasks
         const taskWhere = { is_deleted: false };
         if (requestedVenueId) {
-            taskWhere[Op.or] = [
-                { venue_id: requestedVenueId },
-                { '$TaskTypes.venue_id$': requestedVenueId }
-            ];
+            taskWhere.venue_id = requestedVenueId;
         }
 
         const assignments = await TaskAssign.findAll({
