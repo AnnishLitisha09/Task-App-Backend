@@ -1646,7 +1646,8 @@ exports.createUnifiedTask = async (req, res) => {
             origin_type, // 'directive' or 'self-log'
             sub_tasks, // NEW: [ { title, description, assignee_id, assignee_ids }, ... ]
             requires_approval, // NEW: if true, task goes for approval before being created
-            max_duration_hours
+            max_duration_hours,
+            due_date // NEW: Explictly extract due_date to fix ReferenceError
         } = payload;
 
         // Normalization is now handled by normalizeTaskPayload helper
@@ -1686,28 +1687,37 @@ exports.createUnifiedTask = async (req, res) => {
         } else {
             // Directive tasks must have a future deadline
             const now = new Date();
-            const endDateStr = task_type_data?.end_date || task_type_data?.start_date;
-            if (endDateStr) {
-                // Parse date carefully to avoid UTC shift issues
-                // Using yyyy-MM-dd format with current local time components
-                const deadline = new Date(endDateStr);
-                const endTimeStr = task_type_data?.end_time || '23:59:59';
-                const [hours, minutes] = endTimeStr.split(':');
-                const h = parseInt(hours);
-                const m = parseInt(minutes);
-                if (!isNaN(h) && !isNaN(m)) {
-                    deadline.setHours(h, m, 0, 0);
 
-                    // Add a 5-minute buffer to accommodate slight clock drifts or slow page submissions
-                    const bufferNow = new Date(now.getTime() - (5 * 60 * 1000));
-
-                    if (deadline < bufferNow) {
-                        await t.rollback();
-                        return res.status(400).json({ message: 'Directive tasks must have a future deadline. For past activities, use Self-Log.' });
+            // For package tasks, use the due_date as the real deadline (sub-tasks can span beyond task window)
+            // For regular tasks, use the task_type_data end date/time
+            let deadlineDate = null;
+            if (is_package && due_date) {
+                deadlineDate = new Date(due_date);
+                deadlineDate.setHours(23, 59, 59, 0); // end of due_date day
+            } else {
+                const endDateStr = task_type_data?.end_date || task_type_data?.start_date;
+                if (endDateStr) {
+                    deadlineDate = new Date(endDateStr);
+                    const endTimeStr = task_type_data?.end_time || '23:59:59';
+                    const [hours, minutes] = endTimeStr.split(':');
+                    const h = parseInt(hours);
+                    const m = parseInt(minutes);
+                    if (!isNaN(h) && !isNaN(m)) {
+                        deadlineDate.setHours(h, m, 0, 0);
                     }
                 }
             }
+
+            if (deadlineDate) {
+                // Add a 5-minute buffer to accommodate slight clock drifts or slow page submissions
+                const bufferNow = new Date(now.getTime() - (5 * 60 * 1000));
+                if (deadlineDate < bufferNow) {
+                    await t.rollback();
+                    return res.status(400).json({ message: 'Directive tasks must have a future deadline. For past activities, use Self-Log.' });
+                }
+            }
         }
+
 
         // Redundant parsing logic removed (handled by normalizeTaskPayload)
 
