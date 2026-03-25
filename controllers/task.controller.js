@@ -1812,8 +1812,9 @@ exports.createUnifiedTask = async (req, res) => {
         // --- NEW: Add Sub-task Assignees to Parent if it's a Package ---
         if (is_package && sub_tasks && Array.isArray(sub_tasks)) {
             for (const sub of sub_tasks) {
-                if (sub.assignee_id) {
-                    const sid = parseInt(sub.assignee_id);
+                const subAssigneeId = sub.user_id || sub.assignee_id;
+                if (subAssigneeId) {
+                    const sid = parseInt(subAssigneeId);
                     if (!isNaN(sid) && !finalAssigneeIds.includes(sid)) {
                         finalAssigneeIds.push(sid);
                         if (!payload.assignee_ids.includes(sid)) payload.assignee_ids.push(sid);
@@ -2092,8 +2093,8 @@ exports.createUnifiedTask = async (req, res) => {
                     let childFinalEndTime = sub.end_time || null;
 
                     // If it's the 1st sub-task and has max_duration_hours, calculate absolute deadline NOW
-                    if (isFirstSub && (sub.max_duration_hours || sub.max_hours)) {
-                        const mHours = sub.max_duration_hours || sub.max_hours;
+                    if (isFirstSub && (sub.max_duration_hours || sub.max_hours || sub.allocated_hours)) {
+                        const mHours = sub.max_duration_hours || sub.max_hours || sub.allocated_hours;
                         const calculated = calculateEndWorkingDateTime(
                             new Date(),
                             new Date().toTimeString().split(' ')[0],
@@ -2112,15 +2113,16 @@ exports.createUnifiedTask = async (req, res) => {
                         end_date: childFinalEndDate,
                         start_time: isFirstSub ? new Date().toTimeString().split(' ')[0] : (sub.start_time || task_type_data.start_time || null),
                         end_time: childFinalEndTime || sub.end_time || task_type_data.end_time || null,
-                        max_duration_hours: sub.max_duration_hours || sub.max_hours || null,
+                        max_duration_hours: sub.max_duration_hours || sub.max_hours || sub.allocated_hours || null,
                         venue_id: sub.venue_id || venue_id || null,
                         recurrence: 'none'
                     }, { transaction: t });
 
                     // Assign sub-task to specific people
                     const subAssigneeIds = [];
-                    if (sub.assignee_id) {
-                        const sid = parseInt(sub.assignee_id);
+                    const subAssigneeId = sub.user_id || sub.assignee_id;
+                    if (subAssigneeId) {
+                        const sid = parseInt(subAssigneeId);
                         if (!isNaN(sid)) subAssigneeIds.push(sid);
                     }
                     if (sub.assignee_ids && Array.isArray(sub.assignee_ids)) {
