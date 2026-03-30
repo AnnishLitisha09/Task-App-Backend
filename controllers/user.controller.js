@@ -834,7 +834,10 @@ exports.getFacultyDailyStats = async (req, res) => {
         const needsAcknowledgement = !hasAcknowledgedToday && totalMinutes >= (6 * 60 + 30) && totalMinutes <= (8 * 60 + 45);
 
         // 4. Fetch Tasks
-        const taskWhere = { is_deleted: false };
+        const taskWhere = { 
+            is_deleted: false,
+            origin_type: { [Op.ne]: 'self-log' }
+        };
         if (requestedVenueId) {
             taskWhere.venue_id = requestedVenueId;
         }

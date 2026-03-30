@@ -15,7 +15,8 @@ exports.closeTask = async (req, res) => {
         }
 
         // Check if proof is required
-        if (task.is_document && !proof) {
+        const isCreator = String(task.creator_id) === String(userId);
+        if (task.is_document && !proof && !isCreator) {
             await t.rollback();
             return res.status(400).json({ message: 'Proof/Document is required for this task' });
         }
@@ -39,7 +40,8 @@ exports.closeTask = async (req, res) => {
 
         // Update task status
         await task.update({
-            status: is_completed ? 'Inactive' : task.status
+            status: is_completed ? 'completed' : task.status,
+            stage: is_completed ? 'Inactive' : task.stage
         }, { transaction: t });
 
         // Update assignment if user is assigned

@@ -125,10 +125,20 @@ exports.acceptTask = async (req, res) => {
             start_time: taskType.start_time,
             end_time: taskType.end_time,
             task_name: taskType.task_name,
-            priority: assignment.Task?.priority || 'low'
+            priority: assignment.Task?.priority || 'low',
+            origin_type: assignment.Task?.origin_type || 'directive' // PASSING origin_type HERE
         }, taskId);
 
         if (conflict.hasConflict) {
+            // NEW: Strict Overlap check
+            if (conflict.type === 'strict_overlap') {
+                return res.status(412).json({
+                    message: "Time Conflict Detected (Strict)",
+                    details: conflict.reason,
+                    conflict_task_id: conflict.conflictTask?.task_id
+                });
+            }
+
             if (conflict.type === 'priority_override') {
                 if (conflict.can_pause) {
                     // Rule 7: Auto-pause Long Task

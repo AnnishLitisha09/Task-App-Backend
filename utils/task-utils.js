@@ -20,7 +20,7 @@ const checkTaskOverlap = async (userId, taskDetails, excludeTaskId = null) => {
         const { Op } = require('sequelize');
 
         // Normalize inputs
-        let { start_date, start_time, end_time, priority, task_name } = taskDetails;
+        let { start_date, start_time, end_time, priority, task_name, origin_type } = taskDetails;
         if (!start_date || !start_time || !end_time) {
             return { hasConflict: false };
         }
@@ -82,6 +82,24 @@ const checkTaskOverlap = async (userId, taskDetails, excludeTaskId = null) => {
             // Basic overlap logic: (start1 < end2) AND (start2 < end1)
             if (newStart < extEnd && extStart < newEnd) {
                 // Conflict detected!
+                
+                // ─── NEW: Strict Overlap for Self-Log and Directive ───
+                const isNewStrict = (origin_type === 'self-log' || origin_type === 'directive');
+                const isExtStrict = (extTask.origin_type === 'self-log' || extTask.origin_type === 'directive');
+
+                if (isNewStrict && isExtStrict) {
+                    return {
+                        hasConflict: true,
+                        type: 'strict_overlap',
+                        conflictTask: {
+                            task_id: extTask.task_id,
+                            title: extTask.title,
+                            origin_type: extTask.origin_type
+                        },
+                        reason: `Overlap not allowed between ${origin_type} and ${extTask.origin_type}.`
+                    };
+                }
+
                 const extPriorityVal = priorityLevels[extTask.priority?.toLowerCase()] || 1;
 
                 // Rule: If new task has HIGHER priority than existing task

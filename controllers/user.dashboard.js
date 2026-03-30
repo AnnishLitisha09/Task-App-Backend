@@ -432,7 +432,7 @@ exports.getHodDashboard = async (req, res) => {
             priority: t.priority,
             requested_by: getName(t.creator_id),
             requested_at: t.created_at,
-            timing: t.TaskTypes?.[0] ? `${t.TaskTypes[0].start_date} ${t.TaskTypes[0].start_time}` : 'N/A'
+            timing: t.TaskTypes?.[0] ? `${new Date(t.TaskTypes[0].start_date).toISOString().split('T')[0]} ${t.TaskTypes[0].start_time}` : 'N/A'
         }));
 
         const formattedAssignedToMe = assignedPending.map(ap => {
@@ -444,7 +444,7 @@ exports.getHodDashboard = async (req, res) => {
                 priority: t.priority,
                 assigned_at: ap.created_at,
                 assigned_by: getName(t.creator_id),
-                timing: t.TaskTypes?.[0] ? `${t.TaskTypes[0].start_date} ${t.TaskTypes[0].start_time}` : 'N/A'
+                timing: t.TaskTypes?.[0] ? `${new Date(t.TaskTypes[0].start_date).toISOString().split('T')[0]} ${t.TaskTypes[0].start_time}` : 'N/A'
             };
         });
 
@@ -488,7 +488,8 @@ exports.getHodDashboard = async (req, res) => {
         // 5. Today's Department Schedule (Tasks assigned to Me or Dept Members that are ACCEPTED)
         const todaysTasks = await Task.findAll({
             where: {
-                is_deleted: false
+                is_deleted: false,
+                origin_type: { [Op.ne]: 'self-log' }
             },
             include: [{
                 model: TaskType,
@@ -508,13 +509,8 @@ exports.getHodDashboard = async (req, res) => {
                 model: TaskAssign,
                 required: true,
                 where: {
-                    [Op.or]: [
-                        { user_id: userId, status: 'accepted' },
-                        { 
-                            user_id: { [Op.in]: deptUserIds.length > 0 ? deptUserIds : [0] },
-                            status: 'accepted'
-                        }
-                    ]
+                    user_id: userId,
+                    status: { [Op.in]: ['accepted', 'in_progress'] }
                 }
             }]
         });
@@ -610,7 +606,7 @@ exports.getHodDashboard = async (req, res) => {
             priority: t.priority,
             creator_name: getName(t.creator_id),
             created_at: t.created_at,
-            timing: t.TaskTypes?.[0] ? `${t.TaskTypes[0].start_date} ${t.TaskTypes[0].start_time}` : 'N/A'
+            timing: t.TaskTypes?.[0] ? `${new Date(t.TaskTypes[0].start_date).toISOString().split('T')[0]} ${t.TaskTypes[0].start_time}` : 'N/A'
         }));
 
         // 7. Response
@@ -954,7 +950,7 @@ exports.getPrincipalDashboard = async (req, res) => {
             priority: t.priority,
             requested_by: profileNameMap[t.creator_id],
             requested_at: t.created_at,
-            timing: t.TaskTypes?.[0] ? `${t.TaskTypes[0].start_date} ${t.TaskTypes[0].start_time}` : 'N/A'
+            timing: t.TaskTypes?.[0] ? `${new Date(t.TaskTypes[0].start_date).toISOString().split('T')[0]} ${t.TaskTypes[0].start_time}` : 'N/A'
         }));
 
         const formattedEscalations = allEscalations.map(e => {
@@ -971,11 +967,16 @@ exports.getPrincipalDashboard = async (req, res) => {
         });
 
         // 5. Today's Schedule for the Principal
+        // todays_schedule: ONLY tasks the user has accepted or is currently doing
+        // pending/escalated tasks go under awaiting_my_approval and escalated_tasks sections
         const todaysAssignments = await TaskAssign.findAll({
-            where: { user_id: userId, status: { [Op.in]: ['accepted', 'pending', 'in_progress', 'escalated'] } },
+            where: { user_id: userId, status: { [Op.in]: ['accepted', 'in_progress'] } },
             include: [{
                 model: Task,
-                where: { is_deleted: false },
+                where: { 
+                    is_deleted: false,
+                    origin_type: { [Op.ne]: 'self-log' }
+                },
                 include: [{
                     model: TaskType,
                     required: true,
@@ -1056,7 +1057,6 @@ exports.getStudentDashboard = async (req, res) => {
         dayAfterTomorrow.setDate(dayAfterTomorrow.getDate() + 1);
 
         const isEvening = localNow.getHours() >= 19;
-        const effectiveTodayDate = isEvening ? tomorrowDate : todayDate;
         const effectiveTodayStr = isEvening ?
             `${tomorrowDate.getFullYear()}-${String(tomorrowDate.getMonth() + 1).padStart(2, '0')}-${String(tomorrowDate.getDate()).padStart(2, '0')}` :
             dateStr;
@@ -1154,7 +1154,7 @@ exports.getStudentDashboard = async (req, res) => {
 
             // Overdue Logic: 
             // 1. End Date is strictly in the past
-            // 2. End Date is today AND end time has passed
+            // 2. End Date is today AND it's already evening (after 7:00 PM) AND end time has passed
             // AND No proof submitted
             let isOverdue = false;
             const taskEndTime = isLongTask ? '16:30:00' : taskType.end_time;
@@ -1162,22 +1162,27 @@ exports.getStudentDashboard = async (req, res) => {
             if (taskEndStr) {
                 if (taskEndStr < dateStr) {
                     isOverdue = true;
-                } else if (taskEndStr === dateStr) {
+                } else if (taskEndStr === dateStr && isEvening) {
+                    // Only move to overdue today's tasks AFTER 7:00 PM
                     if (taskEndTime && localTimeStr > taskEndTime) {
                         isOverdue = true;
                     }
                 }
             }
 
-            const isToday = isOccurrence(dateStr, taskType.start_date, taskType.end_date, taskType.recurrence);
+            // Task is "Today" if it occurs on the EFFECTIVE Today's date (which is tomorrow after 7 PM)
+            const isTodayEffective = isOccurrence(effectiveTodayStr, taskType.start_date, taskType.end_date, taskType.recurrence);
 
-            // Must have NO proof/closure to be truly "Overdue" as per user request
+            // Must have NO proof/closure to be truly "Overdue"
             if (isOverdue && (!a.proof || a.proof === '')) {
                 overdueTasks.push(taskData);
-            } else if (isToday) {
-                // If it's actual today and NOT overdue yet (or has proof)
-                // Filter out pending tasks from todays_schedule (they should go to pending_for_approval)
-                if (a.status !== 'pending') {
+            } else if (isTodayEffective) {
+                // If it's the effective today and NOT overdue yet
+                // Filter out pending tasks from todays_schedule
+                if (a.status !== 'pending' && a.status !== 'completed') {
+                    schedule.push(taskData);
+                } else if (a.status === 'completed' && isTodayEffective) {
+                    // Also include completed tasks in today's schedule for visual confirmation
                     schedule.push(taskData);
                 }
             }
@@ -1357,7 +1362,10 @@ exports.getStaffDashboard = async (req, res) => {
             where: { user_id: userId, status: { [Op.in]: ['accepted', 'pending', 'in_progress', 'escalated'] } },
             include: [{
                 model: Task,
-                where: { is_deleted: false },
+                where: { 
+                    is_deleted: false,
+                    origin_type: { [Op.ne]: 'self-log' }
+                },
                 include: [{
                     model: TaskType,
                     required: true,

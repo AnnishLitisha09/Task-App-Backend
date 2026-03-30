@@ -261,7 +261,7 @@ const getTaskButtonState = (task, userId, userRole) => {
                 if (requiresOtp) {
                     return { type: 'activity', label: task.is_document ? 'Submit Proof & End OTP' : 'End OTP', action: 'end_otp' };
                 }
-                if (task.is_document) {
+                if (task.is_document && !isCreator) {
                     return { type: 'activity', label: 'Submit Proof & End', action: 'submit_proof' };
                 }
                 return { type: 'activity', label: 'End Activity', action: 'end' };
@@ -460,8 +460,9 @@ const normalizeTaskPayload = async (body) => {
     // Normalization of booleans
     if (typeof payload.requires_approval === 'string') payload.requires_approval = (payload.requires_approval === 'true');
     else if (payload.approver == 1 || payload.approver === '1' || payload.approver === 'true') payload.requires_approval = true;
-    else if (payload.approver_id) payload.requires_approval = true; // NEW: If ID is given, assume approval is needed
     else payload.requires_approval = !!payload.requires_approval;
+    // Override: If approver_id is explicitly set, approval is always required regardless of flag
+    if (payload.approver_id) payload.requires_approval = true;
 
     if (typeof payload.is_approved === 'string') payload.is_approved = payload.is_approved === 'true';
     if (typeof payload.is_mandatory === 'string') payload.is_mandatory = payload.is_mandatory === 'true';
@@ -1052,35 +1053,105 @@ exports.getTasksAssignedToUser = async (req, res) => {
     }
 };
 
-// Approve or Reject Task
+// Approve Task — PUT /:id/approve
+// Always approves. No body needed. Called by the Approve button.
 exports.approveTask = async (req, res) => {
     try {
         const { id } = req.params;
-        const { is_approved } = req.body;
-        const adminRole = req.userRole;
+        const userId = req.userId;
+        const userRole = req.userRole;
 
-        if (adminRole !== 'admin') {
-            return res.status(403).json({ message: 'Only admins can approve tasks directly' });
+        const task = await Task.findByPk(id, { include: [{ model: TaskType }] });
+        if (!task) return res.status(404).json({ message: 'Task not found' });
+
+        // Allow: admin OR the task's designated approver
+        const isAdmin = userRole === 'admin';
+        const isDesignatedApprover = String(task.approver_id) === String(userId);
+
+        if (!isAdmin && !isDesignatedApprover) {
+            return res.status(403).json({
+                message: 'Only the designated approver or an admin can approve this task'
+            });
         }
+
+        // Find the TaskApprovalRequest so we can finalize and create assignments
+        const { TaskApprovalRequest } = require('../models');
+        const approvalRequest = await TaskApprovalRequest.findOne({
+            where: { task_id: id, status: 'pending' }
+        });
+
+        if (approvalRequest) {
+            await exports.finalizeTaskAssignments(approvalRequest);
+            await approvalRequest.update({ status: 'approved' });
+        } else {
+            // No pending request — just mark as approved
+            await task.update({
+                is_approved: true,
+                status: 'Active',
+                stage: 'acceptance'
+            });
+        }
+
+        await TaskLog.create({
+            task_id: id,
+            user_id: userId,
+            action: 'approve',
+            details: `Task approved by ${isAdmin ? 'admin' : 'designated approver'} (User ${userId}).`
+        });
+
+        res.json({ message: 'Task approved and assignments created successfully', task_id: id });
+
+    } catch (error) {
+        console.error('Error approving task:', error);
+        res.status(500).json({ message: error.message });
+    }
+};
+
+// Reject Task Approval — PUT /:id/reject-approval
+// Separate endpoint for the Reject button.
+exports.rejectTaskApproval = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { reason } = req.body;
+        const userId = req.userId;
+        const userRole = req.userRole;
 
         const task = await Task.findByPk(id);
         if (!task) return res.status(404).json({ message: 'Task not found' });
 
+        const isAdmin = userRole === 'admin';
+        const isDesignatedApprover = String(task.approver_id) === String(userId);
+
+        if (!isAdmin && !isDesignatedApprover) {
+            return res.status(403).json({
+                message: 'Only the designated approver or an admin can reject this task approval'
+            });
+        }
+
         await task.update({
-            is_approved: is_approved,
-            status: is_approved ? 'Active' : 'Review',
-            approver_id: req.userId
+            is_approved: false,
+            status: 'Inactive',
+            stage: 'approval_rejected'
         });
+
+        // Mark the approval request as rejected too
+        const { TaskApprovalRequest } = require('../models');
+        await TaskApprovalRequest.update(
+            { status: 'rejected' },
+            { where: { task_id: id, status: 'pending' } }
+        );
 
         await TaskLog.create({
             task_id: id,
-            user_id: req.userId,
-            action: is_approved ? 'approve' : 'reject',
-            details: `Task ${is_approved ? 'approved' : 'rejected'} by admin.`
+            user_id: userId,
+            action: 'reject_approval',
+            details: `Approval rejected by User ${userId}. Reason: ${reason || 'No reason provided'}`
         });
 
-        res.json({ message: `Task ${is_approved ? 'approved' : 'rejected'} successfully`, is_approved });
+        res.json({ message: 'Task approval rejected', task_id: id, reason: reason || null });
+
     } catch (error) {
+        console.error('Error rejecting task approval:', error);
         res.status(500).json({ message: error.message });
     }
 };
@@ -1224,7 +1295,8 @@ exports.submitTaskProof = async (req, res) => {
         }
 
         // Check if proof is required based on the task type
-        if (task.is_document && !proof) {
+        const isCreator = String(task.creator_id) === String(userId);
+        if (task.is_document && !proof && !isCreator) {
             return res.status(400).json({ message: 'Proof/Document is required for this task' });
         }
 
@@ -1266,7 +1338,7 @@ exports.submitTaskProof = async (req, res) => {
         
         // Update Task Stage to verification or Inactive
         await task.update({ 
-            stage: task.is_document ? 'verification' : 'Inactive',
+            stage: (task.is_document && !isCreator) ? 'verification' : 'Inactive',
             status: 'completed'
         });
 
@@ -2023,10 +2095,21 @@ exports.createUnifiedTask = async (req, res) => {
                                     start_time: task_type_data.start_time,
                                     end_time: parentFinalEndTime,
                                     task_name: task_type_data.task_name,
-                                    priority: priority
+                                    priority: priority,
+                                    origin_type: origin_type
                                 }, parentTask.task_id);
 
                                 if (overlap.hasConflict) {
+                                    // NEW: Strict Overlap check for Self-Log and Directives
+                                    if (overlap.type === 'strict_overlap') {
+                                        await t.rollback();
+                                        return res.status(400).json({
+                                            message: 'Time Conflict Detected (Strict)',
+                                            details: overlap.reason,
+                                            conflict_task_id: overlap.conflictTask?.task_id
+                                        });
+                                    }
+
                                     // Downgrade from auto-accept to pending — user must resolve conflict manually
                                     finalStatus = 'pending';
                                     finalAcceptedAt = null;
@@ -2217,10 +2300,21 @@ exports.createUnifiedTask = async (req, res) => {
                                         start_time: sub.start_time || task_type_data.start_time,
                                         end_time: sub.end_time || task_type_data.end_time,
                                         task_name: sub.task_name || 'Fixed Time Task',
-                                        priority: priority
+                                        priority: priority,
+                                        origin_type: origin_type
                                     }, childTask.task_id);
 
                                     if (overlapChild.hasConflict) {
+                                        // NEW: Strict Overlap check for sub-tasks
+                                        if (overlapChild.type === 'strict_overlap') {
+                                            await t.rollback();
+                                            return res.status(400).json({
+                                                message: 'Time Conflict Detected (Strict)',
+                                                details: overlapChild.reason,
+                                                conflict_task_id: overlapChild.conflictTask?.task_id
+                                            });
+                                        }
+
                                         finalChildStatus = 'pending';
                                         finalChildAcceptedAt = null;
 
@@ -2746,7 +2840,7 @@ exports.updateTask = async (req, res) => {
         const {
             title, description, category, priority, is_package, venue_id,
             is_pause_allowed, score, penalty_per_hour, is_document, is_mandatory,
-            is_approved, approver_id, resource_id, is_faculty, faculty_id,
+            is_approved, approver_id, requires_approval, resource_id, is_faculty, faculty_id,
             status, task_type_data,
             task_title_id // NEW: support for updating master title link
         } = payload;
@@ -2769,6 +2863,22 @@ exports.updateTask = async (req, res) => {
             }
         }
 
+        // Determine effective approval state
+        // If requires_approval is being set to true → mark as pending approval
+        // If being set to false → mark as active and approved
+        let effectiveIsApproved = is_approved !== undefined ? is_approved : task.is_approved;
+        let effectiveStatus = status || task.status;
+        let effectiveApproverId = approver_id !== undefined ? approver_id : task.approver_id;
+
+        if (requires_approval === true && !task.is_approved) {
+            effectiveIsApproved = false;
+            effectiveStatus = 'Pending Approval';
+        } else if (requires_approval === false) {
+            effectiveIsApproved = true;
+            effectiveApproverId = null;
+            if (effectiveStatus === 'Pending Approval') effectiveStatus = 'Active';
+        }
+
         // Update basic task fields
         await task.update({
             title: updateTitle,
@@ -2782,12 +2892,12 @@ exports.updateTask = async (req, res) => {
             penalty_per_hour: penalty_per_hour !== undefined ? penalty_per_hour : task.penalty_per_hour,
             is_document: is_document !== undefined ? is_document : task.is_document,
             is_mandatory: is_mandatory !== undefined ? is_mandatory : task.is_mandatory,
-            is_approved: is_approved !== undefined ? is_approved : task.is_approved,
-            approver_id: approver_id !== undefined ? approver_id : task.approver_id,
+            is_approved: effectiveIsApproved,
+            approver_id: effectiveApproverId,
             resource_id: resource_id !== undefined ? resource_id : task.resource_id,
             is_faculty: is_faculty !== undefined ? is_faculty : task.is_faculty,
             faculty_id: finalFacultyId,
-            status: status || task.status,
+            status: effectiveStatus,
             task_title_id: task_title_id !== undefined ? task_title_id : task.task_title_id
         }, { transaction: t });
 
@@ -2803,6 +2913,10 @@ exports.updateTask = async (req, res) => {
                 const oldEndDate = taskType.end_date;
                 const oldEndTime = taskType.end_time;
 
+                // max_duration_hours is ONLY for package sub-tasks (tasks with a parent_task_id)
+                // Never write it on standalone tasks to avoid confusing the escalation engine
+                const isSubTask = !!task.parent_task_id;
+
                 await taskType.update({
                     task_name: typeData.task_name || taskType.task_name,
                     start_date: typeData.start_date !== undefined ? typeData.start_date : taskType.start_date,
@@ -2810,6 +2924,10 @@ exports.updateTask = async (req, res) => {
                     start_time: typeData.start_time !== undefined ? typeData.start_time : taskType.start_time,
                     end_time: typeData.end_time !== undefined ? typeData.end_time : taskType.end_time,
                     time_quota_hours: typeData.time_quota_hours !== undefined ? typeData.time_quota_hours : taskType.time_quota_hours,
+                    // Only update max_duration_hours for package sub-tasks
+                    ...(isSubTask && typeData.max_duration_hours !== undefined
+                        ? { max_duration_hours: typeData.max_duration_hours }
+                        : {}),
                     venue_id: typeData.venue_id !== undefined ? typeData.venue_id : taskType.venue_id,
                     recurrence: typeData.recurrence || taskType.recurrence
                 }, { transaction: t });
@@ -2865,7 +2983,7 @@ exports.updateTask = async (req, res) => {
                 await TaskAssign.create({
                     task_id: id,
                     user_id: uid,
-                    status: 'Pending'
+                    status: 'pending'
                 }, { transaction: t });
 
                 // Optional: Create notification for new assignee
@@ -4116,9 +4234,13 @@ exports.getTaskDetail = async (req, res) => {
         }
 
         // Check if user has permission to view this task
+        // Allow: admin, task creator, any assignee, task approver, faculty/staff/HOD (non-student roles)
+        const nonStudentRoles = ['admin', 'faculty', 'staff', 'role-user'];
         const canView =
             userRole === 'admin' ||
+            nonStudentRoles.includes(userRole?.toLowerCase()) ||
             String(task.creator_id) === String(userId) ||
+            String(task.approver_id) === String(userId) ||
             task.TaskAssigns?.some(a => String(a.user_id) === String(userId));
         if (!canView) {
             return res.status(403).json({ message: 'You do not have permission to view this task' });
@@ -4386,6 +4508,94 @@ exports.getUnapprovedTasks = async (req, res) => {
     }
 };
 
+exports.getTodaysTasksForUser = async (req, res) => {
+    try {
+        const userId = req.userId;
+        const userRole = req.userRole;
+
+        // Helper: Get YYYY-MM-DD in local time (IST)
+        const getLocalDateString = (d) => {
+            const dateObj = new Date(d);
+            const istOffset = 330 * 60 * 1000;
+            const localDate = new Date(dateObj.getTime() + (dateObj.getTimezoneOffset() * 60000) + istOffset);
+            const year = localDate.getFullYear();
+            const month = String(localDate.getMonth() + 1).padStart(2, '0');
+            const day = String(localDate.getDate()).padStart(2, '0');
+            return `${year}-${month}-${day}`;
+        };
+
+        const todayStr = getLocalDateString(new Date());
+
+        const assignments = await TaskAssign.findAll({
+            where: { 
+                user_id: userId, 
+                status: { [require('sequelize').Op.in]: ['accepted', 'in_progress', 'paused'] } 
+            },
+            include: [{
+                model: Task,
+                where: { is_deleted: false },
+                include: [
+                    { model: TaskType, required: true },
+                    { model: Venue, attributes: ['name', 'location'] },
+                    { model: TaskAssign } // For button state calculation
+                ]
+            }]
+        });
+
+        const isOccurrence = (targetDateStr, tStart, tEnd, recurrence) => {
+            if (!tStart) return false;
+            const startStr = getLocalDateString(tStart);
+            const endStr = tEnd ? getLocalDateString(tEnd) : null;
+            if (targetDateStr < startStr) return false;
+            if (endStr && targetDateStr > endStr) return false;
+            if (recurrence === 'none' || !recurrence) return targetDateStr === startStr;
+            if (recurrence === 'daily') return true;
+            
+            const targetDate = new Date(`${targetDateStr}T00:00:00`);
+            const startDate = new Date(`${startStr}T00:00:00`);
+            if (recurrence === 'weekly') return targetDate.getDay() === startDate.getDay();
+            if (recurrence === 'monthly') return targetDate.getDate() === startDate.getDate();
+            return false;
+        };
+
+        const todaysTasks = [];
+        assignments.forEach(a => {
+            a.Task.TaskTypes.forEach(tt => {
+                if (isOccurrence(todayStr, tt.start_date, tt.end_date, tt.recurrence)) {
+                    todaysTasks.push({
+                        assignment_id: a.id,
+                        task_id: a.Task.task_id,
+                        title: a.Task.title,
+                        category: a.Task.category,
+                        priority: a.Task.priority,
+                        origin_type: a.Task.origin_type,
+                        timing: {
+                            start_time: tt.start_time,
+                            end_time: tt.end_time,
+                            recurrence: tt.recurrence
+                        },
+                        location: a.Task.Venue ? { name: a.Task.Venue.name, location: a.Task.Venue.location } : null,
+                        status: a.status,
+                        stage: a.Task.stage,
+                        action_button: getTaskButtonState(a.Task, userId, userRole)
+                    });
+                }
+            });
+        });
+
+        res.json({
+            success: true,
+            date: todayStr,
+            count: todaysTasks.length,
+            tasks: todaysTasks
+        });
+
+    } catch (error) {
+        console.error('Error in getTodaysTasksForUser:', error);
+        res.status(500).json({ message: error.message });
+    }
+};
+
 // 8. Get Today's Approved Schedule
 exports.getTodaysApprovedSchedule = async (req, res) => {
     try {
@@ -4408,7 +4618,10 @@ exports.getTodaysApprovedSchedule = async (req, res) => {
             where: { user_id: userId, status: 'accepted' },
             include: [{
                 model: Task,
-                where: { is_deleted: false },
+                where: { 
+                    is_deleted: false,
+                    origin_type: { [require('sequelize').Op.ne]: 'self-log' }
+                },
                 include: [
                     { model: TaskType, required: true },
                     { model: Venue, attributes: ['name', 'location'] }
@@ -4825,7 +5038,7 @@ exports.getDailyTaskReport = async (req, res) => {
             return false;
         };
 
-        const createdTasks = await Task.findAll({
+        const tasks = await Task.findAll({
             where: { creator_id: userId, is_deleted: false },
             include: [
                 { model: TaskType, required: true },
@@ -4851,50 +5064,6 @@ exports.getDailyTaskReport = async (req, res) => {
             ],
             order: [['task_id', 'DESC']]
         });
-
-        // 2. Fetch Tasks ASSIGNED TO the user (Directive Tasks)
-        const assignedTasks = await TaskAssign.findAll({
-            where: { user_id: userId },
-            include: [{
-                model: Task,
-                where: { is_deleted: false },
-                include: [
-                    { model: TaskType, required: true },
-                    { model: Venue, attributes: ['name', 'location'] },
-                    {
-                        model: TaskPackageClosure,
-                        include: [{ model: TaskClosure, attributes: ['name'] }]
-                    },
-                    {
-                        model: TaskAssign,
-                        required: false,
-                        include: [{
-                            model: User,
-                            attributes: ['user_id', 'role'],
-                            include: [
-                                { model: Student, attributes: ['name'] },
-                                { model: Faculty, attributes: ['name'] },
-                                { model: Staff, attributes: ['name'] },
-                                { model: RoleUser, attributes: ['name'] }
-                            ]
-                        }]
-                    }
-                ]
-            }],
-            order: [['id', 'DESC']]
-        });
-
-        // Combine and de-duplicate by task_id
-        const allTasksMap = new Map();
-
-        createdTasks.forEach(t => allTasksMap.set(t.task_id, t));
-        assignedTasks.forEach(a => {
-            if (a.Task && !allTasksMap.has(a.task_id)) {
-                allTasksMap.set(a.task_id, a.Task);
-            }
-        });
-
-        const tasks = Array.from(allTasksMap.values());
 
         const formatTask = (task) => {
             const type = task.TaskTypes?.[0] || {};

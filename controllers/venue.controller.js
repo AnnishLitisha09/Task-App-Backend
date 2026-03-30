@@ -123,7 +123,10 @@ exports.getVenueDashboard = async (req, res) => {
             // 3. Fetch tasks for this venue on target date
             //    Check venue_id in BOTH task_types.venue_id AND tasks.venue_id
             const todaysTasks = await Task.findAll({
-                where: { is_deleted: false },
+                where: { 
+                    is_deleted: false,
+                    origin_type: { [Op.ne]: 'self-log' }
+                },
                 attributes: ['task_id', 'title', 'description', 'category', 'priority', 'is_approved', 'creator_id'],
                 include: [
                     {
@@ -314,7 +317,10 @@ exports.getVenueHistory = async (req, res) => {
 
         // 2. Fetch historical tasks
         const tasks = await Task.findAll({
-            where: { is_deleted: false },
+            where: { 
+                is_deleted: false,
+                origin_type: { [Op.ne]: 'self-log' }
+            },
             attributes: ['task_id', 'title', 'category', 'is_approved', 'creator_id'],
             include: [
                 {
@@ -438,7 +444,10 @@ exports.getVenueDetails = async (req, res) => {
 
         // 3. Today's bookings for this venue (all tasks on today with venue match)
         const todaysTasks = await Task.findAll({
-            where: { is_deleted: false },
+            where: { 
+                is_deleted: false,
+                origin_type: { [Op.ne]: 'self-log' }
+            },
             attributes: ['task_id', 'title', 'creator_id'],
             include: [
                 {
@@ -613,7 +622,10 @@ exports.getManagedVenuesDetails = async (req, res) => {
 
             // Today's tasks
             const todaysTasks = await Task.findAll({
-                where: { is_deleted: false },
+                where: { 
+                    is_deleted: false,
+                    origin_type: { [Op.ne]: 'self-log' }
+                },
                 include: [
                     {
                         model: TaskType,
@@ -743,7 +755,10 @@ exports.getMyVenuesList = async (req, res) => {
 
         const result = await Promise.all(venues.map(async (v) => {
             const bookingCount = await Task.count({
-                where: { is_deleted: false },
+                where: { 
+                    is_deleted: false,
+                    origin_type: { [Op.ne]: 'self-log' }
+                },
                 include: [{
                     model: TaskType,
                     required: true,
@@ -848,8 +863,81 @@ exports.updateVenueStatus = async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 exports.getAllVenues = async (req, res) => {
     try {
-        const venues = await Venue.findAll({
+        const { date, start_time, end_time } = req.query;
+
+        // 1. Fetch all venues
+        const venuesRaw = await Venue.findAll({
             attributes: ['venue_id', 'name', 'venue_type', 'location', 'image_url', 'description', 'status']
+        });
+
+        // Convert to plain objects so we can add dynamic properties
+        const venues = venuesRaw.map(v => v.get({ plain: true }));
+
+        // 2. If time constraints are provided, check for bookings
+        let bookedVenueIds = [];
+        if (date && start_time && end_time) {
+            // Find tasks that overlap with this query time and occur on the query date
+            const overlappingTasks = await Task.findAll({
+                where: {
+                    is_deleted: false,
+                    origin_type: { [Op.ne]: 'self-log' } // Self-logs don't block venues formally
+                },
+                include: [
+                    {
+                        model: TaskType,
+                        required: true,
+                        where: {
+                            [Op.and]: [
+                                // Date logic: Task occurs on the target date
+                                {
+                                    [Op.or]: [
+                                        literal(`DATE(\`TaskTypes\`.\`start_date\`) = '${date}'`),
+                                        {
+                                            [Op.and]: [
+                                                literal(`DATE(\`TaskTypes\`.\`start_date\`) <= '${date}'`),
+                                                literal(`DATE(\`TaskTypes\`.\`end_date\`) >= '${date}'`)
+                                            ]
+                                        }
+                                    ]
+                                },
+                                // Time overlap logic: task_start < query_end AND task_end > query_start
+                                { start_time: { [Op.lt]: end_time } },
+                                { end_time: { [Op.gt]: start_time } }
+                            ]
+                        }
+                    },
+                    {
+                        model: TaskAssign,
+                        required: true,
+                        where: { status: { [Op.in]: ['accepted', 'in_progress'] } } // Only confirmed tasks block
+                    }
+                ]
+            });
+
+            // Extract venues that have bookings
+            overlappingTasks.forEach(t => {
+                const vid = t.venue_id || t.TaskTypes?.[0]?.venue_id;
+                if (vid) {
+                    bookedVenueIds.push(vid);
+                }
+            });
+            bookedVenueIds = [...new Set(bookedVenueIds)];
+        }
+
+        // 3. Attach availability status
+        venues.forEach(v => {
+            // If the venue is globally under maintenance, closed, etc.
+            if (v.status && v.status.toLowerCase() !== 'open') {
+                v.booking_status = v.status;
+            } else {
+                // Venue is technically available, check bookings for the requested slot
+                if (date && start_time && end_time) {
+                    v.booking_status = bookedVenueIds.includes(v.venue_id) ? 'booked' : 'available';
+                } else {
+                    // No date/time passed; default to 'available' since we aren't identifying a slot
+                    v.booking_status = 'available';
+                }
+            }
         });
 
         res.json({

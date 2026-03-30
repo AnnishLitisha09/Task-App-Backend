@@ -72,6 +72,7 @@ router.post('/floating/complete', verifyToken, submissionUpload.single('file'), 
 router.post('/unified-create', verifyToken, upload.single('file'), taskController.createUnifiedTask);
 router.put('/:id', verifyToken, taskController.updateTask);
 router.put('/:id/approve', verifyToken, taskController.approveTask);
+router.put('/:id/reject-approval', verifyToken, taskController.rejectTaskApproval);
 router.delete('/:id', verifyToken, taskController.deleteTask);
 router.delete('/assignment/:id', verifyToken, taskController.deleteAssignment);
 router.put('/:id/reschedule', verifyToken, taskController.rescheduleTask); // NEW
@@ -111,6 +112,7 @@ router.get('/stats/me', verifyToken, taskController.getUserTaskStats);
 router.get('/created-by/:userId', verifyToken, taskController.getTasksCreatedByUser);
 router.get('/assigned-to/:userId', verifyToken, taskController.getTasksAssignedToUser);
 router.get('/pending-upcoming', verifyToken, taskController.getPendingUpcomingTasks);
+router.get('/today', verifyToken, taskController.getTodaysTasksForUser); // NEW: Today's Tasks
 
 router.get('/pending-proof', verifyToken, taskController.getPendingProofTasks); // NEW: Pending Proof
 router.get('/verification/pending', verifyToken, taskController.getVerificationTasks); // NEW: Tasks awaiting review
