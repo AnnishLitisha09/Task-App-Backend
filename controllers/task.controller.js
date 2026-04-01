@@ -3996,23 +3996,25 @@ exports.getMonthlySchedule = async (req, res) => {
         const endDateStr = getLocalDateString(endDate);
 
         const taskWhere = { is_deleted: false };
+        const assignWhere = { 
+            status: { [Op.in]: ['accepted', 'completed', 'pending'] } 
+        };
+
         if (venue_id) {
+            // Venue Calendar View: Show ALL assignments for this venue
             taskWhere[Op.or] = [
                 { venue_id: venue_id },
                 literal(`\`Task\`.\`task_id\` IN (SELECT task_id FROM task_types WHERE venue_id = ${parseInt(venue_id)})`)
             ];
+            // Note: We deliberately do NOT filter by user_id here so the venue schedule is complete
         } else {
-            // Exclude venue-specific tasks if viewing the personal calendar
-            taskWhere[Op.not] = [
-                { venue_id: { [Op.ne]: null }, is_faculty: false }
-            ];
+            // Personal Calendar View: Show only the logged-in user's assignments
+            assignWhere.user_id = userId;
+            // Removed restrictive Op.not that was hiding venue tasks from students' personal calendars
         }
 
         const assignments = await TaskAssign.findAll({
-            where: {
-                user_id: userId,
-                status: { [Op.in]: ['accepted', 'completed', 'pending'] }
-            },
+            where: assignWhere,
             include: [{
                 model: Task,
                 where: taskWhere,
