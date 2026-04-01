@@ -3997,7 +3997,10 @@ exports.getMonthlySchedule = async (req, res) => {
 
         const taskWhere = { is_deleted: false };
         if (venue_id) {
-            taskWhere.venue_id = venue_id;
+            taskWhere[Op.or] = [
+                { venue_id: venue_id },
+                literal(`\`Task\`.\`task_id\` IN (SELECT task_id FROM task_types WHERE venue_id = ${parseInt(venue_id)})`)
+            ];
         } else {
             // Exclude venue-specific tasks if viewing the personal calendar
             taskWhere[Op.not] = [
@@ -4008,7 +4011,7 @@ exports.getMonthlySchedule = async (req, res) => {
         const assignments = await TaskAssign.findAll({
             where: {
                 user_id: userId,
-                status: { [Op.in]: ['accepted', 'completed'] }
+                status: { [Op.in]: ['accepted', 'completed', 'pending'] }
             },
             include: [{
                 model: Task,
