@@ -3167,6 +3167,36 @@ exports.getTaskDetailsById = async (req, res) => {
     }
 };
 
+/**
+ * NEW: Get very lightweight status summary of a task
+ * GET /api/tasks/:id/status
+ */
+exports.getTaskStatusSummary = async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        const task = await Task.findOne({
+            where: { task_id: id, is_deleted: false },
+            attributes: ['title', 'stage', 'status']
+        });
+
+        if (!task) {
+            return res.status(404).json({ success: false, message: 'Task not found' });
+        }
+
+        res.json({
+            success: true,
+            task_name: task.title,
+            stage: task.stage,
+            status: task.status
+        });
+
+    } catch (error) {
+        console.error("GET TASK STATUS ERROR:", error);
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
 // Delete Task (Soft Delete)
 exports.deleteTask = async (req, res) => {
     try {
