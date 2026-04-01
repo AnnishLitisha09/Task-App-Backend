@@ -3961,7 +3961,7 @@ exports.getMonthlySchedule = async (req, res) => {
     try {
         const userId = req.userId;
         const { date, venue_id } = req.query;
-        const { Op } = require('sequelize');
+        const { Op, literal } = require('sequelize');
         const { Venue, Resource, User, AuthAccount, Student, Faculty, Staff, RoleUser, TaskType } = require('../models');
 
         // Helper: Get YYYY-MM-DD in local time
