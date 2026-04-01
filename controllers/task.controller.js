@@ -217,7 +217,7 @@ const getTaskButtonState = (task, userId, userRole) => {
                     }
 
                     if (startDT && now < startDT) {
-                        return { type: 'activity', label: 'Starts Soon', action: 'too_early' };
+                        return { type: 'activity', label: 'Starts Soon / Yet to Come', action: 'too_early' };
                     }
                     if (endDT && now > endDT) {
                         return { type: 'activity', label: 'Activity Missed', action: 'missed' };
@@ -233,8 +233,9 @@ const getTaskButtonState = (task, userId, userRole) => {
             // 3c. In Progress Lifecycle (End / Pause / Resume)
             if (['in_progress', 'started', 'ongoing'].includes(status) || ['pauses', 'resume', 'activity_end'].includes(stage)) {
                 
-                // Pause/Resume Logic
-                if (task.is_pause_allowed || stage === 'pauses' || stage === 'resume') {
+                // Pause/Resume Logic: Always allowed for Long Tasks
+                const isLongTask = taskType && taskType.task_name === 'Date-Only / Long Task';
+                if (task.is_pause_allowed || stage === 'pauses' || stage === 'resume' || isLongTask) {
                     if (assignment.is_paused || stage === 'pauses') {
                         return { type: 'activity', label: 'Resume', action: 'resume' };
                     }
@@ -244,7 +245,7 @@ const getTaskButtonState = (task, userId, userRole) => {
                     }
                 }
 
-                // End Activity Logic (with 10 min window)
+                // End Activity Logic (with 10 min window for fixed tasks, immediate for long tasks)
                 if (taskType) {
                     const endDate = taskType.end_date ? new Date(taskType.end_date) : new Date();
                     const dateStr = endDate.toISOString().split('T')[0];
@@ -252,8 +253,9 @@ const getTaskButtonState = (task, userId, userRole) => {
                     const endDateTime = new Date(`${dateStr}T${endTime}`);
                     const threshold = new Date(endDateTime.getTime() - 10 * 60 * 1000);
                     
-                    if (now < threshold && uRole === 'student') {
-                        return null; // Students wait until last 10 mins
+                    // Students wait until last 10 mins UNLESS it is a Long Task
+                    if (now < threshold && uRole === 'student' && !isLongTask) {
+                        return null; 
                     }
                 }
 
@@ -3177,18 +3179,26 @@ exports.getTaskStatusSummary = async (req, res) => {
 
         const task = await Task.findOne({
             where: { task_id: id, is_deleted: false },
-            attributes: ['title', 'stage', 'status']
+            attributes: ['task_id', 'title', 'stage', 'status', 'creator_id', 'is_pause_allowed', 'is_otp_required', 'closure_ids', 'is_faculty', 'faculty_id', 'approver_id', 'is_approved', 'is_escalate'],
+            include: [
+                { model: TaskType },
+                { model: TaskAssign },
+                { model: TaskEscalation }
+            ]
         });
 
         if (!task) {
             return res.status(404).json({ success: false, message: 'Task not found' });
         }
 
+        const button = getTaskButtonState(task, req.userId, req.userRole);
+
         res.json({
             success: true,
             task_name: task.title,
             stage: task.stage,
-            status: task.status
+            status: task.status,
+            action_button: button
         });
 
     } catch (error) {
