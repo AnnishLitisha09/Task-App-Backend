@@ -276,6 +276,13 @@ const getTaskButtonState = (task, userId, userRole) => {
                 const endDateTime = new Date(`${dateStr}T${taskType.end_time || '23:59:59'}`);
                 isExpired = now > endDateTime;
             }
+
+            // If task requires OTP, show Generate OTP for the supervisor/manager
+            const requiresOtp = task.is_otp_required || (task.closure_ids && (task.closure_ids.includes(1) || task.closure_ids.includes("1")));
+            if (requiresOtp && !isExpired) {
+                return { type: 'generate_otp', label: 'Generate OTP', action: 'generate_otp' };
+            }
+
             return { type: 'manage', label: 'Manage Task', action: isExpired ? 'reschedule' : 'self_assign' };
         }
 
@@ -2008,9 +2015,9 @@ exports.createUnifiedTask = async (req, res) => {
             let parentFinalEndTime = task_type_data.end_time || null;
 
             if (task_type_data.time_quota_hours && !task_type_data.end_time) {
-                const calculated = calculateEndDateTime(
+                const calculated = calculateEndWorkingDateTime(
                     oDate, // Use occurrence date for recurring tasks
-                    task_type_data.start_time,
+                    task_type_data.start_time || '08:30:00',
                     task_type_data.time_quota_hours
                 );
                 if (calculated) {
