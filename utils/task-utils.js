@@ -566,6 +566,65 @@ const cleanupStudentTasks = async (userId, transaction = null) => {
     }
 };
 
+/**
+ * Synchronizes a user's profile score and penalty with their completed tasks.
+ */
+const syncUserScore = async (userId, userRole, transaction = null) => {
+    try {
+        const { TaskAssign, Student, Faculty, Staff, RoleUser, Task } = require('../models');
+        const { Op } = require('sequelize');
+
+        // Sum earned scores and penalties
+        const stats = await TaskAssign.findAll({
+            where: { user_id: userId, status: 'completed' },
+            attributes: [
+                [require('sequelize').fn('SUM', require('sequelize').col('earned_score')), 'total_earned'],
+                [require('sequelize').fn('SUM', require('sequelize').col('penalty_applied')), 'total_penalty']
+            ],
+            raw: true,
+            transaction
+        });
+
+        const earnedSum = parseFloat(stats[0]?.total_earned || 0);
+        const penaltySum = parseFloat(stats[0]?.total_penalty || 0);
+        const totalGross = earnedSum + penaltySum;
+
+        // Update profile based on role
+        let profile = null;
+        const updateData = { score: earnedSum, penalty: penaltySum, total_score: totalGross };
+
+        if (!userRole) {
+            const { User } = require('../models');
+            const u = await User.findByPk(userId, { transaction });
+            userRole = u?.role;
+        }
+
+        switch (userRole?.toLowerCase()) {
+            case 'student':
+                profile = await Student.findOne({ where: { user_id: userId }, transaction });
+                break;
+            case 'faculty':
+                profile = await Faculty.findOne({ where: { user_id: userId }, transaction });
+                break;
+            case 'staff':
+                profile = await Staff.findOne({ where: { user_id: userId }, transaction });
+                break;
+            case 'role-user':
+                profile = await RoleUser.findOne({ where: { user_id: userId }, transaction });
+                break;
+        }
+
+        if (profile) {
+            await profile.update(updateData, { transaction });
+        }
+
+        return updateData;
+    } catch (err) {
+        console.error(`[syncUserScore Error] User ${userId}:`, err);
+        return null;
+    }
+};
+
 module.exports = { 
     checkTaskOverlap, 
     isWithinWorkHours, 
@@ -575,6 +634,7 @@ module.exports = {
     isOccurrence,
     adjustLongTaskStatus,
     cleanupStudentTasks,
+    syncUserScore,
     createNotification,
     isEscalatedTaskFuture
 };

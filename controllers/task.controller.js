@@ -3333,27 +3333,16 @@ exports.getUserTaskStats = async (req, res) => {
             }
         }
 
-        // ACCOUNT FOR LEGACY/INITIAL SCORES (Discrepancy Check)
-        // If profile sums > task sums, it means there was an initial balance from bulk upload
-        const initialBase = Math.max(0, profileTotalScore - tasksBaseSum);
-        // Note: earned score captures the net including initial penalty if any
-        const initialEarned = Math.max(0, profileNetScore - tasksEarnedSum);
-        const initialPenalty = Math.max(0, profileTotalPenalty - tasksPenaltySum);
+        // --- NEW: SCORE SYNCHRONIZATION ---
+        // Using the centralized utility to sync and get correct totals
+        const { adjustLongTaskStatus, cleanupStudentTasks, syncUserScore } = require('../utils/task-utils');
+        await syncUserScore(userId, userRole);
 
-        if (initialBase > 0 || initialPenalty > 0 || initialEarned > 0) {
-            taskDetails.push({
-                task_id: 0,
-                title: "Opening Balance / Initial Credits",
-                status: "completed",
-                base_score: initialBase,
-                earned_score: initialEarned,
-                penalty_applied: initialPenalty,
-                submitted_time: profile?.created_at || null,
-                proof: null,
-                required_closures: [],
-                submission_type: "Initial/Bulk Upload"
-            });
-        }
+        // We re-sum from taskDetails if we want to be absolutely sure, but syncUserScore already updated the DB.
+        // For the response, we'll use the freshly calculated sums from the loop.
+        const finalTotalScore = tasksEarnedSum + tasksPenaltySum;
+        const finalEarnedScore = tasksEarnedSum;
+        const finalTotalPenalty = tasksPenaltySum;
 
         const last7Days = Object.keys(dailyStats).map(date => ({
             date,
@@ -3361,9 +3350,9 @@ exports.getUserTaskStats = async (req, res) => {
         }));
 
         res.json({
-            total_score: profileTotalScore,
-            total_penalty: profileTotalPenalty,
-            earned_score: profileNetScore,
+            total_score: finalTotalScore,
+            total_penalty: finalTotalPenalty,
+            earned_score: finalEarnedScore,
             last_7_days: last7Days,
             task_details: taskDetails
         });
