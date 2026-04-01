@@ -117,37 +117,55 @@ const checkTaskOverlap = async (userId, taskDetails, excludeTaskId = null) => {
                 }
 
                 const extPriorityVal = priorityLevels[extTask.priority?.toLowerCase()] || 1;
+                const isNewMandatory = taskDetails.is_mandatory || false;
+                const isExtMandatory = extTask.is_mandatory || false;
 
-                // Rule: If new task has HIGHER priority than existing task
+                // Priority Check
+                let shouldOverride = false;
+                let reason = "";
+
                 if (newPriorityVal > extPriorityVal) {
+                    shouldOverride = true;
+                    reason = `Priority override: ${priority} replaces ${extTask.priority}`;
+                } else if (newPriorityVal === extPriorityVal) {
+                    // Tie-break 1: Mandatory status
+                    if (isNewMandatory && !isExtMandatory) {
+                        shouldOverride = true;
+                        reason = "Mandatory task takes precedence over non-mandatory task of equal priority.";
+                    } else if (isNewMandatory === isExtMandatory) {
+                        // Tie-break 2: Start Time (Earlier wins)
+                        if (newStart < extStart) {
+                            shouldOverride = true;
+                            reason = "Earlier scheduled task takes precedence among equal priority/mandatory status.";
+                        } else if (newStart === extStart) {
+                            // Tie-break 3: Creation Order (Newer wins - assuming latest assignment is most relevant)
+                            if (extTask.task_id < (taskDetails.task_id || 999999)) {
+                                shouldOverride = true;
+                                reason = "Latest assigned task takes precedence among identical schedules.";
+                            }
+                        }
+                    }
+                }
+
+                if (shouldOverride) {
                     return {
                         hasConflict: true,
                         type: 'priority_override',
-                        can_pause: isExtLong || isNewLong, // If one is flexible, it can be auto-paused/segmented
+                        can_pause: isExtLong || isNewLong || isExtMandatory || isNewMandatory, // Allow pre-emption if mandatory or flexible
                         conflictTask: {
                             task_id: extTask.task_id,
                             title: extTask.title,
                             priority: extTask.priority
                         },
-                        reason: `Priority override: ${priority} replaces ${extTask.priority}`
-                    };
-                } else if (isNewLong || isExtLong) {
-                    // One is a long task, so it doesn't "block" hard, but we should notify if relevant
-                    // Actually, for consistency, if priorities are equal/lower, we still flag conflict
-                    // to prevent messy overlaps unless the user confirms.
-                    return {
-                        hasConflict: true,
-                        type: 'time_conflict',
-                        conflictTask: { task_id: extTask.task_id, title: extTask.title },
-                        reason: `Overlap with existing ${extType.task_name}: ${extTask.title}`
+                        reason: reason
                     };
                 } else {
-                    // Standard task vs Standard task (Equal or Higher Existing Priority)
+                    // Standard task vs Standard task (Existing task wins tie or has higher priority)
                     return {
                         hasConflict: true,
                         type: 'blocked',
                         conflictTask: { task_id: extTask.task_id, title: extTask.title },
-                        reason: `Tasks overlap and existing task has equal or higher priority.`
+                        reason: `Overlap with existing task: ${extTask.title}. Existing task has higher or equal precedence.`
                     };
                 }
             }

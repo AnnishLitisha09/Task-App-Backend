@@ -5085,6 +5085,32 @@ exports.getDailyTasks = async (req, res) => {
         const nestedDirectives = buildTaskTree(directives);
         const nestedFloating = buildTaskTree(floatingTasks);
 
+        // --- NEW: Priority & Mandatory Sorting ---
+        const priorityOrder = { 'critical': 4, 'high': 3, 'medium': 2, 'low': 1 };
+        const sortTasks = (tasks) => {
+            return tasks.sort((a, b) => {
+                // 1. Priority
+                const pA = priorityOrder[a.priority?.toLowerCase()] || 1;
+                const pB = priorityOrder[b.priority?.toLowerCase()] || 1;
+                if (pA !== pB) return pB - pA;
+
+                // 2. Mandatory status
+                if (a.is_mandatory && !b.is_mandatory) return -1;
+                if (!a.is_mandatory && b.is_mandatory) return 1;
+
+                // 3. Start Time (Earlier wins)
+                if (a.start_time !== b.start_time) {
+                    return (a.start_time || '23:59:59') < (b.start_time || '23:59:59') ? -1 : 1;
+                }
+
+                // 4. Creation Order (Newer wins)
+                return b.task_id - a.task_id;
+            });
+        };
+
+        sortTasks(nestedDirectives);
+        sortTasks(nestedFloating);
+
         res.json({
             date: dateString,
             directives: nestedDirectives,
