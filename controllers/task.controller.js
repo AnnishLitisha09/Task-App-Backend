@@ -3971,7 +3971,7 @@ exports.getPendingUpcomingTasks = async (req, res) => {
 exports.getMonthlySchedule = async (req, res) => {
     try {
         const userId = req.userId;
-        const { date } = req.query;
+        const { date, venue_id } = req.query;
         const { Op } = require('sequelize');
         const { Venue, Resource, User, AuthAccount, Student, Faculty, Staff, RoleUser, TaskType } = require('../models');
 
@@ -4006,6 +4006,16 @@ exports.getMonthlySchedule = async (req, res) => {
         const startDateStr = getLocalDateString(startDate);
         const endDateStr = getLocalDateString(endDate);
 
+        const taskWhere = { is_deleted: false };
+        if (venue_id) {
+            taskWhere.venue_id = venue_id;
+        } else {
+            // Exclude venue-specific tasks if viewing the personal calendar
+            taskWhere[Op.not] = [
+                { venue_id: { [Op.ne]: null }, is_faculty: false }
+            ];
+        }
+
         const assignments = await TaskAssign.findAll({
             where: {
                 user_id: userId,
@@ -4013,7 +4023,7 @@ exports.getMonthlySchedule = async (req, res) => {
             },
             include: [{
                 model: Task,
-                where: { is_deleted: false },
+                where: taskWhere,
                 include: [
                     {
                         model: TaskType,
