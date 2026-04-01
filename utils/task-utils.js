@@ -83,6 +83,22 @@ const checkTaskOverlap = async (userId, taskDetails, excludeTaskId = null) => {
             if (newStart < extEnd && extStart < newEnd) {
                 // Conflict detected!
                 
+                // ─── NEW: Long Tasks Bypass Conflict Checking ───
+                // Two Long Tasks CANNOT overlap!
+                if (isNewLong && isExtLong) {
+                    return {
+                        hasConflict: true,
+                        type: 'time_conflict',
+                        conflictTask: { task_id: extTask.task_id, title: extTask.title },
+                        reason: `Multiple Long Tasks cannot be scheduled simultaneously. This overlaps with: ${extTask.title}`
+                    };
+                }
+
+                // But a Long task and a Fixed task can overlap freely (they pause/resume dynamically)
+                if (isNewLong || isExtLong) {
+                    continue; // Skip conflict generation for this pair
+                }
+
                 // ─── NEW: Strict Overlap for Self-Log and Directive ───
                 const isNewStrict = (origin_type === 'self-log' || origin_type === 'directive');
                 const isExtStrict = (extTask.origin_type === 'self-log' || extTask.origin_type === 'directive');
@@ -454,6 +470,84 @@ const isEscalatedTaskFuture = async (taskId) => {
     return true;
 };
 
+/**
+ * Automatically cleans up student tasks that have failed their compliance windows:
+ * 1. Proof Submission: Marked "not_completed" and "Inactive" after 6 working hours.
+ * 2. OTP/End Activity: Marked "not_completed" after 12:00 AM of the next day.
+ */
+const cleanupStudentTasks = async (userId, transaction = null) => {
+    try {
+        const { Task, TaskAssign, TaskType, TaskLog } = require('../models');
+        const { Op } = require('sequelize');
+
+        // Today's date in IST
+        const now = new Date();
+        const istOffset = 330 * 60 * 1000;
+        const localNow = new Date(now.getTime() + (now.getTimezoneOffset() * 60000) + istOffset);
+        const todayStr = `${localNow.getFullYear()}-${String(localNow.getMonth() + 1).padStart(2, '0')}-${String(localNow.getDate()).padStart(2, '0')}`;
+
+        // Fetch active assignments for the student
+        const assignments = await TaskAssign.findAll({
+            where: { user_id: userId, status: { [Op.in]: ['accepted', 'in_progress'] } },
+            include: [{
+                model: Task,
+                where: { is_deleted: false },
+                include: [{ model: TaskType, required: true }]
+            }],
+            transaction
+        });
+
+        for (const a of assignments) {
+            const task = a.Task;
+            const tt = task.TaskTypes?.[0];
+            if (!tt) continue;
+
+            const isLongTask = tt.task_name === 'Date-Only / Long Task' || tt.task_name === 'Long Task';
+            const taskEndStr = toISTDateStr(tt.end_date || tt.start_date);
+            const taskEndTime = isLongTask ? '16:30:00' : tt.end_time;
+            if (!taskEndTime) continue;
+
+            const endDateTime = new Date(`${taskEndStr}T${taskEndTime}`);
+            
+            // Check Rule 1: Proof Submission (6 Working Hours)
+            if (task.is_document) {
+                // If end time has passed
+                if (localNow > endDateTime) {
+                    const elapsedWorkingMins = getWorkingMinutes(endDateTime, localNow);
+                    if (elapsedWorkingMins >= (6 * 60)) {
+                        // Mark as not submitted and inactive
+                        await a.update({ status: 'not_completed', reason: 'Proof Submission Timeout (6 Working Hours)' }, { transaction });
+                        // Also mark the task as inactive globally
+                        await Task.update({ status: 'Inactive' }, { where: { task_id: task.task_id }, transaction });
+                        
+                        await TaskLog.create({
+                            task_id: task.task_id,
+                            user_id: userId,
+                            action: 'auto_inactive',
+                            details: `Task marked Inactive/Not Submitted: 6 working hours passed since deadline without proof.`
+                        }, { transaction });
+                        continue;
+                    }
+                }
+            } else {
+                // Check Rule 2: OTP / End Activity (End of day)
+                // If it's strictly the next day
+                if (todayStr > taskEndStr) {
+                    await a.update({ status: 'not_completed', reason: 'End Activity Timeout (Next Day reached)' }, { transaction });
+                    await TaskLog.create({
+                        task_id: task.task_id,
+                        user_id: userId,
+                        action: 'auto_incomplete',
+                        details: `Task marked incomplete: Next day reached before activity was ended via OTP.`
+                    }, { transaction });
+                }
+            }
+        }
+    } catch (err) {
+        console.error(`[cleanupStudentTasks Error] User ${userId}:`, err);
+    }
+};
+
 module.exports = { 
     checkTaskOverlap, 
     isWithinWorkHours, 
@@ -462,6 +556,7 @@ module.exports = {
     toISTDateStr, 
     isOccurrence,
     adjustLongTaskStatus,
+    cleanupStudentTasks,
     createNotification,
     isEscalatedTaskFuture
 };

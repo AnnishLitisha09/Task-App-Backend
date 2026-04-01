@@ -163,20 +163,34 @@ const processAllEscalations = async () => {
                 }
             }
 
-            // NEW: 24-Hour No Proof Logic for Students
+            // STUDENT RULES:
             if (isStudent) {
                 const endDateTime = new Date(`${taskEndStr}T${taskEndTime}`);
-                const diffMs = localNow - endDateTime;
-                const diffHours = diffMs / (1000 * 60 * 60);
-
-                if (diffHours >= 24) {
-                    await a.update({ status: 'not_completed', reason: 'No proof submitted within 24 hours' });
-                    await TaskLog.create({
-                        task_id: a.task_id,
-                        user_id: a.user_id,
-                        action: 'auto_not_completed',
-                        details: `Student task marked not_completed: No submission within 24 hours of end time.`
-                    });
+                
+                if (a.Task?.is_document) {
+                    // Rule 1: 6 Working Hours for Proof
+                    const elapsedWorkingMins = getWorkingMinutes(endDateTime, localNow);
+                    if (elapsedWorkingMins >= (6 * 60)) {
+                        await a.update({ status: 'not_completed', reason: 'Proof Submission Timeout (6 Working Hours)' });
+                        await Task.update({ status: 'Inactive' }, { where: { task_id: a.task_id } });
+                        await TaskLog.create({
+                            task_id: a.task_id,
+                            user_id: a.user_id,
+                            action: 'auto_inactive',
+                            details: `Student task marked Inactive: 6 working hours passed without proof.`
+                        });
+                    }
+                } else {
+                    // Rule 2: End Activity by same day
+                    if (todayStr > taskEndStr) {
+                        await a.update({ status: 'not_completed', reason: 'End Activity Timeout (Next Day)' });
+                        await TaskLog.create({
+                            task_id: a.task_id,
+                            user_id: a.user_id,
+                            action: 'auto_incomplete',
+                            details: `Student task marked incomplete: Next day reached for OTP/End activity.`
+                        });
+                    }
                 }
             }
         }

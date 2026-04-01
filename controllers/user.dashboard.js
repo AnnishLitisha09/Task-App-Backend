@@ -1043,6 +1043,11 @@ exports.getStudentDashboard = async (req, res) => {
         const userId = req.userId;
         const { Op, literal } = require('sequelize');
 
+        // Cleanup and adjust task statuses dynamically before fetching dashboard
+        const { adjustLongTaskStatus, cleanupStudentTasks } = require('../utils/task-utils');
+        await cleanupStudentTasks(userId);
+        await adjustLongTaskStatus(userId);
+
         // Today's date in IST
         const now = new Date();
         const istOffset = 330 * 60 * 1000;
@@ -1099,7 +1104,6 @@ exports.getStudentDashboard = async (req, res) => {
 
         const schedule = [];
         const overdueTasks = [];
-        const escalatedTasks = [];
 
         // Current time for comparison (HH:MM)
         const localTimeStr = `${String(localNow.getHours()).padStart(2, '0')}:${String(localNow.getMinutes()).padStart(2, '0')}`;
@@ -1146,11 +1150,6 @@ exports.getStudentDashboard = async (req, res) => {
                 date: taskEndStr || taskStartStr || 'N/A'
             };
 
-            // Escalated Logic
-            if (a.status === 'escalated') {
-                escalatedTasks.push(taskData);
-                return;
-            }
 
             // Overdue Logic: 
             // 1. End Date is strictly in the past
@@ -1173,8 +1172,8 @@ exports.getStudentDashboard = async (req, res) => {
             // Task is "Today" if it occurs on the EFFECTIVE Today's date (which is tomorrow after 7 PM)
             const isTodayEffective = isOccurrence(effectiveTodayStr, taskType.start_date, taskType.end_date, taskType.recurrence);
 
-            // Must have NO proof/closure to be truly "Overdue"
-            if (isOverdue && (!a.proof || a.proof === '')) {
+            // Must have NO proof/closure to be truly "Overdue" and NOT COMPLETED
+            if (isOverdue && (!a.proof || a.proof === '') && a.status !== 'completed') {
                 overdueTasks.push(taskData);
             } else if (isTodayEffective) {
                 // If it's the effective today and NOT overdue yet
@@ -1288,12 +1287,10 @@ exports.getStudentDashboard = async (req, res) => {
             counts: {
                 today_schedule_count: schedule.length,
                 overdue_tasks_count: overdueTasks.length,
-                pending_approval_count: pendingApprovals.length,
-                escalated_tasks_count: escalatedTasks.length
+                pending_approval_count: pendingApprovals.length
             },
             todays_schedule: schedule,
             overdue_tasks: overdueTasks,
-            escalated_tasks: escalatedTasks,
             pending_for_approval: pendingApprovals
         });
 

@@ -4105,7 +4105,8 @@ exports.getMonthlySchedule = async (req, res) => {
                             timing: {
                                 start_time: taskType.start_time,
                                 end_time: taskType.end_time,
-                                recurrence: taskType.recurrence
+                                recurrence: taskType.recurrence,
+                                task_name: taskType.task_name
                             },
                             location: task.Venue ? { name: task.Venue.name, location: task.Venue.location } : null,
                             resource: task.Resource ? { name: task.Resource.name } : null,
@@ -4120,33 +4121,77 @@ exports.getMonthlySchedule = async (req, res) => {
             });
         });
 
-        // Filter overlaps and sort
+        // ─── NEW: Calendar Segmentation Logic ───
+        // Segments "Long Tasks" around "Fixed Tasks" within working hours (08:45 - 16:30)
+        const WORK_START = "08:45:00";
+        const WORK_END = "16:30:00";
+
         Object.keys(schedule).forEach(dKey => {
-            // Sort by start_time
-            schedule[dKey].sort((b, c) => (b.timing.start_time || '').localeCompare(c.timing.start_time || ''));
+            const dayTasks = schedule[dKey];
+            
+            // 1. Separate into Fixed (timed) and Long (untimed or explicit long)
+            const fixedTasks = dayTasks.filter(t => t.timing.start_time && t.timing.end_time);
+            const longTasks = dayTasks.filter(t => !t.timing.start_time || ['Long Task', 'Date-Only / Long Task'].includes(t.timing.task_name));
 
-            // Overlap removal logic: Keep only the first task that starts after the previous task ends
-            const filteredTasks = [];
-            let lastEndTime = null;
+            // 2. Sort fixed tasks by start time
+            fixedTasks.sort((a, b) => (a.timing.start_time || "").localeCompare(b.timing.start_time || ""));
 
-            for (const task of schedule[dKey]) {
-                const startTime = task.timing.start_time;
-                const endTime = task.timing.end_time;
-
-                if (!lastEndTime || (startTime && startTime >= lastEndTime)) {
-                    filteredTasks.push(task);
-                    if (endTime) {
-                        lastEndTime = endTime;
-                    } else if (startTime) {
-                        // If no end time, assume a duration of 30 mins or just block the slot
-                        const [hours, minutes, seconds] = startTime.split(':').map(Number);
-                        const end = new Date();
-                        end.setHours(hours, minutes + 30, seconds || 0);
-                        lastEndTime = `${String(end.getHours()).padStart(2, '0')}:${String(end.getMinutes()).padStart(2, '0')}:${String(end.getSeconds()).padStart(2, '0')}`;
-                    }
+            // 3. Basic overlap removal/cleanup for fixed tasks
+            const cleanedFixed = [];
+            let lastFEnd = null;
+            for (const ft of fixedTasks) {
+                if (!lastFEnd || ft.timing.start_time >= lastFEnd) {
+                    cleanedFixed.push(ft);
+                    lastFEnd = ft.timing.end_time;
                 }
             }
-            schedule[dKey] = filteredTasks;
+
+            // 4. Segmentation if Long Task exists
+            if (longTasks.length > 0) {
+                const baseLong = longTasks[0]; // Use the primary long task for filling
+                const finalTasks = [];
+                let currentTime = WORK_START;
+
+                for (const ft of cleanedFixed) {
+                    // Segment before or between fixed tasks
+                    if (ft.timing.start_time > currentTime) {
+                        finalTasks.push({
+                            ...baseLong,
+                            title: baseLong.title,
+                            timing: {
+                                ...baseLong.timing,
+                                start_time: currentTime,
+                                end_time: ft.timing.start_time
+                            }
+                        });
+                    }
+                    
+                    // Add the fixed task itself as a segment
+                    finalTasks.push({
+                        ...ft,
+                        title: ft.title
+                    });
+                    
+                    // Move current time to end of this fixed task
+                    currentTime = ft.timing.end_time > currentTime ? ft.timing.end_time : currentTime;
+                }
+
+                // Final gap segment after all fixed tasks until end of workday
+                if (currentTime < WORK_END) {
+                    finalTasks.push({
+                        ...baseLong,
+                        title: baseLong.title,
+                        timing: {
+                            ...baseLong.timing,
+                            start_time: currentTime,
+                            end_time: WORK_END
+                        }
+                    });
+                }
+                schedule[dKey] = finalTasks;
+            } else {
+                schedule[dKey] = cleanedFixed;
+            }
         });
 
         if (date) {
@@ -4560,6 +4605,10 @@ exports.getTodaysTasksForUser = async (req, res) => {
         const userId = req.userId;
         const userRole = req.userRole;
 
+        // Auto-pause/resume long tasks dynamically before fetching schedule
+        const { adjustLongTaskStatus } = require('../utils/task-utils');
+        await adjustLongTaskStatus(userId);
+
         // Helper: Get YYYY-MM-DD in local time (IST)
         const getLocalDateString = (d) => {
             const dateObj = new Date(d);
@@ -4576,7 +4625,7 @@ exports.getTodaysTasksForUser = async (req, res) => {
         const assignments = await TaskAssign.findAll({
             where: { 
                 user_id: userId, 
-                status: { [require('sequelize').Op.in]: ['accepted', 'in_progress', 'paused'] } 
+                status: { [require('sequelize').Op.notIn]: ['pending', 'rejected'] } 
             },
             include: [{
                 model: Task,
@@ -4648,6 +4697,10 @@ exports.getTodaysApprovedSchedule = async (req, res) => {
     try {
         const userId = req.userId;
         const { Op } = require('sequelize');
+
+        // Auto-pause/resume long tasks dynamically before fetching schedule
+        const { adjustLongTaskStatus } = require('../utils/task-utils');
+        await adjustLongTaskStatus(userId);
 
         // Helper: Get YYYY-MM-DD in local time
         const getLocalDateString = (d) => {
