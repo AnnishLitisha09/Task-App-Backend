@@ -2343,7 +2343,41 @@ exports.updateUserRoles = async (req, res) => {
         }
 
         await t.commit();
-        res.json({ message: 'User roles and profiles updated successfully' });
+
+        // Re-fetch to return fresh role data to frontend
+        const updatedUser = await User.findByPk(id, {
+            include: [
+                { model: Student },
+                { model: Faculty },
+                { model: Staff },
+                { model: RoleUser },
+                { model: RoleAssignment, include: [{ model: Role }, { model: require('../models').Department }, { model: require('../models').Venue }] }
+            ]
+        });
+
+        const allRoles = [];
+        if (updatedUser.Student) allRoles.push('Student');
+        if (updatedUser.Faculty) allRoles.push('Faculty');
+        if (updatedUser.Staff) allRoles.push('Staff');
+        if (updatedUser.RoleAssignments) {
+            updatedUser.RoleAssignments.forEach(ra => { if (ra.Role?.user_role) allRoles.push(ra.Role.user_role); });
+        }
+
+        res.json({
+            message: 'User roles and profiles updated successfully',
+            user: {
+                user_id: updatedUser.user_id,
+                id: updatedUser.user_id,
+                role: updatedUser.role,
+                all_roles: [...new Set(allRoles)],
+                role_assignments: (updatedUser.RoleAssignments || []).map(ra => ({
+                    assignment_id: ra.assignment_id,
+                    role: ra.Role?.user_role,
+                    department: ra.Department?.name,
+                    venue: ra.Venue?.name
+                }))
+            }
+        });
     } catch (error) {
         if (t) await t.rollback();
         console.error('UpdateUserRoles Error:', error);
