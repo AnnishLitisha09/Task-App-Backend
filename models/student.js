@@ -60,18 +60,6 @@ module.exports = (sequelize, DataTypes) => {
       type: DataTypes.BIGINT.UNSIGNED,
       allowNull: true
     },
-    total_days: {
-      type: DataTypes.INTEGER,
-      defaultValue: 180
-    },
-    present_days: {
-      type: DataTypes.INTEGER,
-      defaultValue: 166
-    },
-    absent_days: {
-      type: DataTypes.INTEGER,
-      defaultValue: 14
-    },
     created_at: {
       type: DataTypes.DATE,
       defaultValue: DataTypes.NOW

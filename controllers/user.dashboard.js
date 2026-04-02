@@ -1352,10 +1352,7 @@ exports.getStudentDashboard = async (req, res) => {
                 year: student.year,
                 score: student.score,
                 penalty: student.penalty,
-                c_gpa: student.c_gpa,
-                total_days: student.total_days,
-                present_days: student.present_days,
-                absent_days: student.absent_days
+                c_gpa: student.c_gpa
             },
             department: student.Department ? student.Department.name : 'N/A',
             assigned_faculty: student.Faculty ? {

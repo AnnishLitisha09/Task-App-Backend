@@ -67,16 +67,28 @@ exports.getStudentLeaves = async (req, res) => {
             order: [['created_at', 'DESC']]
         });
 
-        // Fetch attendance stats from Student model
-        const student = await Student.findOne({
-            where: { user_id: userId },
-            attributes: ['total_days', 'present_days', 'absent_days']
-        });
+        // Compute attendance dynamically from approved leaves (no extra DB columns needed)
+        const TOTAL_DAYS = 180; // Semester constant
+        const approvedLeaves = leaves.filter(l => l.status === 'approved');
+
+        // Count total absent days across approved leaves
+        const absentDays = approvedLeaves.reduce((sum, l) => {
+            const from = new Date(l.from_date);
+            const to = new Date(l.to_date);
+            const days = Math.round((to - from) / (1000 * 60 * 60 * 24)) + 1;
+            return sum + days;
+        }, 0);
+
+        const presentDays = Math.max(0, TOTAL_DAYS - absentDays);
 
         res.json({
             total: leaves.length,
             leaves,
-            attendance: student || { total_days: 180, present_days: 166, absent_days: 14 }
+            attendance: {
+                total_days: TOTAL_DAYS,
+                present_days: presentDays,
+                absent_days: absentDays
+            }
         });
     } catch (error) {
         res.status(500).json({ message: error.message });
