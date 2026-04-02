@@ -1047,6 +1047,10 @@ exports.getTasksAssignedToUser = async (req, res) => {
             .filter(ra => ra.venue_id && ra.Role?.user_role?.toLowerCase().includes('incharge'))
             .map(ra => ra.venue_id);
 
+        const managedDeptIds = roleAssignments
+            .filter(ra => ra.department_id && ra.Role?.user_role?.toLowerCase() === 'hod')
+            .map(ra => ra.department_id);
+
         const taskTypeWhere = {
             task_name: { [Op.ne]: 'Self Log' }
         };
@@ -1083,7 +1087,7 @@ exports.getTasksAssignedToUser = async (req, res) => {
             source: 'personal'
         }));
 
-        // 3. Fetch Venue Incharge Tasks (if any)
+        // 3. Fetch Venue Incharge Tasks
         let venueInchargeList = [];
         if (managedVenueIds.length > 0) {
             const venueTasks = await Task.findAll({
@@ -1102,9 +1106,7 @@ exports.getTasksAssignedToUser = async (req, res) => {
                 ]
             });
 
-            // Filter out tasks already in personal list to avoid duplication
             const personalTaskIds = new Set(personalList.map(p => p.task_id));
-            
             venueInchargeList = venueTasks
                 .filter(t => !personalTaskIds.has(t.task_id))
                 .map(t => ({
@@ -1116,8 +1118,47 @@ exports.getTasksAssignedToUser = async (req, res) => {
                 }));
         }
 
-        // 4. Consolidate and Paginate
-        const fullList = [...personalList, ...venueInchargeList].sort((a, b) => {
+        // 4. Fetch Department HOD Tasks
+        let hodDeptList = [];
+        if (managedDeptIds.length > 0) {
+            // Find all users in these departments
+            const [deptUsers] = await Task.sequelize.query(`
+                SELECT user_id FROM students WHERE department_id IN (${managedDeptIds.join(',')})
+                UNION
+                SELECT user_id FROM faculties WHERE department_id IN (${managedDeptIds.join(',')})
+            `);
+            const deptUserIds = deptUsers.map(u => u.user_id);
+
+            if (deptUserIds.length > 0) {
+                const deptAssignments = await TaskAssign.findAll({
+                    where: { 
+                        user_id: { [Op.in]: deptUserIds },
+                        user_id: { [Op.ne]: userId } // Don't duplicate personal assignments
+                    },
+                    include: [{
+                        model: Task,
+                        where: { is_deleted: false },
+                        include: [
+                            { model: User, as: 'Creator', attributes: ['user_id', 'role'] },
+                            { model: TaskType, where: taskTypeWhere, required: true },
+                            { model: Venue }
+                        ]
+                    }]
+                });
+
+                const existingTaskIds = new Set([...personalList, ...venueInchargeList].map(p => p.task_id));
+                hodDeptList = deptAssignments
+                    .filter(a => !existingTaskIds.has(a.task_id))
+                    .map(a => ({
+                        ...a.toJSON(),
+                        role_context: 'Department HOD Responsibility',
+                        source: 'department'
+                    }));
+            }
+        }
+
+        // 5. Consolidate and Paginate
+        const fullList = [...personalList, ...venueInchargeList, ...hodDeptList].sort((a, b) => {
             const dateA = new Date(a.created_at || a.Task?.created_at || 0);
             const dateB = new Date(b.created_at || b.Task?.created_at || 0);
             return dateB - dateA;
@@ -1126,6 +1167,7 @@ exports.getTasksAssignedToUser = async (req, res) => {
         const paginated = fullList.slice(offset, offset + limit);
 
         res.json(getPagingData({ count: fullList.length, rows: paginated }, page, limit));
+
     } catch (error) {
         console.error('getTasksAssignedToUser Error:', error);
         res.status(500).json({ message: error.message });
@@ -3597,6 +3639,7 @@ exports.getStudentDashboard = async (req, res) => {
 exports.getPendingProofTasks = async (req, res) => {
     try {
         const userId = req.userId;
+        const { limit, offset } = getPagination(req.query);
         const { Op } = require('sequelize');
 
         // Setup Local Date logic (IST)
