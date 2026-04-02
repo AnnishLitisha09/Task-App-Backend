@@ -1405,8 +1405,18 @@ exports.submitTaskProof = async (req, res) => {
             return res.status(400).json({ message: 'You must start the task before submitting proof.' });
         }
 
-        // 2. Enforce 6-working-hour deadline for non-students
-        if (!isStudent && taskType) {
+        // 2. Enforce deadlines for non-students
+        const nowFinalCheck = new Date();
+        if (!isStudent && assignment.resubmission_deadline) {
+            if (nowFinalCheck > new Date(assignment.resubmission_deadline)) {
+                await assignment.update({ 
+                    status: 'completed', 
+                    earned_score: 0, 
+                    penalty_applied: task.score || 0 
+                });
+                return res.status(400).json({ message: 'Resubmission deadline has passed. Task has been closed with 0 points.' });
+            }
+        } else if (!isStudent && taskType) {
             const taskEndDate = new Date(taskType.end_date || taskType.start_date);
             const taskEndTime = taskType.end_time || '16:30:00';
             const endDateTime = new Date(`${taskEndDate.toISOString().split('T')[0]}T${taskEndTime}`);
@@ -1453,13 +1463,25 @@ exports.submitTaskProof = async (req, res) => {
 
         // Update Assignment
         const nowFinal = new Date();
-        await assignment.update({
-            status: 'completed',
+        const updatePayload = {
             proof,
-            submitted_time: nowFinal,
-            earned_score: earnedScore,
-            penalty_applied: penalty
-        });
+            submitted_time: nowFinal
+        };
+
+        if (task.is_document) {
+            updatePayload.verification_status = 'pending';
+            // Keep status as whatever it currently is (or in_progress) to keep it strictly active
+            if (assignment.status === 'pending' || assignment.status === 'accepted') {
+                updatePayload.status = 'in_progress';
+            }
+        } else {
+            updatePayload.status = 'completed';
+            updatePayload.earned_score = earnedScore;
+            updatePayload.penalty_applied = penalty;
+            updatePayload.verification_status = 'verified'; // Auto-verify if no proof needed
+        }
+
+        await assignment.update(updatePayload);
 
         // Resolve any existing escalations for this user/task
         const { resolveTaskEscalations, adjustLongTaskStatus } = require('../utils/task-utils');
@@ -1471,65 +1493,75 @@ exports.submitTaskProof = async (req, res) => {
             status: 'completed'
         });
 
-        // After completing task, adjust long task status (it will resume another long task if nothing else is active)
-        await adjustLongTaskStatus(userId);
+        // Only allocate score if it's NOT pending verification
+        if (!task.is_document) {
+            // Update User Profile (Student, Faculty, or RoleUser)
+            const user = await User.findByPk(userId);
+            let profile = null;
 
-        // Update User Profile (Student, Faculty, or RoleUser)
-        const user = await User.findByPk(userId);
-        let profile = null;
+            if (user.role === 'student') {
+                profile = await Student.findOne({ where: { user_id: userId } });
+            } else if (user.role === 'faculty') {
+                profile = await Faculty.findOne({ where: { user_id: userId } });
+            } else if (user.role === 'role-user') {
+                profile = await RoleUser.findOne({ where: { user_id: userId } });
+            } else if (user.role === 'staff') {
+                profile = await Staff.findOne({ where: { user_id: userId } });
+            }
 
-        if (user.role === 'student') {
-            profile = await Student.findOne({ where: { user_id: userId } });
-        } else if (user.role === 'faculty') {
-            profile = await Faculty.findOne({ where: { user_id: userId } });
-        } else if (user.role === 'role-user') {
-            profile = await RoleUser.findOne({ where: { user_id: userId } });
-        } else if (user.role === 'staff') {
-            profile = await Staff.findOne({ where: { user_id: userId } });
-        }
+            if (profile) {
+                const currentScore = parseFloat(profile.score || 0); // Net Score
+                const currentPenalty = parseFloat(profile.penalty || 0);
+                const currentTotalScore = parseFloat(profile.total_score || 0); // Gross Score
 
-        if (profile) {
-            const currentScore = parseFloat(profile.score || 0); // Net Score
-            const currentPenalty = parseFloat(profile.penalty || 0);
-            const currentTotalScore = parseFloat(profile.total_score || 0); // Gross Score
-
-            await profile.update({
-                score: currentScore + earnedScore, // Net + (Base - Penalty)
-                penalty: currentPenalty + penalty,
-                total_score: currentTotalScore + parseFloat(task.score) // Gross + Base
-            });
+                await profile.update({
+                    score: currentScore + earnedScore, // Net + (Base - Penalty)
+                    penalty: currentPenalty + penalty,
+                    total_score: currentTotalScore + parseFloat(task.score) // Gross + Base
+                });
+            }
+            
+            // Rule: After completion, check if any paused long tasks can be resumed
+            await adjustLongTaskStatus(userId);
         }
 
         await TaskLog.create({
             task_id: id,
             user_id: userId,
-            action: 'submit_proof',
+            action: task.is_document ? 'submit_proof_for_verification' : 'submit_proof',
             details: proof ? `Proof submitted: ${proof}` : 'Task completed without specific proof document.'
         });
 
         res.json({
-            message: 'Task submitted successfully',
-            score_earned: earnedScore,
-            penalty_applied: penalty,
-            status: 'completed'
+            message: task.is_document ? 'Task proof submitted. Awaiting creator verification.' : 'Task submitted successfully',
+            score_earned: task.is_document ? 0 : earnedScore,
+            penalty_applied: task.is_document ? 0 : penalty,
+            status: task.is_document ? 'in_progress' : 'completed',
+            verification_status: task.is_document ? 'pending' : 'verified'
         });
-
-        // Rule: After completion, check if any paused long tasks can be resumed
-        await adjustLongTaskStatus(userId);
 
         // Rule 8 & 11: Automatic Resume & Notifications
         (async () => {
             try {
                 // 1. Notify Creator
-                await Notification.create({
-                    user_id: task.creator_id,
-                    title: 'Task Completed',
-                    msg: `User ${userId} completed "${task.title}".`,
-                    type: 'task_completed'
-                });
+                if (task.is_document) {
+                    await Notification.create({
+                        user_id: task.creator_id,
+                        title: 'Proof Verification Required',
+                        msg: `User ${userId} submitted proof for "${task.title}". Please review it.`,
+                        type: 'task_submitted_pending_verification'
+                    });
+                } else {
+                    await Notification.create({
+                        user_id: task.creator_id,
+                        title: 'Task Completed',
+                        msg: `User ${userId} completed "${task.title}".`,
+                        type: 'task_completed'
+                    });
+                }
 
                 // 1.5. Trigger Next Sub-task (Sequential Package Logic)
-                if (task.parent_task_id) {
+                if (!task.is_document && task.parent_task_id) {
                     const nextSubTask = await Task.findOne({
                         where: { 
                             parent_task_id: task.parent_task_id,
@@ -5875,4 +5907,168 @@ exports.rescheduleTask = async (req, res) => {
         res.status(500).json({ message: error.message });
     }
 };
+
+exports.verifyTaskProof = async (req, res) => {
+    try {
+        const userId = req.userId;
+        const { id, assignmentId } = req.params;
+        const { action, reason } = req.body; // action: 'approve' or 'reject'
+
+        if (!['approve', 'reject'].includes(action)) {
+            return res.status(400).json({ message: "Action must be 'approve' or 'reject'" });
+        }
+
+        const task = await Task.findByPk(id, { include: [{ model: TaskType }] });
+        if (!task) return res.status(404).json({ message: 'Task not found' });
+
+        if (String(task.creator_id) !== String(userId)) {
+            return res.status(403).json({ message: 'Only the task creator can verify proofs' });
+        }
+
+        const assignment = await TaskAssign.findOne({
+            where: {
+                id: assignmentId,
+                task_id: id,
+                verification_status: 'pending'
+            }
+        });
+
+        if (!assignment) {
+            return res.status(404).json({ message: 'Pending verification assignment not found' });
+        }
+
+        const taskType = task.TaskTypes && task.TaskTypes[0];
+        let penalty = 0;
+        let earnedScore = 0;
+
+        const submittedTime = assignment.submitted_time ? new Date(assignment.submitted_time) : new Date();
+        const deadline = taskType && taskType.end_date ? new Date(taskType.end_date) : null;
+
+        // Calculate penalty based on submitted_time, not current time
+        if (deadline && submittedTime > deadline) {
+            const diffMs = submittedTime - deadline;
+            const diffHours = Math.ceil(diffMs / (1000 * 60 * 60));
+            penalty = diffHours * parseFloat(task.penalty_per_hour || 0);
+        }
+
+        earnedScore = parseFloat(task.score || 0) - penalty;
+
+        if (action === 'approve') {
+            await assignment.update({
+                verification_status: 'verified',
+                status: 'completed',
+                earned_score: earnedScore,
+                penalty_applied: penalty
+            });
+
+            // Update User Profile
+            const user = await User.findByPk(assignment.user_id);
+            let profile = null;
+            if (user) {
+                if (user.role === 'student') profile = await Student.findOne({ where: { user_id: assignment.user_id } });
+                else if (user.role === 'faculty') profile = await Faculty.findOne({ where: { user_id: assignment.user_id } });
+                else if (user.role === 'role-user') profile = await RoleUser.findOne({ where: { user_id: assignment.user_id } });
+                else if (user.role === 'staff') profile = await Staff.findOne({ where: { user_id: assignment.user_id } });
+
+                if (profile) {
+                    const currentScore = parseFloat(profile.score || 0);
+                    const currentPenalty = parseFloat(profile.penalty || 0);
+                    const currentTotalScore = parseFloat(profile.total_score || 0);
+
+                    await profile.update({
+                        score: currentScore + earnedScore,
+                        penalty: currentPenalty + penalty,
+                        total_score: currentTotalScore + parseFloat(task.score)
+                    });
+                }
+            }
+
+            // Adjust Long Task Status (Resume if any)
+            const { adjustLongTaskStatus } = require('../utils/task-utils');
+            await adjustLongTaskStatus(assignment.user_id);
+
+            await TaskLog.create({
+                task_id: id,
+                user_id: assignment.user_id,
+                action: 'proof_verified',
+                details: `Creator approved the submitted proof.`
+            });
+
+            await Notification.create({
+                user_id: assignment.user_id,
+                title: 'Proof Verified',
+                msg: `Your proof for "${task.title}" was verified and completed.`,
+                type: 'task_verified'
+            });
+
+            return res.json({ message: 'Proof verified and task completed successfully', earnedScore, penalty });
+        } 
+        else if (action === 'reject') {
+            const newCount = assignment.proof_rejection_count + 1;
+            
+            if (newCount >= 3) {
+                // 3 strike rule
+                await assignment.update({
+                    verification_status: 'rejected',
+                    status: 'completed',
+                    proof_rejection_count: newCount,
+                    proof_rejection_reason: reason || 'Rejected for the 3rd time. 0 points awarded.',
+                    earned_score: 0,
+                    penalty_applied: task.score || 0
+                });
+
+                await TaskLog.create({
+                    task_id: id,
+                    user_id: assignment.user_id,
+                    action: 'proof_rejected',
+                    details: 'Proof rejected 3 times. Task closed with 0 points.'
+                });
+
+                await Notification.create({
+                    user_id: assignment.user_id,
+                    title: 'Proof Rejected (Final)',
+                    msg: `Your proof for "${task.title}" was rejected for the 3rd time. 0 points awarded.`,
+                    type: 'task_rejected_final'
+                });
+
+                return res.json({ message: 'Proof rejected 3 times. Task closed with 0 points.' });
+            } else {
+                // 4 working hours deadline from now
+                const now = new Date();
+                const resubmissionDeadline = new Date(now.getTime() + (4 * 60 * 60 * 1000)); // 4 hours
+
+                await assignment.update({
+                    verification_status: 'rejected',
+                    status: 'in_progress', // Put it back to in_progress so they have to submit again
+                    proof: null, // Clear the invalid proof
+                    submitted_time: null, // Unset the submission time
+                    proof_rejection_count: newCount,
+                    proof_rejection_reason: reason,
+                    resubmission_deadline: resubmissionDeadline
+                });
+
+                await TaskLog.create({
+                    task_id: id,
+                    user_id: assignment.user_id,
+                    action: 'proof_rejected',
+                    details: `Proof rejected (Strike ${newCount}/3). Reason: ${reason || 'N/A'}`
+                });
+
+                await Notification.create({
+                    user_id: assignment.user_id,
+                    title: 'Proof Rejected',
+                    msg: `Your proof for "${task.title}" was rejected. Please resubmit within 4 hours. Reason: ${reason || 'N/A'}`,
+                    type: 'task_rejected'
+                });
+
+                return res.json({ message: `Proof rejected. Assignee has 4 hours to resubmit. (${3 - newCount} attempts left)` });
+            }
+        }
+
+    } catch (error) {
+        console.error('verifyTaskProof Error:', error);
+        res.status(500).json({ message: error.message });
+    }
+};
+
 module.exports = exports;
