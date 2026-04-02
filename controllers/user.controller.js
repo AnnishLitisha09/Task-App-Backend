@@ -1230,6 +1230,36 @@ const getFullProfile = async (id, role) => {
         }
     }
 
+    // Consolidate all roles for a unified view
+    if (userDetails) {
+        let allRoles = [];
+        if (role) {
+            let roleTitle = role.charAt(0).toUpperCase() + role.slice(1).toLowerCase();
+            if (roleTitle === 'Role-user') roleTitle = 'Incharge'; // More user-friendly
+            allRoles.push(roleTitle);
+        }
+
+        const assignments = await RoleAssignment.findAll({
+            where: { user_id: id },
+            include: [{ model: Role, attributes: ['user_role'] }]
+        });
+
+        assignments.forEach(ra => {
+            if (ra.Role?.user_role) allRoles.push(ra.Role.user_role);
+        });
+
+        if (typeof userDetails === 'object' && !Array.isArray(userDetails)) {
+            // Handle JSON vs Sequelize Instance
+            if (userDetails.toJSON) {
+                const json = userDetails.toJSON();
+                json.all_roles = [...new Set(allRoles)];
+                return json;
+            } else {
+                userDetails.all_roles = [...new Set(allRoles)];
+            }
+        }
+    }
+
     return userDetails;
 };
 
@@ -1498,7 +1528,6 @@ exports.getManagementStaff = async (req, res) => {
 
 exports.getAllHODs = async (req, res) => {
     try {
-
         const hodAssignments = await RoleAssignment.findAll({
             where: { '$Role.user_role$': 'HOD' },
             include: [
@@ -1507,7 +1536,11 @@ exports.getAllHODs = async (req, res) => {
                 {
                     model: User,
                     required: true,
-                    include: [{ model: RoleUser, required: true }]
+                    include: [
+                        { model: RoleUser, required: false },
+                        { model: Faculty, required: false },
+                        { model: Staff, required: false }
+                    ]
                 }
             ]
         });
@@ -1516,7 +1549,10 @@ exports.getAllHODs = async (req, res) => {
 
         hodAssignments.forEach(ra => {
             const userId = ra.user_id;
-            const profile = ra.User?.RoleUser;
+            const u = ra.User;
+            if (!u) return;
+            
+            const profile = u.Faculty || u.RoleUser || u.Staff;
             if (!profile) return;
 
             if (!hodMap.has(userId)) {
@@ -1543,7 +1579,6 @@ exports.getAllHODs = async (req, res) => {
 
 exports.getAllIncharges = async (req, res) => {
     try {
-
         const inchargeAssignments = await RoleAssignment.findAll({
             where: {
                 [Op.or]: [
@@ -1558,7 +1593,11 @@ exports.getAllIncharges = async (req, res) => {
                 {
                     model: User,
                     required: true,
-                    include: [{ model: RoleUser, required: true }]
+                    include: [
+                        { model: RoleUser, required: false },
+                        { model: Faculty, required: false },
+                        { model: Staff, required: false }
+                    ]
                 }
             ]
         });
@@ -1569,7 +1608,10 @@ exports.getAllIncharges = async (req, res) => {
             if (ra.Role?.user_role === 'HOD' && !ra.venue_id) return;
 
             const userId = ra.user_id;
-            const profile = ra.User?.RoleUser;
+            const u = ra.User;
+            if (!u) return;
+
+            const profile = u.Faculty || u.RoleUser || u.Staff;
             if (!profile) return;
 
             if (!inchargeMap.has(userId)) {
@@ -2089,7 +2131,11 @@ exports.getAllAuthorities = async (req, res) => {
                 {
                     model: User,
                     attributes: ['user_id', 'role'],
-                    include: [{ model: RoleUser, attributes: ['name', 'email'] }]
+                    include: [
+                        { model: RoleUser, attributes: ['name', 'email'] },
+                        { model: Faculty, attributes: ['name', 'email'] },
+                        { model: Staff, attributes: ['name', 'email'] }
+                    ]
                 },
                 {
                     model: Role,
@@ -2104,11 +2150,14 @@ exports.getAllAuthorities = async (req, res) => {
 
         for (const a of assignments) {
             const scope = a.Role?.Scope?.scope?.toLowerCase() || 'other';
+            const u = a.User;
+            const profile = u?.Faculty || u?.RoleUser || u?.Staff;
+            
             const entry = {
                 assignment_id: a.id,
                 user_id: a.user_id,
-                name: a.User?.RoleUser?.name || 'N/A',
-                email: a.User?.RoleUser?.email || 'N/A',
+                name: profile ? profile.name : 'N/A',
+                email: profile ? profile.email : 'N/A',
                 role: a.Role?.user_role,
                 scope,
                 department: a.Department?.name || null,
@@ -2120,6 +2169,142 @@ exports.getAllAuthorities = async (req, res) => {
 
         res.json(grouped);
     } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+/**
+ * Update user roles and profiles (Unified Management)
+ * Body: { primary_role, remove_profile, add_assignments, remove_assignments }
+ */
+exports.updateUserRoles = async (req, res) => {
+    const t = await User.sequelize.transaction();
+    try {
+        const { id } = req.params;
+        const { primary_role, remove_profile, add_assignments, remove_assignments } = req.body;
+
+        const user = await User.findByPk(id, {
+            include: [
+                { model: Student, paranoid: false },
+                { model: Faculty, paranoid: false },
+                { model: Staff, paranoid: false },
+                { model: RoleUser, paranoid: false }
+            ],
+            transaction: t
+        });
+
+        if (!user) {
+            await t.rollback();
+            return res.status(404).json({ message: 'User not found' });
+        }
+
+        // 1. Remove Profile if requested
+        if (remove_profile) {
+            const timestamp = Date.now();
+            if (remove_profile === 'student' && user.Student) {
+                await Student.update({ 
+                    email: `${user.Student.email}_del_${timestamp}`,
+                    reg_no: `${user.Student.reg_no}_del_${timestamp}` 
+                }, { where: { user_id: id }, transaction: t });
+                await Student.destroy({ where: { user_id: id }, transaction: t });
+            } else if (remove_profile === 'faculty' && user.Faculty) {
+                await Faculty.update({ 
+                    email: `${user.Faculty.email}_del_${timestamp}`,
+                    reg_no: `${user.Faculty.reg_no}_del_${timestamp}` 
+                }, { where: { user_id: id }, transaction: t });
+                await Faculty.destroy({ where: { user_id: id }, transaction: t });
+            } else if (remove_profile === 'staff' && user.Staff) {
+                await Staff.update({ 
+                    email: `${user.Staff.email}_del_${timestamp}` 
+                }, { where: { user_id: id }, transaction: t });
+                await Staff.destroy({ where: { user_id: id }, transaction: t });
+            }
+        }
+
+        // 2. Add Assignments
+        if (add_assignments && Array.isArray(add_assignments)) {
+            for (const a of add_assignments) {
+                const role = await Role.findOne({ where: { user_role: a.role_name }, transaction: t });
+                if (role) {
+                    await RoleAssignment.findOrCreate({
+                        where: {
+                            user_id: id,
+                            role_id: role.role_id,
+                            department_id: a.department_id || null,
+                            venue_id: a.venue_id || null
+                        },
+                        defaults: { created_at: new Date() },
+                        transaction: t
+                    });
+                }
+            }
+        }
+
+        // 3. Remove Assignments
+        if (remove_assignments && Array.isArray(remove_assignments)) {
+            for (const a of remove_assignments) {
+                const role = await Role.findOne({ where: { user_role: a.role_name }, transaction: t });
+                if (role) {
+                    await RoleAssignment.destroy({
+                        where: {
+                            user_id: id,
+                            role_id: role.role_id,
+                            ...(a.department_id && { department_id: a.department_id }),
+                            ...(a.venue_id && { venue_id: a.venue_id })
+                        },
+                        transaction: t
+                    });
+                }
+            }
+        }
+
+        // 4. Update Primary Role (if provided)
+        if (primary_role) {
+            user.role = primary_role.toLowerCase();
+            await user.save({ transaction: t });
+        }
+
+        // 5. Automatic promotion/safeguard
+        // Re-fetch current profile states
+        const hasFac = await Faculty.findOne({ where: { user_id: id }, transaction: t });
+        const hasStd = await Student.findOne({ where: { user_id: id }, transaction: t });
+        const hasStf = await Staff.findOne({ where: { user_id: id }, transaction: t });
+        const hasRU = await RoleUser.findOne({ where: { user_id: id }, transaction: t });
+        const assignmentCount = await RoleAssignment.count({ where: { user_id: id }, transaction: t });
+
+        // If 'role: faculty' but no Faculty record, downgrade/move
+        if (user.role === 'faculty' && !hasFac) {
+            if (hasStf) user.role = 'staff';
+            else if (hasStd) user.role = 'student';
+            else if (assignmentCount > 0) user.role = 'role-user';
+            await user.save({ transaction: t });
+        } else if (user.role === 'student' && !hasStd) {
+             if (hasFac) user.role = 'faculty';
+             else if (hasStf) user.role = 'staff';
+             else if (assignmentCount > 0) user.role = 'role-user';
+             await user.save({ transaction: t });
+        } else if (user.role === 'staff' && !hasStf) {
+             if (hasFac) user.role = 'faculty';
+             else if (hasStd) user.role = 'student';
+             else if (assignmentCount > 0) user.role = 'role-user';
+             await user.save({ transaction: t });
+        }
+
+        // Final Ensure RoleUser profile if role is 'role-user'
+        if (user.role === 'role-user' && !hasRU) {
+            const profile = hasFac || hasStd || hasStf;
+            await RoleUser.create({ 
+                user_id: id, 
+                name: profile?.name || 'New Role User', 
+                email: profile?.email || `user_${id}@system.com` 
+            }, { transaction: t });
+        }
+
+        await t.commit();
+        res.json({ message: 'User roles and profiles updated successfully' });
+    } catch (error) {
+        if (t) await t.rollback();
+        console.error('UpdateUserRoles Error:', error);
         res.status(500).json({ message: error.message });
     }
 };

@@ -244,6 +244,18 @@ exports.getAllUsersWithDetails = async (req, res) => {
                 }));
             }
 
+            // Consolidate all roles for a unified view
+            let allRoles = [];
+            if (user.Student) allRoles.push('Student');
+            if (user.Faculty) allRoles.push('Faculty');
+            if (user.Staff) allRoles.push('Staff');
+            if (user.RoleAssignments) {
+                user.RoleAssignments.forEach(ra => {
+                    if (ra.Role?.user_role) allRoles.push(ra.Role.user_role);
+                });
+            }
+            details.all_roles = [...new Set(allRoles)];
+
             return details;
         });
 
