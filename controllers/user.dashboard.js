@@ -238,6 +238,7 @@ exports.getAllUsersWithDetails = async (req, res) => {
 
             if (user.RoleAssignments && user.RoleAssignments.length > 0) {
                 details.role_assignments = user.RoleAssignments.map(ra => ({
+                    assignment_id: ra.assignment_id,
                     role: ra.Role?.user_role,
                     department: ra.Department?.name,
                     venue: ra.Venue?.name
