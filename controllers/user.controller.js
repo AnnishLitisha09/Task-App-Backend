@@ -1131,6 +1131,49 @@ const getFullProfile = async (id, role) => {
                             total_staff: totalStaff,
                             total_hods: totalHods
                         };
+                    } else if (ra.venue_id) {
+                        // Venue Incharge Stats
+                        const { Op } = require('sequelize');
+                        const now = new Date();
+                        const istOffset = 330 * 60 * 1000;
+                        const localNow = new Date(now.getTime() + (now.getTimezoneOffset() * 60000) + istOffset);
+                        const dateStr = localNow.toISOString().split('T')[0];
+
+                        // Count venues assigned to this user
+                        const userVenueIds = roleAssignments.filter(a => a.venue_id).map(a => a.venue_id);
+                        const totalVenues = [...new Set(userVenueIds)].length;
+
+                        // Today's bookings in the currently processed venue (ra.Venue)
+                        const bookingsToday = await Task.count({
+                            where: {
+                                venue_id: ra.venue_id,
+                                is_deleted: false
+                            },
+                            include: [{
+                                model: TaskType,
+                                required: true,
+                                where: {
+                                    [Op.or]: [
+                                        { start_date: dateStr },
+                                        { [Op.and]: [{ start_date: { [Op.lte]: dateStr } }, { end_date: { [Op.gte]: dateStr } }] }
+                                    ]
+                                }
+                            }]
+                        });
+
+                        // All venues under repair for this incharge
+                        const underRepair = await Venue.count({
+                            where: {
+                                venue_id: { [Op.in]: userVenueIds },
+                                status: { [Op.in]: ['under maintenance', 'renovation', 'temporarily closed'] }
+                            }
+                        });
+
+                        stats = {
+                            total_venues: totalVenues,
+                            bookings_today: bookingsToday,
+                            under_repair: underRepair
+                        };
                     }
 
                     return {

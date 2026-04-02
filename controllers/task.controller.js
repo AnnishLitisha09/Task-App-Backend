@@ -463,6 +463,9 @@ const normalizeTaskPayload = async (body) => {
     if (payload.task_type_data && payload.task_type_data.task_name === 'Bidding Task') {
         payload.task_type_data.task_name = 'Bidding / Nomination Task';
     }
+    if (payload.task_type_data && payload.task_type_data.task_name === 'Fixed Task') {
+        payload.task_type_data.task_name = 'Fixed Time Task';
+    }
 
     // Consolidate approver_id and approverId
     if (payload.approverId && !payload.approver_id) payload.approver_id = payload.approverId;
