@@ -321,10 +321,24 @@ exports.getUserContext = async (req, res) => {
             return res.status(404).json({ message: "User not found" });
         }
 
-        const dashboards = [];
+        // 1. Unified Management/Higher Role Dashboard (Faculty & HOD)
+        const hodAssignment = (user.RoleAssignments || []).find(ra => ra.Role?.user_role === 'HOD' && ra.Department);
+        
+        if (user.Faculty || hodAssignment) {
+            dashboards.push({
+                type: 'faculty', // Unified type for higher roles
+                label: hodAssignment ? 'HOD Dashboard' : 'Faculty Dashboard',
+                details: {
+                    name: user.Faculty?.name || user.Student?.name || 'Administrator',
+                    role: hodAssignment ? 'HOD' : (user.Faculty?.type || 'Faculty'),
+                    reg_no: user.Faculty?.reg_no || '',
+                    department: hodAssignment?.Department?.name || user.Faculty?.Department?.name || 'N/A'
+                }
+            });
+        }
 
-        // 1. Basic role-based dashboards with details
-        if (user.Student) {
+        // 2. Student Dashboard
+        if (user.Student && !hodAssignment && !user.Faculty) {
             dashboards.push({
                 type: 'student',
                 label: 'Student Dashboard',
@@ -337,19 +351,7 @@ exports.getUserContext = async (req, res) => {
             });
         }
 
-        if (user.Faculty) {
-            dashboards.push({
-                type: 'faculty',
-                label: 'Faculty Dashboard',
-                details: {
-                    name: user.Faculty.name,
-                    role: user.Faculty.type || 'Faculty',
-                    reg_no: user.Faculty.reg_no,
-                    department: user.Faculty.Department?.name || 'N/A'
-                }
-            });
-        }
-
+        // 3. Staff Dashboard
         if (user.Staff) {
             dashboards.push({
                 type: 'staff',
@@ -362,6 +364,7 @@ exports.getUserContext = async (req, res) => {
             });
         }
 
+        // 4. Admin Dashboard
         if (user.role === 'admin') {
             dashboards.push({
                 type: 'admin',
@@ -373,10 +376,8 @@ exports.getUserContext = async (req, res) => {
             });
         }
 
-        // 2. Assignment-based dashboards (Incharge, HOD, etc.)
+        // 5. Assignment-based dashboards (Venue Incharge) - This remains "swappable"
         const assignments = user.RoleAssignments || [];
-
-        // Check for Incharge status (venue assignment)
         const inchargeVenues = assignments.filter(ra => ra.Venue).map(ra => ({
             venue_id: ra.Venue.venue_id,
             name: ra.Venue.name,
@@ -389,19 +390,6 @@ exports.getUserContext = async (req, res) => {
                 label: 'Venue Incharge Dashboard',
                 details: {
                     venues: inchargeVenues
-                }
-            });
-        }
-
-        // Check for HOD status
-        const hodAssignment = assignments.find(ra => ra.Role?.user_role === 'HOD' && ra.Department);
-        if (hodAssignment) {
-            dashboards.push({
-                type: 'hod',
-                label: 'HOD Dashboard',
-                details: {
-                    department: hodAssignment.Department.name,
-                    role: 'HOD'
                 }
             });
         }
