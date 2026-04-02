@@ -157,7 +157,8 @@ exports.getAllUsersWithDetails = async (req, res) => {
                     required: false,
                     include: [
                         { model: Role, attributes: ['user_role'] },
-                        { model: Department, attributes: ['name'] }
+                        { model: Department, attributes: ['name'] },
+                        { model: Venue, attributes: ['name', 'location'] }
                     ]
                 }
             ]
@@ -237,7 +238,8 @@ exports.getAllUsersWithDetails = async (req, res) => {
             if (user.RoleAssignments && user.RoleAssignments.length > 0) {
                 details.role_assignments = user.RoleAssignments.map(ra => ({
                     role: ra.Role?.user_role,
-                    department: ra.Department?.name
+                    department: ra.Department?.name,
+                    venue: ra.Venue?.name
                 }));
             }
 
