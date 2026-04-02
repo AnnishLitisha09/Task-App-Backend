@@ -4760,7 +4760,10 @@ exports.getTodaysTasksForUser = async (req, res) => {
             },
             include: [{
                 model: Task,
-                where: { is_deleted: false },
+                where: { 
+                    is_deleted: false,
+                    origin_type: { [require('sequelize').Op.ne]: 'self-log' }
+                },
                 include: [
                     { model: TaskType, required: true },
                     { model: Venue, attributes: ['name', 'location'] },
