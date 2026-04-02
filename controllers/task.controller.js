@@ -157,10 +157,13 @@ const getTaskButtonState = (task, userId, userRole) => {
 
         // ── 1. Global / Termination States ──────────────────────────────────
         if (['completed', 'cancelled', 'closed', 'Inactive'].includes(task.status)) {
-            if (assignment && ['completed', 'closed'].includes(assignment.status?.toLowerCase())) {
-                return { type: 'activity', label: 'Completed', action: 'completed' };
+            if (!isAuthority) {
+                if (assignment && ['completed', 'closed'].includes(assignment.status?.toLowerCase())) {
+                    return { type: 'activity', label: 'Completed', action: 'completed' };
+                }
+                return null;
             }
-            return null;
+            // Authorities bypass this to management section
         }
 
         // ── 2. STAGE-DRIVEN LOGIC HIGH PRIORITY ──────────────────────────────

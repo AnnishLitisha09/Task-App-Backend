@@ -50,7 +50,7 @@ module.exports = (sequelize, DataTypes) => {
     faculty_id: { type: DataTypes.BIGINT.UNSIGNED, allowNull: true },
     sequence_order: { type: DataTypes.INTEGER, defaultValue: 0 },
     origin_type: { type: DataTypes.ENUM('directive', 'self-log'), defaultValue: 'directive', allowNull: false },
-    stage: { type: DataTypes.STRING, defaultValue: 'Active', allowNull: false }
+    stage: { type: DataTypes.STRING, defaultValue: 'Active', allowNull: true }
   }, {
     sequelize,
     modelName: 'Task',

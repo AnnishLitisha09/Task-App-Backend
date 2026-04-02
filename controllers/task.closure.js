@@ -38,10 +38,9 @@ exports.closeTask = async (req, res) => {
             }, { transaction: t });
         }
 
-        // Update task status
         await task.update({
             status: is_completed ? 'completed' : task.status,
-            stage: is_completed ? 'Inactive' : task.stage
+            stage: is_completed ? (task.origin_type === 'self-log' ? null : 'Inactive') : task.stage
         }, { transaction: t });
 
         // Update assignment if user is assigned
