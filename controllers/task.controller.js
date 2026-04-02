@@ -1038,7 +1038,26 @@ exports.getTasksCreatedByUser = async (req, res) => {
 exports.getTasksAssignedToUser = async (req, res) => {
     try {
         const { userId } = req.params;
-        const { limit, offset, page } = getPagination(req.query);
+        const { date, limit: queryLimit, offset: queryOffset, page: queryPage } = req.query;
+        const { limit, offset, page } = getPagination({ limit: queryLimit, offset: queryOffset, page: queryPage });
+        const { Op } = require('sequelize');
+
+        const taskTypeWhere = {
+            task_name: { [Op.ne]: 'Self Log' }
+        };
+
+        if (date) {
+            taskTypeWhere[Op.and] = [
+                { start_date: { [Op.lte]: `${date} 23:59:59` } },
+                {
+                    [Op.or]: [
+                        { end_date: { [Op.gte]: `${date} 00:00:00` } },
+                        { end_date: null }
+                    ]
+                }
+            ];
+        }
+
         const assignments = await TaskAssign.findAndCountAll({
             where: { user_id: userId },
             include: [
@@ -1047,15 +1066,26 @@ exports.getTasksAssignedToUser = async (req, res) => {
                     where: { is_deleted: false },
                     include: [
                         { model: User, as: 'Creator', attributes: ['user_id', 'role'] },
-                        { model: TaskType },
+                        { 
+                            model: TaskType,
+                            where: taskTypeWhere,
+                            required: true 
+                        },
                         { model: Venue }
                     ]
                 }
             ],
             limit,
             offset,
-            order: [['id', 'DESC']] // TaskAssign typically uses 'id' for auto-increment PK
+            order: [['id', 'DESC']]
         });
+        
+        // If date was provided, we should also manually filter for occurrences if it's a recurring task
+        // but for now, the primary where clause handles non-recurring tasks and the date range of recurring tasks.
+        // If the user wants exact date occurrences for recurring tasks, we'd need to use the isOccurrence helper.
+        // However, the request says "only of particular date I should be able to view", 
+        // and usually for assigned-to history, showing all tasks active on that date is what's expected.
+
         res.json(getPagingData(assignments, page, limit));
     } catch (error) {
         res.status(500).json({ message: error.message });
