@@ -57,16 +57,32 @@ exports.addDepartment = async (req, res) => {
         const dept = await Department.create({ name }, { transaction: t });
 
         if (user_id) {
-            const user = await User.findByPk(user_id);
+            const user = await User.findByPk(user_id, {
+                include: [{ model: Faculty }, { model: Staff }, { model: RoleUser }]
+            });
             if (!user) {
                 await t.rollback();
                 return res.status(404).json({ message: 'User not found' });
             }
 
-            const hodRole = await Role.findOne({ where: { user_role: 'HOD' } });
+            const hodRole = await Role.findOne({ 
+                where: { user_role: { [Op.like]: '%HOD%' } } 
+            });
             if (!hodRole) {
                 await t.rollback();
                 return res.status(404).json({ message: 'HOD role not found' });
+            }
+
+            // Sync RoleUser Profile for dashboard visibility
+            if (!user.RoleUser) {
+                const profile = user.Faculty || user.Staff;
+                await RoleUser.create({
+                    user_id: user.user_id,
+                    name: profile ? profile.name : "HOD User",
+                    email: profile ? profile.email : `hod_${user.user_id}@taskapp.com`,
+                    created_at: new Date(),
+                    updated_at: new Date()
+                }, { transaction: t });
             }
 
             await RoleAssignment.create({
@@ -106,16 +122,32 @@ exports.updateDepartment = async (req, res) => {
 
         // Handle HOD assignment if user_id is provided
         if (user_id) {
-            const user = await User.findByPk(user_id);
+            const user = await User.findByPk(user_id, {
+                include: [{ model: Faculty }, { model: Staff }, { model: RoleUser }]
+            });
             if (!user) {
                 await t.rollback();
                 return res.status(404).json({ message: 'User not found' });
             }
 
-            const hodRole = await Role.findOne({ where: { user_role: 'HOD' } });
+            const hodRole = await Role.findOne({ 
+                where: { user_role: { [Op.like]: '%HOD%' } } 
+            });
             if (!hodRole) {
                 await t.rollback();
                 return res.status(404).json({ message: 'HOD role not found in system' });
+            }
+
+            // Sync RoleUser Profile for dashboard visibility
+            if (!user.RoleUser) {
+                const profile = user.Faculty || user.Staff;
+                await RoleUser.create({
+                    user_id: user.user_id,
+                    name: profile ? profile.name : "HOD User",
+                    email: profile ? profile.email : `hod_${user.user_id}@taskapp.com`,
+                    created_at: new Date(),
+                    updated_at: new Date()
+                }, { transaction: t });
             }
 
             // 1. Remove any existing HOD assignment for THIS department

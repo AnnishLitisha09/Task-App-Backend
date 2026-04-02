@@ -81,21 +81,6 @@ const { checkTaskOverlap, isWithinWorkHours, getWorkingMinutes, toISTDateStr, is
 const { MAX_DAILY_TASKS, PRIORITY_WEIGHTS } = require('../config/constants');
 
 
-// Helper: Pagination
-const getPagination = (query) => {
-    const page = parseInt(query.page) || 1;
-    const limit = parseInt(query.limit) || 10;
-    const offset = (page - 1) * limit;
-    return { limit, offset, page };
-};
-
-const getPagingData = (data, page, limit) => {
-    const { count: totalItems, rows: items } = data;
-    const currentPage = page ? +page : 1;
-    const totalPages = Math.ceil(totalItems / limit);
-    return { totalItems, items, totalPages, currentPage };
-};
-
 // Helper: Get Network IP for cross-device visibility
 const getLocalIP = () => {
     const interfaces = os.networkInterfaces();
@@ -608,11 +593,10 @@ exports.createTask = async (req, res) => {
 exports.getAllTasks = async (req, res) => {
     try {
         const { task_title_id } = req.query;
-        const { limit, offset, page } = getPagination(req.query);
         const where = { is_deleted: false };
         if (task_title_id) where.task_title_id = task_title_id;
 
-        const tasks = await Task.findAndCountAll({
+        const tasks = await Task.findAll({
             where,
             attributes: ['task_id', 'title', 'description', 'category', 'priority', 'score', 'penalty_per_hour', 'is_approved', 'created_at', 'task_title_id', 'venue_id'],
             include: [
@@ -622,11 +606,9 @@ exports.getAllTasks = async (req, res) => {
                 { model: Faculty, attributes: ['name', 'department_id'] },
                 { model: TaskTitle, attributes: ['id', 'task_title'] }
             ],
-            limit,
-            offset,
             order: [['task_id', 'DESC']]
         });
-        res.json(getPagingData(tasks, page, limit));
+        res.json(tasks);
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -1016,19 +998,16 @@ exports.getExhaustiveTaskDetails = async (req, res) => {
 exports.getTasksCreatedByUser = async (req, res) => {
     try {
         const { userId } = req.params;
-        const { limit, offset, page } = getPagination(req.query);
-        const tasks = await Task.findAndCountAll({
+        const tasks = await Task.findAll({
             where: { creator_id: userId, is_deleted: false },
             include: [
                 { model: TaskType },
                 { model: Venue },
                 { model: TaskAssign, include: [{ model: User, attributes: ['user_id', 'role'] }] }
             ],
-            limit,
-            offset,
             order: [['task_id', 'DESC']]
         });
-        res.json(getPagingData(tasks, page, limit));
+        res.json(tasks);
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -1038,8 +1017,7 @@ exports.getTasksCreatedByUser = async (req, res) => {
 exports.getTasksAssignedToUser = async (req, res) => {
     try {
         const { userId } = req.params;
-        const { limit, offset, page } = getPagination(req.query);
-        const assignments = await TaskAssign.findAndCountAll({
+        const assignments = await TaskAssign.findAll({
             where: { user_id: userId },
             include: [
                 {
@@ -1052,11 +1030,9 @@ exports.getTasksAssignedToUser = async (req, res) => {
                     ]
                 }
             ],
-            limit,
-            offset,
-            order: [['id', 'DESC']] // TaskAssign typically uses 'id' for auto-increment PK
+            order: [['id', 'DESC']]
         });
-        res.json(getPagingData(assignments, page, limit));
+        res.json(assignments);
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -3527,7 +3503,6 @@ exports.getPendingProofTasks = async (req, res) => {
     try {
         const userId = req.userId;
         const { Op } = require('sequelize');
-        const { limit, offset, page } = getPagination(req.query);
 
         // Setup Local Date logic (IST)
         const now = new Date();
@@ -3622,7 +3597,7 @@ exports.getPendingProofTasks = async (req, res) => {
             }
         }));
 
-        res.json(getPagingData({ count: filteredTasks.length, rows: formatted }, page, limit));
+        res.json(formatted);
     } catch (error) {
         console.error('Error in getPendingProofTasks:', error);
         res.status(500).json({ message: error.message });
@@ -3843,7 +3818,6 @@ exports.getApprovedUpcomingTasks = async (req, res) => {
     try {
         const userId = req.userId;
         const now = new Date();
-        const { limit, offset, page } = getPagination(req.query);
 
         // Fetch accepted assignments
         const assignments = await TaskAssign.findAll({
@@ -3902,7 +3876,6 @@ exports.getPendingUpcomingTasks = async (req, res) => {
     try {
         const userId = req.userId;
         const now = new Date();
-        const { limit, offset, page } = getPagination(req.query);
 
         // 1. Fetch pending assignments
         const assignments = await TaskAssign.findAll({
@@ -3946,10 +3919,7 @@ exports.getPendingUpcomingTasks = async (req, res) => {
             status: a.status
         }));
 
-        // Manual pagination
-        const paginated = formatted.slice(offset, offset + limit);
-
-        res.json(getPagingData({ count: formatted.length, rows: paginated }, page, limit));
+        res.json(formatted);
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -4549,7 +4519,6 @@ exports.getUnapprovedTasks = async (req, res) => {
     try {
         const userId = req.userId;
         const now = new Date();
-        const { limit, offset, page } = getPagination(req.query);
 
         const assignments = await TaskAssign.findAll({
             where: { user_id: userId, status: 'pending' },
