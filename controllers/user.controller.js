@@ -1893,7 +1893,9 @@ exports.getAllUsersByDepartment = async (req, res) => {
             students: {},
             faculty: {},
             hods: {},
-            staff: []
+            staff: [],
+            principal: [],
+            dean: []
         };
         console.log(`[getAllUsersByDepartment] INITIALIZED RESULT. Type check:`, {
             students: typeof result.students,
@@ -1912,7 +1914,9 @@ exports.getAllUsersByDepartment = async (req, res) => {
                 attributes: ['user_id', 'reg_no', 'name', 'email', 'year', 'c_gpa', 'score', 'total_score', 'penalty'],
                 order: [['name', 'ASC']]
             });
-            result.students[deptName] = students;
+            if (students.length > 0) {
+                result.students[deptName] = students;
+            }
 
             // Get faculty for this department
             const faculty = await Faculty.findAll({
@@ -1920,7 +1924,9 @@ exports.getAllUsersByDepartment = async (req, res) => {
                 attributes: ['user_id', 'id', 'reg_no', 'name', 'email', 'type', 'score', 'total_score', 'penalty'],
                 order: [['name', 'ASC']]
             });
-            result.faculty[deptName] = faculty;
+            if (faculty.length > 0) {
+                result.faculty[deptName] = faculty;
+            }
 
             // Get HODs for this department
             const hodRole = await Role.findOne({ where: { user_role: 'HOD' } });
@@ -1941,13 +1947,13 @@ exports.getAllUsersByDepartment = async (req, res) => {
                     }]
                 });
 
-                result.hods[deptName] = hodAssignments.map(assignment => ({
-                    user_id: assignment.user_id,
-                    name: assignment.User?.RoleUser?.name || 'N/A',
-                    email: assignment.User?.RoleUser?.email || 'N/A'
-                }));
-            } else {
-                result.hods[deptName] = [];
+                if (hodAssignments.length > 0) {
+                    result.hods[deptName] = hodAssignments.map(assignment => ({
+                        user_id: assignment.user_id,
+                        name: assignment.User?.RoleUser?.name || 'N/A',
+                        email: assignment.User?.RoleUser?.email || 'N/A'
+                    }));
+                }
             }
         }
 
@@ -1957,6 +1963,42 @@ exports.getAllUsersByDepartment = async (req, res) => {
             order: [['name', 'ASC']]
         });
         result.staff = staff;
+
+        // 4. Get Principal
+        const principalRole = await Role.findOne({ where: { user_role: 'PRINCIPAL' } });
+        if (principalRole) {
+            const principalAssignments = await RoleAssignment.findAll({
+                where: { role_id: principalRole.role_id },
+                include: [{
+                    model: User,
+                    required: true,
+                    include: [{ model: RoleUser, required: true }]
+                }]
+            });
+            result.principal = principalAssignments.map(assignment => ({
+                user_id: assignment.user_id,
+                name: assignment.User?.RoleUser?.name || 'N/A',
+                email: assignment.User?.RoleUser?.email || 'N/A'
+            }));
+        }
+
+        // 5. Get Dean
+        const deanRole = await Role.findOne({ where: { user_role: 'DEAN' } });
+        if (deanRole) {
+            const deanAssignments = await RoleAssignment.findAll({
+                where: { role_id: deanRole.role_id },
+                include: [{
+                    model: User,
+                    required: true,
+                    include: [{ model: RoleUser, required: true }]
+                }]
+            });
+            result.dean = deanAssignments.map(assignment => ({
+                user_id: assignment.user_id,
+                name: assignment.User?.RoleUser?.name || 'N/A',
+                email: assignment.User?.RoleUser?.email || 'N/A'
+            }));
+        }
 
         console.log(`[getAllUsersByDepartment] FINAL RESULT SUMMARY:`, {
             deptCount: departments.length,
