@@ -587,6 +587,15 @@ exports.assignRole = async (req, res) => {
                 },
                 transaction: t
             });
+        } else if ((role_name === 'INCHARGE' || role_name.toLowerCase().includes('incharge')) && venue_id) {
+            // Remove any existing Incharge for this venue to ensure clean assignment
+            await RoleAssignment.destroy({
+                where: {
+                    role_id: role.role_id,
+                    venue_id: venue_id
+                },
+                transaction: t
+            });
         }
 
         await RoleAssignment.create({
@@ -1363,8 +1372,6 @@ exports.getProfile = async (req, res) => {
 
 exports.getManagementStaff = async (req, res) => {
     try {
-        const { limit, offset, page } = getPagination(req.query);
-
         // Fetch everything first because we need careful merging and filtering
         const facultyStaff = await Faculty.findAll({
             include: [{ model: Department, attributes: ['name'] }]
@@ -1424,11 +1431,7 @@ exports.getManagementStaff = async (req, res) => {
 
         const combinedList = [...formattedFaculty, ...Array.from(inchargeMap.values())];
 
-        // Manual pagination
-        const totalItems = combinedList.length;
-        const paginatedItems = combinedList.slice(offset, offset + limit);
-
-        res.json(getPagingData({ count: totalItems, rows: paginatedItems }, page, limit));
+        res.json(combinedList);
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -1436,7 +1439,6 @@ exports.getManagementStaff = async (req, res) => {
 
 exports.getAllHODs = async (req, res) => {
     try {
-        const { limit, offset, page } = getPagination(req.query);
 
         const hodAssignments = await RoleAssignment.findAll({
             where: { '$Role.user_role$': 'HOD' },
@@ -1474,14 +1476,7 @@ exports.getAllHODs = async (req, res) => {
             }
         });
 
-        const usersList = Array.from(hodMap.values());
-        res.json({
-            totalItems: usersList.length,
-            items: usersList,
-            totalPages: 1,
-            currentPage: 1,
-            limit: usersList.length || 10
-        });
+        res.json(Array.from(hodMap.values()));
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -1489,7 +1484,6 @@ exports.getAllHODs = async (req, res) => {
 
 exports.getAllIncharges = async (req, res) => {
     try {
-        const { limit, offset, page } = getPagination(req.query);
 
         const inchargeAssignments = await RoleAssignment.findAll({
             where: {
@@ -1539,14 +1533,7 @@ exports.getAllIncharges = async (req, res) => {
             }
         });
 
-        const usersList = Array.from(inchargeMap.values());
-        res.json({
-            totalItems: usersList.length,
-            items: usersList,
-            totalPages: 1,
-            currentPage: 1,
-            limit: usersList.length || 10
-        });
+        res.json(Array.from(inchargeMap.values()));
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -1615,6 +1602,60 @@ exports.getInchargeCandidates = async (req, res) => {
         res.status(500).json({ message: error.message });
     }
 };
+
+exports.getHODCandidates = async (req, res) => {
+    try {
+        const [faculty, roleUsers] = await Promise.all([
+            Faculty.findAll({ attributes: ['user_id', 'name', 'email', 'reg_no'], order: [['name', 'ASC']] }),
+            RoleUser.findAll({ 
+                attributes: ['user_id', 'name', 'email'],
+                include: [{
+                    model: User,
+                    required: true,
+                    include: [{
+                        model: RoleAssignment,
+                        include: [{ model: Role, attributes: ['user_role'] }],
+                        required: false
+                    }]
+                }],
+                order: [['name', 'ASC']]
+            })
+        ]);
+
+        const candidates = [];
+
+        faculty.forEach(f => {
+            candidates.push({
+                user_id: f.user_id,
+                name: f.name,
+                email: f.email,
+                category: 'Faculty',
+                sub_role: f.reg_no || 'Faculty'
+            });
+        });
+
+        roleUsers.forEach(ru => {
+            // Get the primary role from assignments if available
+            const ra = ru.User?.RoleAssignments?.find(a => a.Role?.user_role);
+            candidates.push({
+                user_id: ru.user_id,
+                name: ru.name,
+                email: ru.email,
+                category: 'General',
+                sub_role: ra?.Role?.user_role || 'Role User'
+            });
+        });
+
+        // Sort combined list by name
+        candidates.sort((a, b) => a.name.localeCompare(b.name));
+
+        res.json(candidates);
+    } catch (error) {
+        console.error('getHODCandidates Error:', error);
+        res.status(500).json({ message: error.message });
+    }
+};
+
 
 exports.getUnifiedUsers = async (req, res) => {
     try {

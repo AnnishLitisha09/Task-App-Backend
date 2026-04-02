@@ -41,6 +41,7 @@ router.get('/management-staff', userController.getManagementStaff);
 router.get('/hods', userController.getAllHODs);
 router.get('/incharges', userController.getAllIncharges);
 router.get('/incharge-candidates', userController.getInchargeCandidates);
+router.get('/hod-candidates', userController.getHODCandidates);
 router.get('/fetch', userController.getUnifiedUsers); // Unified User Fetch
 router.get('/fetch/department-wise', userController.getAllUsersByDepartment); // ALIAS for fetch/department-wise
 router.get('/by-department', userController.getAllUsersByDepartment); // NEW: Get all users grouped by department
