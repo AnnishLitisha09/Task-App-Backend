@@ -1952,11 +1952,13 @@ exports.createUnifiedTask = async (req, res) => {
             for (const group of assign_to_groups) {
                 let users = [];
                 const { role, department_id } = group;
-                if (role === 'STUDENT') {
+                const normalizedRole = role ? role.toUpperCase() : null;
+
+                if (normalizedRole === 'STUDENT') {
                     users = await Student.findAll({ where: department_id ? { department_id } : {} });
-                } else if (role === 'FACULTY') {
+                } else if (normalizedRole === 'FACULTY') {
                     users = await Faculty.findAll({ where: department_id ? { department_id } : {} });
-                } else if (role === 'HOD') {
+                } else if (normalizedRole === 'HOD') {
                     const hodRole = await Role.findOne({ where: { user_role: 'HOD' } });
                     if (hodRole) {
                         const ra = await RoleAssignment.findAll({
@@ -1964,7 +1966,7 @@ exports.createUnifiedTask = async (req, res) => {
                         });
                         users = ra;
                     }
-                } else if (role === 'STAFF') {
+                } else if (normalizedRole === 'STAFF') {
                     users = await Staff.findAll();
                 } else {
                     const targetRole = await Role.findOne({ where: { user_role: role } });

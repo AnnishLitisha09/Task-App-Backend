@@ -14,7 +14,7 @@ const getUserRoleDetails = async (userId) => {
         });
         return {
             baseRole: user.role,
-            specificRoles: roleAssignments.map(ra => ra.Role?.user_role),
+            specificRoles: roleAssignments.map(ra => ra.Role?.user_role ? ra.Role.user_role.toUpperCase() : null).filter(Boolean),
             departmentIds: roleAssignments.map(ra => ra.department_id)
         };
     }
@@ -31,20 +31,21 @@ const canAssignTo = async (assignerId, assigneeId) => {
         throw new Error('Invalid user IDs');
     }
 
-    const assignerRole = assignerDetails.baseRole;
-    const assigneeRole = assignee.role;
+    const assignerRole = assignerDetails.baseRole ? assignerDetails.baseRole.toLowerCase() : null;
+    const assigneeRole = assignee.role ? assignee.role.toLowerCase() : null;
+    const specificRoles = assignerDetails.specificRoles || [];
 
     // Admin can assign to anyone
     if (assignerRole === 'admin') return true;
 
     // Institutional roles (Principal, Director, etc.) can assign to HOD, Faculty, Students, and Staff
     const institutionalRoles = ['PRINCIPAL', 'DIRECTOR', 'DEAN', 'GENERAL_MANAGER'];
-    if (assignerDetails.specificRoles.some(role => institutionalRoles.includes(role))) {
+    if (specificRoles.some(role => institutionalRoles.includes(role))) {
         return ['role-user', 'faculty', 'student', 'staff'].includes(assigneeRole);
     }
 
     // HOD can assign to Incharge, Faculty, Students in their department
-    if (assignerDetails.specificRoles.includes('HOD')) {
+    if (specificRoles.includes('HOD')) {
         if (assigneeRole === 'student' || assigneeRole === 'faculty') {
             const assigneeProfile = assigneeRole === 'student'
                 ? await Student.findOne({ where: { user_id: assigneeId } })
