@@ -81,6 +81,22 @@ const { checkTaskOverlap, isWithinWorkHours, getWorkingMinutes, toISTDateStr, is
 const { MAX_DAILY_TASKS, PRIORITY_WEIGHTS } = require('../config/constants');
 
 
+// Helper: Pagination
+const getPagination = (query) => {
+    const page = parseInt(query.page) || 1;
+    const limit = parseInt(query.limit) || 10;
+    const offset = (page - 1) * limit;
+    return { limit, offset, page };
+};
+
+const getPagingData = (data, page, limit) => {
+    const { count: totalItems, rows: items } = data;
+    const currentPage = page ? +page : 1;
+    const totalPages = Math.ceil(totalItems / limit);
+    return { totalItems, items, totalPages, currentPage };
+};
+
+
 // Helper: Get Network IP for cross-device visibility
 const getLocalIP = () => {
     const interfaces = os.networkInterfaces();
