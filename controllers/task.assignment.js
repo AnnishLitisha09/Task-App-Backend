@@ -97,6 +97,11 @@ exports.assignTaskToUser = async (req, res) => {
         const assignee = await User.findByPk(assigneeId);
         const isStaff = assignee && assignee.role === 'staff';
 
+        // Update task to mandatory if assigned to staff
+        if (isStaff && !task.is_mandatory) {
+            await task.update({ is_mandatory: true });
+        }
+
         // Create assignment
         await TaskAssign.create({
             task_id: taskId,
@@ -115,7 +120,10 @@ exports.assignTaskToUser = async (req, res) => {
             });
         }
 
-        res.json({ message: 'Task assigned successfully' });
+        res.json({ 
+            message: 'Task assigned successfully',
+            is_mandatory: task.is_mandatory || isStaff
+        });
 
     } catch (error) {
         res.status(500).json({ message: error.message });
@@ -336,6 +344,12 @@ exports.bulkAssignByExcel = async (req, res) => {
             } catch (err) {
                 errors.push({ email, error: err.message });
             }
+        }
+
+        // Enforce mandatory if any staff member is in the assignment list
+        const staffInAssignments = assignments.filter(a => a.status === 'accepted'); // accepted implies staff in our logic above
+        if (staffInAssignments.length > 0 && !task.is_mandatory) {
+            await task.update({ is_mandatory: true });
         }
 
         await TaskAssign.bulkCreate(assignments, { ignoreDuplicates: true });

@@ -317,8 +317,9 @@ const validateTaskType = (taskTypeData, priority = 'low') => {
             break;
         case 'Date-Only / Long Task':
         case 'Long Task':
+        case 'Package Task':
             if (!start_date || !end_date) {
-                throw new Error('Long Task requires start_date and end_date');
+                throw new Error('Long Task/Package Task requires start_date and end_date');
             }
             break;
         case 'Floating Task':
@@ -456,7 +457,7 @@ const normalizeTaskPayload = async (body) => {
     payload.is_faculty = !!payload.is_faculty;
 
     // Consistency: Map generic names to canonical names
-    if (payload.task_type_data && ['Long Task', 'Task'].includes(payload.task_type_data.task_name)) {
+    if (payload.task_type_data && ['Long Task', 'Task', 'Package Task'].includes(payload.task_type_data.task_name)) {
         payload.task_type_data.task_name = 'Date-Only / Long Task';
     }
     if (payload.task_type_data && payload.task_type_data.task_name === 'Bidding Task') {
@@ -2098,6 +2099,16 @@ exports.createUnifiedTask = async (req, res) => {
         // We'll handle this during the per-assignee assignment loop below for better precision.
 
         // --- BATCH CREATION ---
+        // --- NEW: Force Mandatory for Staff ---
+        // Rule: If any assignee is a Staff member, the task is always mandatory.
+        let effectiveIsMandatory = is_mandatory || false;
+        const hasStaffInGroup = assign_to_groups && Array.isArray(assign_to_groups) && assign_to_groups.some(g => g.role === 'STAFF');
+        const hasStaffInAssignees = finalAssigneeIds.some(id => roleMap[id]?.toLowerCase() === 'staff');
+        
+        if (hasStaffInGroup || hasStaffInAssignees) {
+            effectiveIsMandatory = true;
+        }
+
         const createdTaskIds = [];
 
         for (const oDate of occurrenceDates) {
@@ -2111,7 +2122,7 @@ exports.createUnifiedTask = async (req, res) => {
                 score: score || 0,
                 penalty_per_hour: penalty_per_hour || 0,
                 is_document: is_document || false,
-                is_mandatory: is_mandatory || false,
+                is_mandatory: effectiveIsMandatory,
                 is_approved: requires_approval ? false : true,
                 approver_id: approver_id || null,
                 resource_id: resource_id || null,
@@ -2179,8 +2190,12 @@ exports.createUnifiedTask = async (req, res) => {
                     // Auto-accept if it's mandatory (and not a faculty member being assigned by someone else), 
                     // or if it's staff.
                     // CRITICAL: Faculty members MUST always accept/reject manually, even if they are the creator.
-                    let autoAccept = (is_mandatory && !isFacultyAssignee) || (isStaff && !isFacultyAssignee);
+                    let autoAccept = (effectiveIsMandatory && !isFacultyAssignee) || (isStaff && !isFacultyAssignee);
                     if (is_faculty) autoAccept = false;
+
+                    if (!allowed) {
+                        console.warn(`[createUnifiedTask] Skipping assignment for User:${assigneeId} (Role:${assigneeRole}) - Permission Denied by canAssignTo`);
+                    }
 
                     if (allowed) {
                         let finalStatus = autoAccept ? 'accepted' : 'pending';
@@ -2309,7 +2324,7 @@ exports.createUnifiedTask = async (req, res) => {
                         score: sub.score || 0,
                         penalty_per_hour: sub.penalty_per_hour || 0,
                         is_document: sub.is_document !== undefined ? (sub.is_document === true || sub.is_document === 'true') : (is_document || false),
-                        is_mandatory: sub.is_mandatory || is_mandatory || false,
+                        is_mandatory: sub.is_mandatory || effectiveIsMandatory || false,
                         is_approved: requires_approval ? false : true,
                         approver_id: requires_approval ? approver_id : null,
                         creator_id: userId,
