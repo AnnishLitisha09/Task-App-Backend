@@ -1095,114 +1095,8 @@ const getFullProfile = async (id, role) => {
                 where: { user_id: id },
                 include: [{ model: AuthAccount, attributes: ['email'] }]
             });
-
-            // Fetch generic Role Assignments
-            const roleAssignments = await RoleAssignment.findAll({
-                where: { user_id: id },
-                include: [
-                    { model: Role, attributes: ['user_role'] },
-                    { model: Department, attributes: ['name'] },
-                    { model: Venue, as: 'Venue', attributes: ['name', 'location'] }
-                ]
-            });
-
             if (userDetails) {
                 userDetails = userDetails.toJSON();
-
-                // Process counting for HOD / Principal
-                const enhancedAssignments = await Promise.all(roleAssignments.map(async (ra) => {
-                    const roleName = ra.Role?.user_role;
-                    let stats = null;
-
-                    if (roleName === 'HOD' && ra.department_id) {
-                        const facultyCount = await Faculty.count({ where: { department_id: ra.department_id } });
-                        const studentCount = await Student.count({ where: { department_id: ra.department_id } });
-                        stats = { faculty_count: facultyCount, student_count: studentCount };
-                    } else if (roleName === 'PRINCIPAL') {
-                        const totalStudents = await Student.count();
-                        const totalFaculty = await Faculty.count();
-                        const totalStaff = await Staff.count();
-                        const totalHods = await RoleAssignment.count({
-                            include: [{ model: Role, where: { user_role: 'HOD' } }]
-                        });
-                        stats = {
-                            total_students: totalStudents,
-                            total_faculty: totalFaculty,
-                            total_staff: totalStaff,
-                            total_hods: totalHods
-                        };
-                    } else if (ra.venue_id || ra.get('venue_id')) {
-                        // Venue Incharge Stats
-                        const now = new Date();
-                        const istOffset = 330 * 60 * 1000;
-                        const localNow = new Date(now.getTime() + (now.getTimezoneOffset() * 60000) + istOffset);
-                        const dateStr = localNow.toISOString().split('T')[0];
-
-                        // Count ALL venues assigned to this user across all assignments
-                        const userVenueIds = roleAssignments
-                            .map(a => a.venue_id || (a.get ? a.get('venue_id') : null))
-                            .filter(v => v !== null && v !== undefined);
-                        
-                        const uniqueVenueIds = [...new Set(userVenueIds)];
-                        const totalVenues = uniqueVenueIds.length;
-
-                        // Today's bookings in ALL assigned venues
-                        let bookingsToday = 0;
-                        if (totalVenues > 0) {
-                            bookingsToday = await Task.count({
-                                where: {
-                                    venue_id: { [Op.in]: uniqueVenueIds },
-                                    is_deleted: false
-                                },
-                                include: [{
-                                    model: TaskType,
-                                    required: true,
-                                    where: {
-                                        [Op.or]: [
-                                            { start_date: dateStr },
-                                            { [Op.and]: [{ start_date: { [Op.lte]: dateStr } }, { end_date: { [Op.gte]: dateStr } }] }
-                                        ]
-                                    }
-                                }]
-                            });
-                        }
-
-                        // All venues under repair for this incharge
-                        let underRepair = 0;
-                        if (totalVenues > 0) {
-                            underRepair = await Venue.count({
-                                where: {
-                                    venue_id: { [Op.in]: uniqueVenueIds },
-                                    status: { [Op.in]: ['under maintenance', 'renovation', 'temporarily closed'] }
-                                }
-                            });
-                        }
-
-                        stats = {
-                            total_venues: totalVenues,
-                            bookings_today: bookingsToday,
-                            under_repair: underRepair
-                        };
-                    }
-
-                    return {
-                        role: roleName,
-                        department: ra.Department?.name || 'N/A',
-                        venue: ra.Venue?.name || 'N/A',
-                        venue_location: ra.Venue?.location || 'N/A',
-                        stats: stats
-                    };
-                }));
-
-                userDetails.role_assignments = enhancedAssignments;
-                
-                // Aggregate all stats into a single object for the frontend root 'stats'
-                userDetails.stats = enhancedAssignments.reduce((acc, curr) => {
-                    if (curr.stats) {
-                        return { ...acc, ...curr.stats };
-                    }
-                    return acc;
-                }, {});
             }
             break;
         case 'admin':
@@ -1231,6 +1125,111 @@ const getFullProfile = async (id, role) => {
         default:
             break;
     }
+
+    if (userDetails && role?.toLowerCase() !== 'student' && role?.toLowerCase() !== 'admin') {
+        const rAssignments = await RoleAssignment.findAll({
+            where: { user_id: id },
+            include: [
+                { model: Role, attributes: ['user_role'] },
+                { model: Department, attributes: ['name'] },
+                { model: Venue, as: 'Venue', attributes: ['name', 'location'] }
+            ]
+        });
+
+        if (rAssignments && rAssignments.length > 0) {
+            const enhancedAssignments = await Promise.all(rAssignments.map(async (ra) => {
+                const roleName = ra.Role?.user_role;
+                let stats = null;
+
+                if (roleName === 'HOD' && ra.department_id) {
+                    const facultyCount = await Faculty.count({ where: { department_id: ra.department_id } });
+                    const studentCount = await Student.count({ where: { department_id: ra.department_id } });
+                    stats = { faculty_count: facultyCount, student_count: studentCount };
+                } else if (roleName === 'PRINCIPAL') {
+                    const totalStudents = await Student.count();
+                    const totalFaculty = await Faculty.count();
+                    const totalStaff = await Staff.count();
+                    const totalHods = await RoleAssignment.count({
+                        include: [{ model: Role, where: { user_role: 'HOD' } }]
+                    });
+                    stats = {
+                        total_students: totalStudents,
+                        total_faculty: totalFaculty,
+                        total_staff: totalStaff,
+                        total_hods: totalHods
+                    };
+                } else if (ra.venue_id || ra.get('venue_id')) {
+                    const now = new Date();
+                    const istOffset = 330 * 60 * 1000;
+                    const localNow = new Date(now.getTime() + (now.getTimezoneOffset() * 60000) + istOffset);
+                    const dateStr = localNow.toISOString().split('T')[0];
+
+                    const userVenueIds = rAssignments
+                        .map(a => a.venue_id || (a.get ? a.get('venue_id') : null))
+                        .filter(v => v !== null && v !== undefined);
+                    
+                    const uniqueVenueIds = [...new Set(userVenueIds)];
+                    const totalVenues = uniqueVenueIds.length;
+
+                    let bookingsToday = 0;
+                    if (totalVenues > 0) {
+                        bookingsToday = await Task.count({
+                            where: {
+                                venue_id: { [Op.in]: uniqueVenueIds },
+                                is_deleted: false
+                            },
+                            include: [{
+                                model: TaskType,
+                                required: true,
+                                where: {
+                                    [Op.or]: [
+                                        { start_date: dateStr },
+                                        { [Op.and]: [{ start_date: { [Op.lte]: dateStr } }, { end_date: { [Op.gte]: dateStr } }] }
+                                    ]
+                                }
+                            }]
+                        });
+                    }
+
+                    let underRepair = 0;
+                    if (totalVenues > 0) {
+                        underRepair = await Venue.count({
+                            where: {
+                                venue_id: { [Op.in]: uniqueVenueIds },
+                                status: { [Op.in]: ['under maintenance', 'renovation', 'temporarily closed'] }
+                            }
+                        });
+                    }
+
+                    stats = {
+                        total_venues: totalVenues,
+                        bookings_today: bookingsToday,
+                        under_repair: underRepair
+                    };
+                }
+
+                return {
+                    role: roleName,
+                    department: ra.Department?.name || 'N/A',
+                    venue: ra.Venue?.name || 'N/A',
+                    venue_location: ra.Venue?.location || 'N/A',
+                    stats: stats
+                };
+            }));
+
+            userDetails.role_assignments = enhancedAssignments;
+            userDetails.stats = {
+                ...(userDetails.stats || {}),
+                ...enhancedAssignments.reduce((acc, curr) => {
+                    if (curr.stats) {
+                        return { ...acc, ...curr.stats };
+                    }
+                    return acc;
+                }, {})
+            };
+        }
+    }
+
     return userDetails;
 };
 
