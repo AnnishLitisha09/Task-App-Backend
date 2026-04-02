@@ -1,5 +1,16 @@
 const { Coupon, Redeem, User, Student, Faculty, RoleUser, Staff } = require('../models');
+const { Op } = require('sequelize');
 
+/**
+ * Auto-expire coupons whose validity date has passed.
+ * Called before any coupon-read operation.
+ */
+const autoExpireCoupons = async () => {
+    await Coupon.update(
+        { status: 'inactive' },
+        { where: { status: 'active', validity: { [Op.lt]: new Date() } } }
+    );
+};
 
 // --- Coupon CRUD ---
 
@@ -69,6 +80,7 @@ exports.deleteCoupon = async (req, res) => {
 
 exports.getAllCoupons = async (req, res) => {
     try {
+        await autoExpireCoupons();
         const coupons = await Coupon.findAll({ order: [['id', 'DESC']] });
         const activeCount = await Coupon.count({ where: { status: 'active' } });
         const inactiveCount = await Coupon.count({ where: { status: 'inactive' } });
@@ -86,9 +98,9 @@ exports.getAllCoupons = async (req, res) => {
 
 exports.getAvailableCoupons = async (req, res) => {
     try {
+        await autoExpireCoupons();
         const userId = req.userId;
         const userRole = req.userRole;
-        const { Op } = require('sequelize');
 
         // 1. Fetch User Score
         let profile = null;
@@ -141,6 +153,7 @@ exports.getAvailableCoupons = async (req, res) => {
 exports.redeemCoupon = async (req, res) => {
     const t = await Coupon.sequelize.transaction();
     try {
+        await autoExpireCoupons();
         const userId = req.userId;
         const userRole = req.userRole;
         const { coupon_id } = req.body;

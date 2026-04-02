@@ -387,13 +387,6 @@ exports.getHodDashboard = async (req, res) => {
             }]
         });
 
-        const escalatedTaskIds = [...new Set(escalatedAssigns.map(ea => ea.task_id))];
-
-        // Fetch ALL assignments for these tasks to build the requested summary
-        const allAssignsForEscalated = await TaskAssign.findAll({
-            where: { task_id: { [Op.in]: escalatedTaskIds.length > 0 ? escalatedTaskIds : [0] } },
-            attributes: ['task_id', 'status', 'user_id']
-        });
 
         // Map and group stats and names
         const involvedUserIds = [...new Set([
@@ -450,20 +443,66 @@ exports.getHodDashboard = async (req, res) => {
             };
         });
 
-        // 4b. Group Escalations by Task with Summary
+        // 4b. Escalations for Tasks created by this creator (ONLY)
+        // Re-fetch with parent_task_id to enable root-task grouping
+        const escalatedAssigns2 = await TaskAssign.findAll({
+            where: { status: { [Op.in]: ['escalated', 'rejected'] } },
+            include: [{
+                model: Task,
+                where: { is_deleted: false, creator_id: userId },
+                attributes: ['task_id', 'title', 'parent_task_id'],
+                include: [{ model: TaskType, attributes: ['start_date', 'start_time'] }]
+            }, {
+                model: User,
+                attributes: ['user_id', 'role']
+            }]
+        });
+
+        // Build a map so we can trace sub-tasks up to root
+        // root_task_id = parent_task_id if set, else task_id itself
+        const getRootId = (t) => t.parent_task_id || t.task_id;
+
+        // Collect all unique root task IDs
+        const rootTaskIds = [...new Set(escalatedAssigns2.map(ea => getRootId(ea.Task)))];
+
+        // Fetch root task titles for those that are parents
+        const rootTasks = await Task.findAll({
+            where: { task_id: { [Op.in]: rootTaskIds } },
+            attributes: ['task_id', 'title'],
+            include: [{ model: TaskType, attributes: ['start_date', 'start_time'] }]
+        });
+        const rootTaskMap = {};
+        rootTasks.forEach(rt => {
+            rootTaskMap[rt.task_id] = { title: rt.title, timing: rt.TaskTypes?.[0] ? `${rt.TaskTypes[0].start_date} ${rt.TaskTypes[0].start_time}` : 'N/A' };
+        });
+
+        // Fetch all assignments for ALL escalated tasks (including subs) to compute stats
+        const allEscalatedTaskIds = [...new Set(escalatedAssigns2.map(ea => ea.task_id))];
+        const allAssignsForEscalated2 = await TaskAssign.findAll({
+            where: { task_id: { [Op.in]: allEscalatedTaskIds.length > 0 ? allEscalatedTaskIds : [0] } },
+            attributes: ['task_id', 'status', 'user_id']
+        });
+
+        // Group by root task
         const escalationGroups = {};
-        escalatedAssigns.forEach(ea => {
+        escalatedAssigns2.forEach(ea => {
             const t = ea.Task;
             if (!t) return;
             const tt = t.TaskTypes?.[0];
+            const rootId = getRootId(t);
+            const rootInfo = rootTaskMap[rootId] || { title: t.title, timing: tt ? `${tt.start_date} ${tt.start_time}` : 'N/A' };
 
-            if (!escalationGroups[t.task_id]) {
-                const allAssigns = allAssignsForEscalated.filter(a => a.task_id === t.task_id);
-                
-                escalationGroups[t.task_id] = {
-                    task_id: t.task_id,
-                    title: t.title,
-                    timing: tt ? `${tt.start_date} ${tt.start_time}` : 'N/A',
+            if (!escalationGroups[rootId]) {
+                // Gather all assignment records for all tasks under this root
+                const relatedTaskIds = escalatedAssigns2
+                    .filter(e => getRootId(e.Task) === rootId)
+                    .map(e => e.task_id);
+                const allAssigns = allAssignsForEscalated2.filter(a => relatedTaskIds.includes(a.task_id));
+
+                escalationGroups[rootId] = {
+                    task_id: rootId,
+                    title: rootInfo.title,
+                    timing: rootInfo.timing,
                     stats: {
                         total_assignees: allAssigns.length,
                         accepted_count: allAssigns.filter(a => a.status === 'accepted').length,
@@ -471,15 +510,23 @@ exports.getHodDashboard = async (req, res) => {
                         rejected_count: allAssigns.filter(a => a.status === 'rejected').length,
                         escalated_count: allAssigns.filter(a => a.status === 'escalated').length
                     },
-                    escalated_assignees: [] 
+                    escalated_assignees: []
                 };
             }
-            escalationGroups[t.task_id].escalated_assignees.push({
-                user_id: ea.user_id,
-                name: getName(ea.user_id),
-                role: getRole(ea.user_id),
-                status: ea.status
-            });
+
+            // Avoid duplicate assignees (in case same user appears via sub-task and parent)
+            const alreadyAdded = escalationGroups[rootId].escalated_assignees.some(
+                a => a.user_id === ea.user_id && a.task_context === (t.title)
+            );
+            if (!alreadyAdded) {
+                escalationGroups[rootId].escalated_assignees.push({
+                    user_id: ea.user_id,
+                    name: getName(ea.user_id),
+                    role: getRole(ea.user_id),
+                    status: ea.status,
+                    task_context: t.title  // which sub-task caused the escalation
+                });
+            }
         });
 
         const formattedEscalations = Object.values(escalationGroups).map(group => ({
@@ -557,19 +604,30 @@ exports.getHodDashboard = async (req, res) => {
             };
         });
 
-        // 6. Department Tasks History (All Tasks Created by Department Members)
+        // 6. Department Tasks History (Only Tasks for Today, excl. self-log)
         const deptTasks = await Task.findAll({
             where: {
                 is_deleted: false,
-                creator_id: { [Op.in]: deptUserIds }
+                creator_id: { [Op.in]: deptUserIds },
+                origin_type: { [Op.ne]: 'self-log' }
             },
             include: [{
                 model: TaskType,
-                required: false,
+                required: true,
+                where: {
+                    [Op.or]: [
+                        literal(`DATE(\`TaskTypes\`.\`start_date\`) = '${effectiveTodayStr}'`),
+                        {
+                            [Op.and]: [
+                                literal(`DATE(\`TaskTypes\`.\`start_date\`) <= '${effectiveTodayStr}'`),
+                                literal(`DATE(\`TaskTypes\`.\`end_date\`) >= '${effectiveTodayStr}'`)
+                            ]
+                        }
+                    ]
+                },
                 attributes: ['start_date', 'start_time', 'end_time']
             }],
-            order: [['created_at', 'DESC']],
-            limit: 100
+            order: [['created_at', 'DESC']]
         });
 
         // Ensure creator names for history
@@ -807,7 +865,7 @@ exports.getDepartmentUsers = async (req, res) => {
         // 3. Fetch Faculty
         const faculties = await Faculty.findAll({
             where: { department_id: deptId },
-            attributes: ['user_id', 'reg_no', 'name', 'email', 'type'],
+            attributes: ['user_id', 'reg_no', 'name', 'email', 'type', 'score', 'penalty', 'total_score'],
             include: [{ model: User, attributes: ['status'] }]
         });
 
@@ -838,6 +896,9 @@ exports.getDepartmentUsers = async (req, res) => {
                 reg_no: f.reg_no,
                 email: f.email,
                 type: f.type,
+                score: f.score,
+                penalty: f.penalty,
+                total_score: f.total_score,
                 status: f.User?.status
             }))
         });
@@ -955,18 +1016,32 @@ exports.getPrincipalDashboard = async (req, res) => {
             timing: t.TaskTypes?.[0] ? `${new Date(t.TaskTypes[0].start_date).toISOString().split('T')[0]} ${t.TaskTypes[0].start_time}` : 'N/A'
         }));
 
-        const formattedEscalations = allEscalations.map(e => {
+        const principalEscalationGroups = {};
+        allEscalations.forEach(e => {
             const t = e.Task;
+            if (!t) return;
             const tt = t.TaskTypes?.[0];
-            return {
-                task_id: t.task_id,
-                title: t.title,
-                assignee_name: profileNameMap[e.user_id],
+            const groupKey = t.title;
+
+            if (!principalEscalationGroups[groupKey]) {
+                principalEscalationGroups[groupKey] = {
+                    title: t.title,
+                    timing: tt ? `${tt.start_date} ${tt.start_time}` : 'N/A',
+                    escalated_assignees: []
+                };
+            }
+            principalEscalationGroups[groupKey].escalated_assignees.push({
+                user_id: e.user_id,
+                name: profileNameMap[e.user_id],
                 role: e.User?.role,
-                status: e.status,
-                timing: tt ? `${tt.start_date} ${tt.start_time}` : 'N/A'
-            };
+                status: e.status
+            });
         });
+
+        const formattedEscalations = Object.values(principalEscalationGroups).map(group => ({
+            ...group,
+            summary: `${group.escalated_assignees.length} assignees escalated`
+        }));
 
         // 5. Today's Schedule for the Principal
         // todays_schedule: ONLY tasks the user has accepted or is currently doing
