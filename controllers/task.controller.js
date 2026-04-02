@@ -4799,8 +4799,10 @@ exports.getTodaysTasksForUser = async (req, res) => {
                         timing: {
                             start_time: tt.start_time,
                             end_time: tt.end_time,
-                            recurrence: tt.recurrence
+                            recurrence: tt.recurrence,
+                            task_name: tt.task_name // Added
                         },
+                        is_package: a.Task.is_package, // Added
                         location: a.Task.Venue ? { name: a.Task.Venue.name, location: a.Task.Venue.location } : null,
                         status: a.status,
                         stage: a.Task.stage,

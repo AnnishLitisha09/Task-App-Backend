@@ -188,13 +188,15 @@ exports.getVenueDashboard = async (req, res) => {
                     description: t.description,
                     category: t.category,
                     priority: t.priority,
+                    is_package: t.is_package, // Added
                     booked_by: creatorMap[t.creator_id] || `Unknown User (${t.creator_id})`,
                     venue_approval_status: inchargeStatus || 'not_assigned',
                     timing: tt ? {
                         start_time: tt.start_time,
                         end_time: tt.end_time,
                         start_date: tt.start_date,
-                        end_date: tt.end_date
+                        end_date: tt.end_date,
+                        task_name: tt.task_name // Added
                     } : null
                 };
 
