@@ -2266,7 +2266,7 @@ exports.updateUserRoles = async (req, res) => {
         // 2. Add Assignments
         if (add_assignments && Array.isArray(add_assignments)) {
             for (const a of add_assignments) {
-                const role = await Role.findOne({ where: { user_role: a.role_name }, transaction: t });
+                const role = await Role.findOne({ where: { user_role: a.role }, transaction: t });
                 if (role) {
                     await RoleAssignment.findOrCreate({
                         where: {
@@ -2285,7 +2285,7 @@ exports.updateUserRoles = async (req, res) => {
         // 3. Remove Assignments
         if (remove_assignments && Array.isArray(remove_assignments)) {
             for (const a of remove_assignments) {
-                const role = await Role.findOne({ where: { user_role: a.role_name }, transaction: t });
+                const role = await Role.findOne({ where: { user_role: a.role }, transaction: t });
                 if (role) {
                     await RoleAssignment.destroy({
                         where: {
