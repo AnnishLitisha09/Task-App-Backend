@@ -1171,7 +1171,10 @@ exports.getStudentDashboard = async (req, res) => {
             where: { user_id: userId, status: { [Op.in]: ['pending', 'accepted', 'in_progress', 'escalated', 'completed'] } },
             include: [{
                 model: Task,
-                where: { is_deleted: false },
+                where: { 
+                    is_deleted: false,
+                    origin_type: { [Op.ne]: 'self-log' }
+                },
                 include: [{
                     model: TaskType,
                     required: true
@@ -1272,7 +1275,10 @@ exports.getStudentDashboard = async (req, res) => {
             where: { user_id: userId, status: 'pending' },
             include: [{
                 model: Task,
-                where: { is_deleted: false },
+                where: { 
+                    is_deleted: false,
+                    origin_type: { [Op.ne]: 'self-log' }
+                },
                 include: [{
                     model: TaskType,
                     required: true,
