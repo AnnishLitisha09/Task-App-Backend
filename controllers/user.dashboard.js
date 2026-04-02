@@ -1,5 +1,6 @@
-const { User, Student, Faculty, Staff, RoleUser, RoleAssignment, Role, Department, Task, TaskType, TaskAssign, TaskLog } = require('../models');
+const { User, Student, Faculty, Staff, RoleUser, RoleAssignment, Role, Department, Task, TaskType, TaskAssign, TaskLog, Venue } = require('../models');
 const { isOccurrence, toISTDateStr } = require('../utils/task-utils');
+const { Op, literal } = require('sequelize');
 
 // ... (existing getAllUsersWithDetails function) ...
 
@@ -128,7 +129,7 @@ exports.getAllUsersWithDetails = async (req, res) => {
         const users = await User.findAll({
             where: {
                 status: 'active',
-                role: { [require('sequelize').Op.ne]: 'admin' }
+                role: { [Op.ne]: 'admin' }
             },
             include: [
                 {
@@ -272,8 +273,7 @@ exports.getHodDashboard = async (req, res) => {
     const getRole = (id) => profileMap[id]?.role || "N/A";
     try {
         const userId = req.userId;
-        const { Op, literal } = require('sequelize');
-
+        
         // 1. Identify HOD and their Department
         const hodAssignment = await RoleAssignment.findOne({
             where: { user_id: userId },
@@ -707,8 +707,7 @@ exports.getHodDashboard = async (req, res) => {
 exports.getDepartmentalTasks = async (req, res) => {
     try {
         const userId = req.userId;
-        const { Op } = require('sequelize');
-
+        
         // 1. Identify HOD and their Department
         const hodAssignment = await RoleAssignment.findOne({
             where: { user_id: userId },
@@ -756,8 +755,7 @@ exports.getDepartmentalTasks = async (req, res) => {
             `${tomorrowDate.getFullYear()}-${String(tomorrowDate.getMonth() + 1).padStart(2, '0')}-${String(tomorrowDate.getDate()).padStart(2, '0')}` :
             dateStr;
 
-        const { literal } = require('sequelize');
-
+        
         // 4. Fetch Tasks created by these users for the effective date
         const tasks = await Task.findAll({
             where: {

@@ -820,9 +820,9 @@ exports.getExhaustiveTaskDetails = async (req, res) => {
         // Fetch Approval Request if applicable
         const approvalRequest = await TaskApprovalRequest.findOne({
             where: {
-                [require('sequelize').Op.or]: [
+                [Op.or]: [
                     { task_id: id },
-                    { task_ids: { [require('sequelize').Op.like]: `%${id}%` } }
+                    { task_ids: { [Op.like]: `%${id}%` } }
                 ]
             },
             order: [['created_at', 'DESC']]
@@ -1296,7 +1296,7 @@ exports.startActivity = async (req, res) => {
             where: {
                 task_id: id,
                 user_id: userId,
-                status: { [require('sequelize').Op.in]: ['pending', 'accepted'] }
+                status: { [Op.in]: ['pending', 'accepted'] }
             },
             include: [{
                 model: Task,
@@ -1384,7 +1384,7 @@ exports.submitTaskProof = async (req, res) => {
             where: {
                 task_id: id,
                 user_id: userId,
-                status: { [require('sequelize').Op.in]: ['pending', 'accepted', 'in_progress'] }
+                status: { [Op.in]: ['pending', 'accepted', 'in_progress'] }
             },
             include: [{
                 model: Task,
@@ -4759,13 +4759,13 @@ exports.getTodaysTasksForUser = async (req, res) => {
         const assignments = await TaskAssign.findAll({
             where: { 
                 user_id: userId, 
-                status: { [require('sequelize').Op.notIn]: ['pending', 'rejected'] } 
+                status: { [Op.notIn]: ['pending', 'rejected'] } 
             },
             include: [{
                 model: Task,
                 where: { 
                     is_deleted: false,
-                    origin_type: { [require('sequelize').Op.ne]: 'self-log' }
+                    origin_type: { [Op.ne]: 'self-log' }
                 },
                 include: [
                     { model: TaskType, required: true },
@@ -4859,7 +4859,7 @@ exports.getTodaysApprovedSchedule = async (req, res) => {
                 model: Task,
                 where: { 
                     is_deleted: false,
-                    origin_type: { [require('sequelize').Op.ne]: 'self-log' }
+                    origin_type: { [Op.ne]: 'self-log' }
                 },
                 include: [
                     { model: TaskType, required: true },
