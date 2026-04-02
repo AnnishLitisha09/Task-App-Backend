@@ -1035,7 +1035,17 @@ exports.getTasksAssignedToUser = async (req, res) => {
         const { userId } = req.params;
         const { date, limit: queryLimit, offset: queryOffset, page: queryPage } = req.query;
         const { limit, offset, page } = getPagination({ limit: queryLimit, offset: queryOffset, page: queryPage });
-        const { Op } = require('sequelize');
+        const { Op, literal } = require('sequelize');
+
+        // 1. Identify roles and venues managed by this user
+        const roleAssignments = await RoleAssignment.findAll({
+            where: { user_id: userId },
+            include: [{ model: Role, attributes: ['user_role'] }]
+        });
+
+        const managedVenueIds = roleAssignments
+            .filter(ra => ra.venue_id && ra.Role?.user_role?.toLowerCase().includes('incharge'))
+            .map(ra => ra.venue_id);
 
         const taskTypeWhere = {
             task_name: { [Op.ne]: 'Self Log' }
@@ -1053,39 +1063,75 @@ exports.getTasksAssignedToUser = async (req, res) => {
             ];
         }
 
-        const assignments = await TaskAssign.findAndCountAll({
+        // 2. Fetch Personal Assignments
+        const personalAssignments = await TaskAssign.findAll({
             where: { user_id: userId },
-            include: [
-                {
-                    model: Task,
-                    where: { is_deleted: false },
-                    include: [
-                        { model: User, as: 'Creator', attributes: ['user_id', 'role'] },
-                        { 
-                            model: TaskType,
-                            where: taskTypeWhere,
-                            required: true 
-                        },
-                        { model: Venue }
-                    ]
-                }
-            ],
-            limit,
-            offset,
-            order: [['id', 'DESC']]
+            include: [{
+                model: Task,
+                where: { is_deleted: false },
+                include: [
+                    { model: User, as: 'Creator', attributes: ['user_id', 'role'] },
+                    { model: TaskType, where: taskTypeWhere, required: true },
+                    { model: Venue }
+                ]
+            }]
         });
-        
-        // If date was provided, we should also manually filter for occurrences if it's a recurring task
-        // but for now, the primary where clause handles non-recurring tasks and the date range of recurring tasks.
-        // If the user wants exact date occurrences for recurring tasks, we'd need to use the isOccurrence helper.
-        // However, the request says "only of particular date I should be able to view", 
-        // and usually for assigned-to history, showing all tasks active on that date is what's expected.
 
-        res.json(getPagingData(assignments, page, limit));
+        const personalList = personalAssignments.map(a => ({
+            ...a.toJSON(),
+            role_context: 'Personal Assignment',
+            source: 'personal'
+        }));
+
+        // 3. Fetch Venue Incharge Tasks (if any)
+        let venueInchargeList = [];
+        if (managedVenueIds.length > 0) {
+            const venueTasks = await Task.findAll({
+                where: {
+                    is_deleted: false,
+                    [Op.or]: [
+                        { venue_id: { [Op.in]: managedVenueIds } },
+                        literal(`(SELECT venue_id FROM task_types WHERE task_id = Task.task_id LIMIT 1) IN (${managedVenueIds.join(',')})`)
+                    ]
+                },
+                include: [
+                    { model: User, as: 'Creator', attributes: ['user_id', 'role'] },
+                    { model: TaskType, where: taskTypeWhere, required: true },
+                    { model: Venue },
+                    { model: TaskAssign, include: [{ model: User, attributes: ['user_id', 'role'] }] }
+                ]
+            });
+
+            // Filter out tasks already in personal list to avoid duplication
+            const personalTaskIds = new Set(personalList.map(p => p.task_id));
+            
+            venueInchargeList = venueTasks
+                .filter(t => !personalTaskIds.has(t.task_id))
+                .map(t => ({
+                    task_id: t.task_id,
+                    status: t.status,
+                    Task: t.toJSON(),
+                    role_context: 'Venue Incharge Responsibility',
+                    source: 'venue'
+                }));
+        }
+
+        // 4. Consolidate and Paginate
+        const fullList = [...personalList, ...venueInchargeList].sort((a, b) => {
+            const dateA = new Date(a.created_at || a.Task?.created_at || 0);
+            const dateB = new Date(b.created_at || b.Task?.created_at || 0);
+            return dateB - dateA;
+        });
+
+        const paginated = fullList.slice(offset, offset + limit);
+
+        res.json(getPagingData({ count: fullList.length, rows: paginated }, page, limit));
     } catch (error) {
+        console.error('getTasksAssignedToUser Error:', error);
         res.status(500).json({ message: error.message });
     }
 };
+
 
 // Approve Task — PUT /:id/approve
 // Always approves. No body needed. Called by the Approve button.

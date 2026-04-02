@@ -1,6 +1,6 @@
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
-const { User, AuthAccount, RoleAssignment, Role, Student, Faculty, Staff, RoleUser, Scope, Venue } = require("../models");
+const { User, AuthAccount, RoleAssignment, Role, Student, Faculty, Staff, RoleUser, Scope, Venue, Department } = require("../models");
 
 const JWT_SECRET = process.env.JWT_SECRET;
 const ADMIN_SECRET = process.env.ADMIN_SECRET;
