@@ -1,4 +1,4 @@
-const { User, Student, Faculty, Staff, RoleUser, Department, RoleAssignment, Role, AuthAccount, Venue, TaskAssign } = require('../models');
+const { User, Student, Faculty, Staff, RoleUser, Department, RoleAssignment, Role, AuthAccount, Venue, TaskAssign, Task, TaskType } = require('../models');
 const xlsx = require('xlsx');
 const bcrypt = require('bcryptjs');
 const { Op, Sequelize } = require('sequelize');
@@ -1131,43 +1131,52 @@ const getFullProfile = async (id, role) => {
                             total_staff: totalStaff,
                             total_hods: totalHods
                         };
-                    } else if (ra.venue_id) {
+                    } else if (ra.venue_id || ra.get('venue_id')) {
                         // Venue Incharge Stats
-                        const { Op } = require('sequelize');
                         const now = new Date();
                         const istOffset = 330 * 60 * 1000;
                         const localNow = new Date(now.getTime() + (now.getTimezoneOffset() * 60000) + istOffset);
                         const dateStr = localNow.toISOString().split('T')[0];
 
-                        // Count venues assigned to this user
-                        const userVenueIds = roleAssignments.filter(a => a.venue_id).map(a => a.venue_id);
-                        const totalVenues = [...new Set(userVenueIds)].length;
+                        // Count ALL venues assigned to this user across all assignments
+                        const userVenueIds = roleAssignments
+                            .map(a => a.venue_id || (a.get ? a.get('venue_id') : null))
+                            .filter(v => v !== null && v !== undefined);
+                        
+                        const uniqueVenueIds = [...new Set(userVenueIds)];
+                        const totalVenues = uniqueVenueIds.length;
 
-                        // Today's bookings in the currently processed venue (ra.Venue)
-                        const bookingsToday = await Task.count({
-                            where: {
-                                venue_id: ra.venue_id,
-                                is_deleted: false
-                            },
-                            include: [{
-                                model: TaskType,
-                                required: true,
+                        // Today's bookings in ALL assigned venues
+                        let bookingsToday = 0;
+                        if (totalVenues > 0) {
+                            bookingsToday = await Task.count({
                                 where: {
-                                    [Op.or]: [
-                                        { start_date: dateStr },
-                                        { [Op.and]: [{ start_date: { [Op.lte]: dateStr } }, { end_date: { [Op.gte]: dateStr } }] }
-                                    ]
-                                }
-                            }]
-                        });
+                                    venue_id: { [Op.in]: uniqueVenueIds },
+                                    is_deleted: false
+                                },
+                                include: [{
+                                    model: TaskType,
+                                    required: true,
+                                    where: {
+                                        [Op.or]: [
+                                            { start_date: dateStr },
+                                            { [Op.and]: [{ start_date: { [Op.lte]: dateStr } }, { end_date: { [Op.gte]: dateStr } }] }
+                                        ]
+                                    }
+                                }]
+                            });
+                        }
 
                         // All venues under repair for this incharge
-                        const underRepair = await Venue.count({
-                            where: {
-                                venue_id: { [Op.in]: userVenueIds },
-                                status: { [Op.in]: ['under maintenance', 'renovation', 'temporarily closed'] }
-                            }
-                        });
+                        let underRepair = 0;
+                        if (totalVenues > 0) {
+                            underRepair = await Venue.count({
+                                where: {
+                                    venue_id: { [Op.in]: uniqueVenueIds },
+                                    status: { [Op.in]: ['under maintenance', 'renovation', 'temporarily closed'] }
+                                }
+                            });
+                        }
 
                         stats = {
                             total_venues: totalVenues,
@@ -1186,6 +1195,14 @@ const getFullProfile = async (id, role) => {
                 }));
 
                 userDetails.role_assignments = enhancedAssignments;
+                
+                // Aggregate all stats into a single object for the frontend root 'stats'
+                userDetails.stats = enhancedAssignments.reduce((acc, curr) => {
+                    if (curr.stats) {
+                        return { ...acc, ...curr.stats };
+                    }
+                    return acc;
+                }, {});
             }
             break;
         case 'admin':
