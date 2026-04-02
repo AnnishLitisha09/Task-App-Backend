@@ -608,6 +608,9 @@ exports.transferTask = async (req, res) => {
             rejected_at: new Date()
         }, { transaction: t });
 
+        // Update Task Stage to reset lifecycle for new person
+        await task.update({ stage: 'Active', is_escalate: false }, { transaction: t });
+
         // Resolve any existing escalations for the previous user/task
         const { resolveTaskEscalations } = require('../utils/task-utils');
         await resolveTaskEscalations(taskId, assignment.user_id, t);

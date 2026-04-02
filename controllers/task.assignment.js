@@ -403,6 +403,10 @@ exports.selfAssignTask = async (req, res) => {
                 await existing.update({ status: 'accepted', accepted_at: new Date() });
                 const { resolveTaskEscalations } = require('../utils/task-utils');
                 await resolveTaskEscalations(taskId, assigneeId);
+
+                // Update Task Stage to ensure action buttons appear
+                await task.update({ stage: 'activity_start', is_escalate: false, status: 'Active' });
+                
                 return res.json({ message: 'Task status updated for execution' });
             }
             return res.status(400).json({ message: 'You are already assigned to this task' });
