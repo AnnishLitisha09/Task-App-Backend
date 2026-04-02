@@ -5828,8 +5828,24 @@ exports.rescheduleTask = async (req, res) => {
         // Explicitly clear task status and flags
         await task.update({ is_escalate: false, status: 'Active', stage: 'Active' });
 
-        // 3. Optional Self-Assignment (Common for directed resolutions)
-        if (self_assign) {
+        // 3. Optional Assignees or Self-Assignment (Common for directed resolutions)
+        if (req.body.assignee_ids && Array.isArray(req.body.assignee_ids) && req.body.assignee_ids.length > 0) {
+            // Re-assign to selected users
+            for (const uid of req.body.assignee_ids) {
+                const existing = await TaskAssign.findOne({ where: { task_id: taskId, user_id: uid } });
+                if (!existing) {
+                    await TaskAssign.create({
+                        task_id: taskId,
+                        user_id: uid,
+                        status: 'pending',
+                        accepted_at: null
+                    });
+                } else {
+                    await existing.update({ status: 'pending', accepted_at: null, reason: 'Re-assigned during reschedule' });
+                }
+            }
+            await task.update({ stage: 'Active' });
+        } else if (self_assign) {
             const existing = await TaskAssign.findOne({ where: { task_id: taskId, user_id: userId } });
             if (!existing) {
                 await TaskAssign.create({
