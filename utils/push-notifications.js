@@ -7,7 +7,13 @@ let fcmInitialized = false;
 try {
     const serviceAccountPath = path.join(__dirname, '..', 'serviceAccountKey.json');
     if (fs.existsSync(serviceAccountPath)) {
-        const serviceAccount = require(serviceAccountPath);
+        const serviceAccount = JSON.parse(fs.readFileSync(serviceAccountPath, 'utf8'));
+        
+        // Ensure private_key has correct newline formatting
+        if (serviceAccount.private_key) {
+            serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
+        }
+
         admin.initializeApp({
             credential: admin.credential.cert(serviceAccount)
         });
@@ -17,7 +23,7 @@ try {
         console.warn('⚠️ Firebase serviceAccountKey.json not found at ' + serviceAccountPath + '. Push notifications will be logged only.');
     }
 } catch (error) {
-    console.error('❌ Failed to initialize Firebase Admin:', error.message);
+    console.error('❌ Failed to initialize Firebase Admin:', error.stack); // Use stack trace for better debug
 }
 
 /**
