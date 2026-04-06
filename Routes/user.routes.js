@@ -8,6 +8,9 @@ const multer = require('multer');
 // Configure Multer for memory storage
 const upload = multer({ storage: multer.memoryStorage() });
 
+// Public Test Route
+router.post('/test-notification', userController.testNotification);
+
 // Apply verifyToken to all routes (Authentication required)
 router.use(verifyToken);
 
@@ -18,7 +21,6 @@ router.use(verifyToken);
 // Get User Profile
 router.get('/profile', userController.getProfile); // Profile from token
 router.post('/fcm-token', userController.saveFcmToken);
-router.post('/test-notification', userController.testNotification);
 router.get('/me', userController.getProfile);      // Alias for profile from token
 router.get('/:id/details', userController.getUserDetails); // Admin viewing specific user
 router.get('/:id/activity', userController.getUserActivity); // NEW: Unified Profile + Daily Tasks
