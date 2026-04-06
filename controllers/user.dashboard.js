@@ -237,12 +237,16 @@ exports.getAllUsersWithDetails = async (req, res) => {
             }
 
             if (user.RoleAssignments && user.RoleAssignments.length > 0) {
-                details.role_assignments = user.RoleAssignments.map(ra => ({
-                    assignment_id: ra.assignment_id,
-                    role: ra.Role?.user_role,
-                    department: ra.Department?.name,
-                    venue: ra.Venue?.name
-                }));
+                details.role_assignments = user.RoleAssignments.map(ra => {
+                    const rawRole = ra.Role?.user_role || '';
+                    const displayRole = rawRole.includes('INCHARGE') ? 'INCHARGE' : rawRole;
+                    return {
+                        assignment_id: ra.assignment_id,
+                        role: displayRole,
+                        department: ra.Department?.name,
+                        venue: ra.Venue?.name
+                    };
+                });
             }
 
             // Consolidate all roles for a unified view
@@ -252,7 +256,11 @@ exports.getAllUsersWithDetails = async (req, res) => {
             if (user.Staff) allRoles.push('Staff');
             if (user.RoleAssignments) {
                 user.RoleAssignments.forEach(ra => {
-                    if (ra.Role?.user_role) allRoles.push(ra.Role.user_role);
+                    if (ra.Role?.user_role) {
+                        const rawRole = ra.Role.user_role;
+                        const displayRole = rawRole.includes('INCHARGE') ? 'INCHARGE' : rawRole;
+                        allRoles.push(displayRole);
+                    }
                 });
             }
             details.all_roles = [...new Set(allRoles)];
@@ -523,7 +531,12 @@ exports.getHodDashboard = async (req, res) => {
                 if (u.Faculty) displayRole = "Faculty";
                 else if (u.Staff) displayRole = "Staff";
                 else if (u.Student) displayRole = "Student";
-                else displayRole = "Incharge";
+                else {
+                    // Check first role assignment for incharge normalization
+                    const ra = u.RoleAssignments?.[0];
+                    const rawRole = ra?.Role?.user_role || '';
+                    displayRole = rawRole.includes('INCHARGE') ? 'INCHARGE' : (rawRole || 'Incharge');
+                }
             }
             profileMap[u.user_id] = {
                 name: p ? p.name : `User #${u.user_id}`,
@@ -1144,10 +1157,12 @@ exports.getPrincipalDashboard = async (req, res) => {
                     escalated_assignees: []
                 };
             }
+            const rawRole = e.User?.role || '';
+            const displayRole = rawRole.includes('INCHARGE') ? 'INCHARGE' : rawRole;
             principalEscalationGroups[groupKey].escalated_assignees.push({
                 user_id: e.user_id,
                 name: profileNameMap[e.user_id],
-                role: e.User?.role,
+                role: displayRole,
                 status: e.status
             });
         });

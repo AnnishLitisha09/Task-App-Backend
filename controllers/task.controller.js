@@ -2765,7 +2765,10 @@ exports.finalizeTaskAssignments = async (approvalRequest, transaction = null) =>
         const { Student, Faculty, Staff, RoleUser } = require('../models');
         const allUserIds = [...new Set([
             ...(payload.assignee_ids || []),
-            ...(payload.sub_tasks?.flatMap(st => [...(st.assignee_ids || []), st.assignee_id ? parseInt(st.assignee_id) : null]) || []).filter(id => id !== null)
+            ...(payload.sub_tasks?.flatMap(st => [
+                ...(st.assignee_ids || []), 
+                st.user_id ? parseInt(st.user_id) : (st.assignee_id ? parseInt(st.assignee_id) : null)
+            ]) || []).filter(id => id !== null)
         ])];
 
         const userProfiles = await Promise.all([
@@ -2799,7 +2802,8 @@ exports.finalizeTaskAssignments = async (approvalRequest, transaction = null) =>
                     await childTask.update({ is_approved: true, status: 'Active', stage: 'Active' }, { transaction: t });
 
                     const subAssigneeIds = [];
-                    if (sub.assignee_id) subAssigneeIds.push(parseInt(sub.assignee_id));
+                    const sidFromPayload = sub.user_id || sub.assignee_id;
+                    if (sidFromPayload) subAssigneeIds.push(parseInt(sidFromPayload));
                     if (sub.assignee_ids) sub.assignee_ids.forEach(id => subAssigneeIds.push(parseInt(id)));
 
                     for (const sid of [...new Set(subAssigneeIds)]) {

@@ -1756,36 +1756,33 @@ exports.getUnifiedUsers = async (req, res) => {
             return res.status(400).json({ message: 'Role is required' });
         }
 
-        let responseData = {};
+        let responseData = [];
 
         if (role === 'student') {
             const whereClause = {};
             if (department_id) whereClause.department_id = department_id;
 
-            const users = await Student.findAll({
+            responseData = await Student.findAll({
                 where: whereClause,
                 attributes: ['user_id', 'name', 'email', 'reg_no', 'score', 'total_score', 'penalty', 'department_id'],
                 include: [{ model: Department, attributes: ['name'] }],
                 order: [['name', 'ASC']]
             });
-            responseData = users;
         } else if (role === 'faculty') {
             const whereClause = {};
             if (department_id) whereClause.department_id = department_id;
 
-            const users = await Faculty.findAll({
+            responseData = await Faculty.findAll({
                 where: whereClause,
                 attributes: ['user_id', 'name', 'email', 'reg_no', 'score', 'total_score', 'penalty', 'department_id', 'type'],
                 include: [{ model: Department, attributes: ['name'] }],
                 order: [['name', 'ASC']]
             });
-            responseData = users;
         } else if (role === 'staff') {
-            const users = await Staff.findAll({
+            responseData = await Staff.findAll({
                 attributes: ['user_id', 'name', 'email', 'designation', 'score', 'total_score', 'penalty'],
                 order: [['name', 'ASC']]
             });
-            responseData = users;
         } else if (role === 'hod') {
             const hodAssignments = await RoleAssignment.findAll({
                 where: {
@@ -1803,7 +1800,7 @@ exports.getUnifiedUsers = async (req, res) => {
                 ]
             });
 
-            const usersList = hodAssignments.map(ra => {
+            responseData = hodAssignments.map(ra => {
                 const profile = ra.User?.RoleUser;
                 return {
                     user_id: ra.user_id,
@@ -1816,8 +1813,6 @@ exports.getUnifiedUsers = async (req, res) => {
                     role: 'HOD'
                 };
             });
-
-            responseData = usersList;
         } else if (role === 'incharge') {
             const inchargeAssignments = await RoleAssignment.findAll({
                 where: {
@@ -1840,22 +1835,23 @@ exports.getUnifiedUsers = async (req, res) => {
 
             const userMap = new Map();
             inchargeAssignments.forEach(ra => {
-                if (ra.Role?.user_role === 'HOD' && !ra.venue_id) return;
-
                 const profile = ra.User?.RoleUser;
                 if (!profile) return;
+
+                const rawRole = ra.Role?.user_role || '';
+                const displayRole = (rawRole.includes('INCHARGE') || rawRole === 'LIBRARY_INCHARGE') ? 'INCHARGE' : rawRole;
 
                 if (!userMap.has(ra.user_id)) {
                     userMap.set(ra.user_id, {
                         user_id: ra.user_id,
                         name: profile.name,
                         email: profile.email,
+                        department: ra.Department?.name || 'N/A',
+                        venue: ra.Venue?.name || 'N/A',
                         score: profile.score,
                         total_score: profile.total_score,
                         penalty: profile.penalty,
-                        role: ra.Role?.user_role || 'Incharge',
-                        department: ra.Department?.name || 'N/A',
-                        venue: ra.Venue?.name || 'N/A'
+                        role: displayRole
                     });
                 }
             });
@@ -1867,6 +1863,7 @@ exports.getUnifiedUsers = async (req, res) => {
         res.json(responseData);
 
     } catch (error) {
+        console.error('getUnifiedUsers error:', error);
         res.status(500).json({ message: error.message });
     }
 };
@@ -2072,7 +2069,15 @@ exports.assignAuthority = async (req, res) => {
         // Find the role with its scope
         const { Scope } = require('../models');
         const role = await Role.findOne({
-            where: { user_role: role_name },
+            where: { 
+                [Op.or]: [
+                    { user_role: role_name },
+                    { 
+                        user_role: { [Op.like]: `%${role_name}%` },
+                        user_role: { [Op.like]: '%INCHARGE%' }
+                    }
+                ]
+            },
             include: [{ model: Scope }]
         });
         if (!role) {
@@ -2390,7 +2395,13 @@ exports.getAvailableRoles = async (req, res) => {
         for (const r of roles) {
             const scope = r.Scope?.scope || 'other';
             if (!grouped[scope]) grouped[scope] = [];
-            grouped[scope].push({ role_id: r.role_id, role_name: r.user_role });
+            
+            let roleName = r.user_role;
+            if (roleName.includes('INCHARGE')) {
+                roleName = 'INCHARGE';
+            }
+            
+            grouped[scope].push({ role_id: r.role_id, role_name: roleName });
         }
 
         res.json(grouped);
