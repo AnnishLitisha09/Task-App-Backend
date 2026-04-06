@@ -34,6 +34,26 @@ const sendPushNotification = async (fcmToken, title, body, data = {}) => {
             title: title || 'Task App Notification',
             body: body || 'You have a new update.'
         },
+        android: {
+            priority: 'high',
+            notification: {
+                channelId: 'high_importance_channel',
+                priority: 'max',
+                sound: 'default',
+            },
+        },
+        apns: {
+            payload: {
+                aps: {
+                    alert: {
+                        title: title || 'Task App Notification',
+                        body: body || 'You have a new update.'
+                    },
+                    sound: 'default',
+                    'content-available': 1,
+                },
+            },
+        },
         data: {
             ...data,
             click_action: 'FLUTTER_NOTIFICATION_CLICK',
