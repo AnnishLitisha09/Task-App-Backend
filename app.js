@@ -6,6 +6,7 @@ const os = require('os');
 require('dotenv').config();
 
 const db = require('./models'); // make sure this points to your updated Sequelize setup with PostgreSQL
+require("./utils/push-notifications"); // Initialize Firebase Admin at startup
 
 const app = express();
 const PORT = process.env.PORT || 3002;
