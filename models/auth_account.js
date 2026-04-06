@@ -30,6 +30,10 @@ module.exports = (sequelize, DataTypes) => {
       type: DataTypes.BOOLEAN,
       defaultValue: false
     },
+    fcm_token: {
+      type: DataTypes.STRING(255),
+      allowNull: true
+    },
     created_at: {
       type: DataTypes.DATE,
       defaultValue: DataTypes.NOW

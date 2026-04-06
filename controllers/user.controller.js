@@ -4,6 +4,29 @@ const bcrypt = require('bcryptjs');
 const { Op, Sequelize } = require('sequelize');
 
 
+// --- FCM Support ---
+exports.saveFcmToken = async (req, res) => {
+    try {
+        const userId = req.userId;
+        const { fcm_token } = req.body;
+
+        if (!fcm_token) {
+            return res.status(400).json({ message: 'Token is required' });
+        }
+
+        const auth = await AuthAccount.findOne({ where: { user_id: userId } });
+        if (!auth) {
+            return res.status(404).json({ message: 'User account not found' });
+        }
+
+        await auth.update({ fcm_token });
+        res.json({ success: true, message: 'FCM token updated successfully' });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+
 // Helper to create base user
 const createBaseUser = async (role, transaction) => {
     return await User.create({
