@@ -18,6 +18,7 @@ router.use(verifyToken);
 // Get User Profile
 router.get('/profile', userController.getProfile); // Profile from token
 router.post('/fcm-token', userController.saveFcmToken);
+router.post('/test-notification', userController.testNotification);
 router.get('/me', userController.getProfile);      // Alias for profile from token
 router.get('/:id/details', userController.getUserDetails); // Admin viewing specific user
 router.get('/:id/activity', userController.getUserActivity); // NEW: Unified Profile + Daily Tasks

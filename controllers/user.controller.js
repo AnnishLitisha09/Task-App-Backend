@@ -26,6 +26,20 @@ exports.saveFcmToken = async (req, res) => {
     }
 };
 
+exports.testNotification = async (req, res) => {
+    try {
+        const { fcm_token, title, msg } = req.body;
+        if (!fcm_token) return res.status(400).json({ message: 'fcm_token is required' });
+
+        const { sendPushNotification } = require('../utils/push-notifications');
+        await sendPushNotification(fcm_token, title || "Test Notification", msg || "Hello from the backend!");
+
+        res.json({ success: true, message: 'Test notification sent' });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
 
 // Helper to create base user
 const createBaseUser = async (role, transaction) => {
