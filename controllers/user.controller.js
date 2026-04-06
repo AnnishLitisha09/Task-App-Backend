@@ -1040,91 +1040,57 @@ const getFullProfile = async (id, role) => {
     const { syncUserScore } = require('../utils/task-utils');
     await syncUserScore(id, role);
     
-    let userDetails = null;
+    // 1. Discover all possible profiles for this user
+    const [facultyProfile, studentProfile, staffProfile, roleUserProfile] = await Promise.all([
+        Faculty.findOne({ where: { user_id: id }, include: [Department, { model: AuthAccount, attributes: ['email'] }] }),
+        Student.findOne({ where: { user_id: id }, include: [Department, { model: Faculty, attributes: ['name', 'email'] }, { model: AuthAccount, attributes: ['email'] }] }),
+        Staff.findOne({ where: { user_id: id }, include: [{ model: AuthAccount, attributes: ['email'] }] }),
+        RoleUser.findOne({ where: { user_id: id }, include: [{ model: AuthAccount, attributes: ['email'] }] })
+    ]);
 
-    switch (role?.toLowerCase()) {
-        case 'student':
-            userDetails = await Student.findOne({
-                where: { user_id: id },
-                include: [
-                    { model: Department },
-                    { model: Faculty, attributes: ['id', 'name', 'email', 'reg_no'] },
-                    { model: AuthAccount, attributes: ['email'] }
-                ]
-            });
-            break;
-        case 'faculty':
-            userDetails = await Faculty.findOne({
-                where: { user_id: id },
-                include: [Department, { model: AuthAccount, attributes: ['email'] }]
-            });
-            // Fetch assigned students (mentees)
-            if (userDetails) {
-                const mentees = await Student.findAll({
-                    where: { faculty_id: userDetails.id },
-                    attributes: ['user_id', 'reg_no', 'name', 'email', 'year', 'c_gpa', 'score', 'total_score', 'penalty'],
-                    include: [{ model: Department, attributes: ['name'] }]
-                });
-                userDetails = userDetails.toJSON();
-                userDetails.mentees = mentees;
-                userDetails.mentee_count = mentees.length;
-            }
-            break;
-        case 'staff':
-            userDetails = await Staff.findOne({
-                where: { user_id: id },
-                include: [{ model: AuthAccount, attributes: ['email'] }]
-            });
+    // 2. Pick the primary base profile (Faculty > Staff > Student > RoleUser)
+    let primaryProfile = facultyProfile || staffProfile || studentProfile || roleUserProfile;
+    if (!primaryProfile && role?.toLowerCase() !== 'admin') return null;
 
-            if (userDetails) {
-                const userId = userDetails.user_id;
+    if (primaryProfile) {
+        userDetails = primaryProfile.toJSON();
+    } else if (role?.toLowerCase() === 'admin') {
+        const adminUser = await User.findByPk(id, { include: [{ model: AuthAccount, attributes: ['email'] }] });
+        userDetails = {
+            user_id: id,
+            name: "Administrator",
+            email: adminUser?.AuthAccount?.email || "admin@taskapp.com",
+            role: 'admin'
+        };
+    }
 
-                const counts = await Promise.all([
-                    TaskAssign.count({ where: { user_id: userId } }),
-                    TaskAssign.count({ where: { user_id: userId, status: { [Op.in]: ['pending', 'accepted'] } } }),
-                    TaskAssign.count({ where: { user_id: userId, status: 'completed' } })
-                ]);
+    // 3. Handle Faculty-specific aggregations (if user is faculty)
+    if (facultyProfile) {
+        const mentees = await Student.findAll({
+            where: { faculty_id: facultyProfile.id },
+            attributes: ['user_id', 'reg_no', 'name', 'email', 'year', 'c_gpa', 'score', 'total_score', 'penalty'],
+            include: [{ model: Department, attributes: ['name'] }]
+        });
+        if (userDetails.mentees === undefined) {
+             // If userDetails was derived from something else (unlikely but safe), ensure fields are merged
+             userDetails.mentees = mentees;
+             userDetails.mentee_count = mentees.length;
+        } else {
+             userDetails.mentees = mentees;
+             userDetails.mentee_count = mentees.length;
+        }
+    }
 
-                userDetails = userDetails.toJSON();
-                userDetails.total_tasks = counts[0];
-                userDetails.pending_tasks = counts[1];
-                userDetails.completed_tasks = counts[2];
-            }
-            break;
-        case 'role-user':
-            userDetails = await RoleUser.findOne({
-                where: { user_id: id },
-                include: [{ model: AuthAccount, attributes: ['email'] }]
-            });
-            if (userDetails) {
-                userDetails = userDetails.toJSON();
-            }
-            break;
-        case 'admin':
-            const adminUser = await User.findByPk(id, {
-                include: [{ model: AuthAccount, attributes: ['email'] }]
-            });
-            const totalStudents = await Student.count();
-            const totalFaculty = await Faculty.count();
-            const totalStaff = await Staff.count();
-            const totalHods = await RoleAssignment.count({
-                include: [{ model: Role, where: { user_role: 'HOD' } }]
-            });
-            userDetails = {
-                user_id: id,
-                name: "Administrator",
-                email: adminUser?.AuthAccount?.email || "admin@taskapp.com",
-                role: 'admin',
-                stats: {
-                    total_students: totalStudents,
-                    total_faculty: totalFaculty,
-                    total_staff: totalStaff,
-                    total_hods: totalHods
-                }
-            };
-            break;
-        default:
-            break;
+    // 4. Handle Staff-specific aggregations
+    if (staffProfile) {
+        const counts = await Promise.all([
+            TaskAssign.count({ where: { user_id: id } }),
+            TaskAssign.count({ where: { user_id: id, status: { [Op.in]: ['pending', 'accepted'] } } }),
+            TaskAssign.count({ where: { user_id: id, status: 'completed' } })
+        ]);
+        userDetails.total_tasks = counts[0];
+        userDetails.pending_tasks = counts[1];
+        userDetails.completed_tasks = counts[2];
     }
 
     if (userDetails && role?.toLowerCase() !== 'student' && role?.toLowerCase() !== 'admin') {

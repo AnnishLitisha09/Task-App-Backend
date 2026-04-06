@@ -3412,17 +3412,11 @@ exports.getUserTaskStats = async (req, res) => {
         firstDay.setDate(now.getDate() - 6);
         firstDay.setHours(0, 0, 0, 0);
 
-        // Fetch User Profile for Cumulative Score
-        let profile = null;
-        if (userRole === 'student') {
-            profile = await Student.findOne({ where: { user_id: userId } });
-        } else if (userRole === 'faculty') {
-            profile = await Faculty.findOne({ where: { user_id: userId } });
-        } else if (userRole === 'staff') {
-            profile = await Staff.findOne({ where: { user_id: userId } });
-        } else if (userRole === 'role-user') {
-            profile = await RoleUser.findOne({ where: { user_id: userId } });
-        }
+        // Discovery-based profile fetch
+        let profile = await Student.findOne({ where: { user_id: userId } }) ||
+                      await Faculty.findOne({ where: { user_id: userId } }) ||
+                      await Staff.findOne({ where: { user_id: userId } }) ||
+                      await RoleUser.findOne({ where: { user_id: userId } });
 
         const profileNetScore = profile ? parseFloat(profile.score || 0) : 0;
         const profileTotalPenalty = profile ? parseFloat(profile.penalty || 0) : 0;
