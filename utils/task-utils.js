@@ -589,36 +589,20 @@ const syncUserScore = async (userId, userRole, transaction = null) => {
         const penaltySum = parseFloat(stats[0]?.total_penalty || 0);
         const totalGross = earnedSum + penaltySum;
 
-        // Update profile based on role
-        let profile = null;
+        // Update all discovery-based profiles for this user
+        const profileModels = [Student, Faculty, Staff, RoleUser];
         const updateData = { score: earnedSum, penalty: penaltySum, total_score: totalGross };
-
-        if (!userRole) {
-            const { User } = require('../models');
-            const u = await User.findByPk(userId, { transaction });
-            userRole = u?.role;
+        
+        let updatedCount = 0;
+        for (const Model of profileModels) {
+            const p = await Model.findOne({ where: { user_id: userId }, transaction });
+            if (p) {
+                await p.update(updateData, { transaction });
+                updatedCount++;
+            }
         }
 
-        switch (userRole?.toLowerCase()) {
-            case 'student':
-                profile = await Student.findOne({ where: { user_id: userId }, transaction });
-                break;
-            case 'faculty':
-                profile = await Faculty.findOne({ where: { user_id: userId }, transaction });
-                break;
-            case 'staff':
-                profile = await Staff.findOne({ where: { user_id: userId }, transaction });
-                break;
-            case 'role-user':
-                profile = await RoleUser.findOne({ where: { user_id: userId }, transaction });
-                break;
-        }
-
-        if (profile) {
-            await profile.update(updateData, { transaction });
-        }
-
-        return updateData;
+        return { ...updateData, updatedCount };
     } catch (err) {
         console.error(`[syncUserScore Error] User ${userId}:`, err);
         return null;
