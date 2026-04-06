@@ -333,6 +333,31 @@ exports.getHodDashboard = async (req, res) => {
         const studentCount = await Student.count({ where: { department_id: deptId } });
         const facultyCount = await Faculty.count({ where: { department_id: deptId } });
 
+        // NEW: Get Faculty-specific details for the user if they are a faculty member
+        const { syncUserScore } = require('../utils/task-utils');
+        await syncUserScore(userId, 'faculty');
+        
+        const facultyProfile = await Faculty.findOne({
+            where: { user_id: userId },
+            include: [{ model: Department, attributes: ['name'] }]
+        });
+
+        let facultyDetails = null;
+        if (facultyProfile) {
+            const menteeCount = await Student.count({
+                where: { faculty_id: facultyProfile.id }
+            });
+            facultyDetails = {
+                id: facultyProfile.id,
+                name: facultyProfile.name,
+                reg_no: facultyProfile.reg_no,
+                penalty: facultyProfile.penalty,
+                score: facultyProfile.score,
+                mentee_count: menteeCount,
+                type: facultyProfile.type || 'Faculty'
+            };
+        }
+
         // 3. Department Faculty and Student List
         const faculties = await Faculty.findAll({
             where: { department_id: deptId },
@@ -400,12 +425,85 @@ exports.getHodDashboard = async (req, res) => {
             }]
         });
 
+        // 4c. NEW: Pending Proof Tasks (Personal tasks assigned to this user that need proof)
+        const { getWorkingMinutes } = require('../utils/task-utils');
+        const pendingProofAssigns = await TaskAssign.findAll({
+            where: {
+                user_id: userId,
+                status: { [Op.in]: ['in_progress', 'accepted'] },
+                [Op.or]: [{ proof: null }, { proof: '' }]
+            },
+            include: [{
+                model: Task,
+                where: { is_deleted: false, is_document: true },
+                include: [{ model: TaskType, required: true }]
+            }],
+            order: [[Task, TaskType, 'start_date', 'ASC']]
+        });
+
+        const pendingProofTasks = pendingProofAssigns.filter(a => {
+            const tt = a.Task.TaskTypes?.[0];
+            if (!tt) return false;
+            const isBackgroundTask = ['Floating Task', 'Long Task', 'Date-Only / Long Task'].includes(tt.task_name);
+            if (isBackgroundTask) return true;
+            if (a.status !== 'in_progress') return false;
+            const startDateTime = new Date(`${tt.start_date}T${tt.start_time || '00:00:00'}`);
+            if (startDateTime > localNow) return false;
+            return true;
+        }).map(a => ({
+            assignment_id: a.id,
+            task_id: a.Task.task_id,
+            title: a.Task.title,
+            status: a.status,
+            timing: a.Task.TaskTypes[0]
+        }));
+
+        // 4d. NEW: Verification Tasks (Tasks created by/managed by this user that have submissions)
+        const verificationTasksRaw = await TaskAssign.findAll({
+            where: { status: 'completed', proof: { [Op.not]: null } },
+            include: [
+                {
+                    model: Task,
+                    where: {
+                        is_deleted: false,
+                        [Op.or]: [{ creator_id: userId }, { faculty_id: userId }]
+                    },
+                    attributes: ['task_id', 'title', 'description', 'is_document']
+                },
+                {
+                    model: User,
+                    attributes: ['user_id', 'role'],
+                    include: [
+                        { model: Student, attributes: ['name'], required: false },
+                        { model: Faculty, attributes: ['name'], required: false },
+                        { model: Staff, attributes: ['name'], required: false },
+                        { model: RoleUser, attributes: ['name'], required: false }
+                    ]
+                }
+            ],
+            order: [['submitted_time', 'DESC']]
+        });
+
+        const verificationTasks = verificationTasksRaw.map(a => {
+            const u = a.User;
+            const profile = u.Student || u.Faculty || u.Staff || u.RoleUser;
+            return {
+                assignment_id: a.id,
+                task_id: a.Task.task_id,
+                title: a.Task.title,
+                assignee_name: profile?.name || 'Unknown',
+                assignee_role: u.role,
+                submitted_time: a.submitted_time,
+                proof: a.proof
+            };
+        });
 
         // Map and group stats and names
         const involvedUserIds = [...new Set([
             ...awaitingMyApproval.map(t => t.creator_id),
             ...assignedPending.map(ap => ap.Task?.creator_id).filter(id => id),
-            ...escalatedAssigns.map(ea => ea.user_id)
+            ...escalatedAssigns.map(ea => ea.user_id),
+            ...verificationTasksRaw.map(v => v.user_id)
         ])];
 
         const usersWithProfiles = await User.findAll({
@@ -704,7 +802,12 @@ exports.getHodDashboard = async (req, res) => {
             todays_schedule_count: schedule.length,
             todays_schedule: schedule,
             department_tasks_count: formattedDeptTasks.length,
-            department_tasks: formattedDeptTasks
+            department_tasks: formattedDeptTasks,
+            pending_proofs_count: pendingProofTasks.length,
+            pending_proofs: pendingProofTasks,
+            verification_tasks_count: verificationTasks.length,
+            verification_tasks: verificationTasks,
+            faculty_details: facultyDetails // Add this to the response
         });
 
     } catch (error) {
