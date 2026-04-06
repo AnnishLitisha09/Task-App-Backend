@@ -132,6 +132,7 @@ router.get('/:id/exhaustive', verifyToken, taskController.getExhaustiveTaskDetai
 
 // Task Completion & Proof
 router.post('/:id/submit-proof', verifyToken, submissionUpload.single('file'), taskController.submitTaskProof);
+router.post('/:id/assignment/:assignmentId/verify-proof', verifyToken, taskController.verifyTaskProof);
 router.post('/assignment/:id/review-proof', verifyToken, taskController.reviewTaskProof);
 router.post('/otp/generate', verifyToken, taskOTPController.generateOTP);
 router.get('/otp/active', verifyToken, taskOTPController.getGeneratedOTPs);

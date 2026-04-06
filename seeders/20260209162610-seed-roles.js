@@ -10,30 +10,6 @@ module.exports = {
         updated_at: new Date()
       },
       {
-        user_role: 'LIBRARY_INCHARGE',
-        scope_id: 1, // Infrastructure
-        created_at: new Date(),
-        updated_at: new Date()
-      },
-      {
-        user_role: 'DOCUMENTATION_INCHARGE',
-        scope_id: 2, // Institution
-        created_at: new Date(),
-        updated_at: new Date()
-      },
-      {
-        user_role: 'SEMINAR_HALL_INCHARGE',
-        scope_id: 1, // Infrastructure
-        created_at: new Date(),
-        updated_at: new Date()
-      },
-      {
-        user_role: 'TRANSPORT_INCHARGE',
-        scope_id: 2, // Institution
-        created_at: new Date(),
-        updated_at: new Date()
-      },
-      {
         user_role: 'PRINCIPAL',
         scope_id: 2, // Institution
         created_at: new Date(),
