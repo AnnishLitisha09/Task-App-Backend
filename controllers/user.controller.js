@@ -917,7 +917,8 @@ exports.getFacultyDailyStats = async (req, res) => {
                     end_date: taskType.end_date
                 },
                 task_type: taskType.task_name,
-                assigned_at: a.created_at
+                assigned_at: a.created_at,
+                updated_at: a.updated_at
             };
 
             if (a.status === 'escalated') {
@@ -967,7 +968,7 @@ exports.getFacultyDailyStats = async (req, res) => {
             todays_schedule: allTasksToday,
             pending_approvals: pendingTasks,
             pending_proof: pendingProofTasks,
-            escalated_tasks: escalatedTasks
+            escalated_tasks: escalatedTasks.sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at))
         });
 
     } catch (error) {
