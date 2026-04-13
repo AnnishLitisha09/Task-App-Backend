@@ -27,6 +27,29 @@ exports.testNotification = async (req, res) => {
     }
 };
 
+exports.saveFcmToken = async (req, res) => {
+    try {
+        const userId = req.userId;
+        const { fcm_token } = req.body;
+
+        if (!fcm_token) {
+            return res.status(400).json({ message: 'Token is required' });
+        }
+
+        // Update the fcm_token in AuthAccount (still used for backward compatibility or as player_id)
+        const { AuthAccount } = require('../models');
+        await AuthAccount.update(
+            { fcm_token: fcm_token },
+            { where: { user_id: userId } }
+        );
+
+        res.json({ success: true, message: 'Token updated successfully' });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+
 
 // Helper to create base user
 const createBaseUser = async (role, transaction) => {
