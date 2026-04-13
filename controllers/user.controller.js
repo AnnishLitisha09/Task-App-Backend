@@ -4,17 +4,25 @@ const bcrypt = require('bcryptjs');
 const { Op, Sequelize } = require('sequelize');
 
 
-// --- OneSignal Support ---
+// --- Test Notification (Socket + DB) ---
 exports.testNotification = async (req, res) => {
     try {
-        const userId = req.userId; // Send to current logged in user
-        const { title, msg } = req.body;
+        const { title, msg, targetUserId } = req.body;
+        const userId = targetUserId || req.userId; // Allow sending to a specific ID for testing
         
-        const { sendPushNotification } = require('../utils/onesignal');
-        await sendPushNotification(userId, title || "Test Notification", msg || "Hello from OneSignal!");
+        if (!userId) return res.status(400).json({ message: 'User ID is required' });
 
-        res.json({ success: true, message: 'Test notification triggered via OneSignal' });
+        const { createNotification } = require('../utils/task-utils');
+        await createNotification({
+            userId,
+            title: title || "Test Alert",
+            msg: msg || "This is a real-time notification test!",
+            type: 'test'
+        });
+
+        res.json({ success: true, message: `Notification sent to user ${userId}` });
     } catch (error) {
+        console.error('Test Notif Error:', error);
         res.status(500).json({ message: error.message });
     }
 };
