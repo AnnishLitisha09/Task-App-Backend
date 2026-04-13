@@ -471,13 +471,13 @@ async function createNotification({ userId, title, msg, type = 'general', venueI
         console.error('Socket notification error:', socketError.message);
     }
 
-    // --- Push Notification (as backup) ---
-    // try {
-    //     const { sendPushNotification } = require('./onesignal');
-    //     await sendPushNotification(userId, finalTitle, msg, { type, id: createdNotif.id?.toString() });
-    // } catch (pushError) {
-    //     console.error('Failed to send push notification:', pushError.message);
-    // }
+    // --- Push Notification (Primary for Background) ---
+    try {
+        const { sendPushNotification } = require('./onesignal');
+        await sendPushNotification(userId, finalTitle, msg, { type, id: createdNotif.id?.toString() });
+    } catch (pushError) {
+        console.error('Failed to send push notification:', pushError.message);
+    }
 
     return createdNotif;
 }
