@@ -1,5 +1,6 @@
 const { Task, TaskType, TaskAssign, TaskOTP, User, Notification, TaskPackageClosure, TaskClosure } = require('../models');
 const { Op, literal } = require('sequelize');
+const { sendPushNotification } = require('../utils/onesignal');
 
 let isProcessingStartReminder = false;
 let isProcessingOtpSummary = false;
@@ -7,17 +8,22 @@ let isProcessingDocSummary = false;
 let isProcessingStudentStatus = false;
 
 /**
- * Helper to create a notification
+ * Helper to create a notification (DB + Push)
  */
 const sendNotification = async (userId, title, msg, type = 'general') => {
     if (!userId) return;
     try {
+        // 1. Save to Database for internal Notification Center
         await Notification.create({
             user_id: userId,
             title,
             msg,
             type
         });
+
+        // 2. Trigger Real Push Notification via OneSignal
+        await sendPushNotification(userId, title, msg, { type });
+
     } catch (error) {
         console.error(`[NOTIFICATION] Failed to send to ${userId}:`, error.message);
     }

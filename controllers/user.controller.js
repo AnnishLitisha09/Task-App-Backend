@@ -4,37 +4,16 @@ const bcrypt = require('bcryptjs');
 const { Op, Sequelize } = require('sequelize');
 
 
-// --- FCM Support ---
-exports.saveFcmToken = async (req, res) => {
-    try {
-        const userId = req.userId;
-        const { fcm_token } = req.body;
-
-        if (!fcm_token) {
-            return res.status(400).json({ message: 'Token is required' });
-        }
-
-        const auth = await AuthAccount.findOne({ where: { user_id: userId } });
-        if (!auth) {
-            return res.status(404).json({ message: 'User account not found' });
-        }
-
-        await auth.update({ fcm_token });
-        res.json({ success: true, message: 'FCM token updated successfully' });
-    } catch (error) {
-        res.status(500).json({ message: error.message });
-    }
-};
-
+// --- OneSignal Support ---
 exports.testNotification = async (req, res) => {
     try {
-        const { fcm_token, title, msg } = req.body;
-        if (!fcm_token) return res.status(400).json({ message: 'fcm_token is required' });
+        const userId = req.userId; // Send to current logged in user
+        const { title, msg } = req.body;
+        
+        const { sendPushNotification } = require('../utils/onesignal');
+        await sendPushNotification(userId, title || "Test Notification", msg || "Hello from OneSignal!");
 
-        const { sendPushNotification } = require('../utils/push-notifications');
-        await sendPushNotification(fcm_token, title || "Test Notification", msg || "Hello from the backend!");
-
-        res.json({ success: true, message: 'Test notification sent' });
+        res.json({ success: true, message: 'Test notification triggered via OneSignal' });
     } catch (error) {
         res.status(500).json({ message: error.message });
     }

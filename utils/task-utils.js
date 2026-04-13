@@ -457,17 +457,12 @@ async function createNotification({ userId, title, msg, type = 'general', venueI
         type
     }, { transaction });
 
-    // --- Push Notification Integration ---
+    // --- OneSignal Push Integration ---
     try {
-        const { AuthAccount } = require('../models');
-        const auth = await AuthAccount.findOne({ where: { user_id: userId }, transaction });
-        
-        if (auth && auth.fcm_token) {
-            const { sendPushNotification } = require('./push-notifications');
-            await sendPushNotification(auth.fcm_token, finalTitle, msg, { type, id: createdNotif.id?.toString() });
-        }
+        const { sendPushNotification } = require('./onesignal');
+        await sendPushNotification(userId, finalTitle, msg, { type, id: createdNotif.notification_id?.toString() });
     } catch (pushError) {
-        console.error('Failed to send push notification:', pushError.message);
+        console.error('Failed to send push notification via OneSignal:', pushError.message);
     }
 
     return createdNotif;
