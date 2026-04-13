@@ -24,8 +24,11 @@ const sendPushNotification = async (externalIds, title, message, data = {}) => {
     const ids = Array.isArray(externalIds) ? externalIds.map(id => id.toString()) : [externalIds.toString()];
 
     try {
+        const apiKey = ONESIGNAL_REST_API_KEY.trim();
+        const appId = ONESIGNAL_APP_ID.trim();
+
         const response = await axios.post('https://onesignal.com/api/v1/notifications', {
-            app_id: ONESIGNAL_APP_ID,
+            app_id: appId,
             include_external_user_ids: ids,
             headings: { en: title },
             contents: { en: message },
@@ -33,14 +36,38 @@ const sendPushNotification = async (externalIds, title, message, data = {}) => {
         }, {
             headers: {
                 'Content-Type': 'application/json; charset=utf-8',
-                'Authorization': `Basic ${ONESIGNAL_REST_API_KEY}`
+                'Authorization': `Basic ${apiKey}`
             }
         });
 
         console.log('✅ OneSignal Notification Sent:', response.data);
         return response.data;
     } catch (error) {
-        console.error('❌ OneSignal Error:', error.response ? error.response.data : error.message);
+        const errorData = error.response ? error.response.data : error.message;
+        console.error('❌ OneSignal Error:', errorData);
+
+        // Fallback for os_v2 keys - some might require 'Key ' instead of 'Basic ' 
+        if (error.response && error.response.status === 401) {
+            console.log('🔄 Retrying with Key header...');
+            try {
+                const retryResponse = await axios.post('https://onesignal.com/api/v1/notifications', {
+                    app_id: ONESIGNAL_APP_ID.trim(),
+                    include_external_user_ids: ids,
+                    headings: { en: title },
+                    contents: { en: message },
+                    data: data
+                }, {
+                    headers: {
+                        'Content-Type': 'application/json; charset=utf-8',
+                        'Authorization': `Key ${ONESIGNAL_REST_API_KEY.trim()}`
+                    }
+                });
+                console.log('✅ OneSignal Notification Sent (via Key header):', retryResponse.data);
+                return retryResponse.data;
+            } catch (retryError) {
+                console.error('❌ OneSignal Retry Failed:', retryError.response ? retryError.response.data : retryError.message);
+            }
+        }
     }
 };
 
