@@ -7,22 +7,33 @@ let isProcessingOtpSummary = false;
 let isProcessingDocSummary = false;
 let isProcessingStudentStatus = false;
 
+const { sendToUser } = require('../utils/socket-utils');
+
 /**
- * Helper to create a notification (DB + Push)
+ * Helper to create a notification (DB + Socket + Push)
  */
 const sendNotification = async (userId, title, msg, type = 'general') => {
     if (!userId) return;
     try {
         // 1. Save to Database for internal Notification Center
-        await Notification.create({
+        const createdNotif = await Notification.create({
             user_id: userId,
             title,
             msg,
             type
         });
 
-        // 2. Trigger Real Push Notification via OneSignal
-        await sendPushNotification(userId, title, msg, { type });
+        // 2. Real-time Socket Alert (for active users)
+        sendToUser(userId, 'notification', {
+            id: createdNotif.id,
+            title,
+            msg,
+            type,
+            created_at: createdNotif.created_at
+        });
+
+        // 3. Trigger Real Push Notification (as backup)
+        // await sendPushNotification(userId, title, msg, { type });
 
     } catch (error) {
         console.error(`[NOTIFICATION] Failed to send to ${userId}:`, error.message);

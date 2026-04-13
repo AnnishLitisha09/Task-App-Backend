@@ -1,13 +1,19 @@
-const express = require('express'); // Restarting for OTP schema fix
+const express = require('express');
+const http = require('http');
 const bodyParser = require('body-parser');
 const cors = require('cors');
 const morgan = require('morgan');
 const os = require('os');
+const path = require('path');
 require('dotenv').config();
 
-const db = require('./models'); // make sure this points to your updated Sequelize setup with PostgreSQL
+const socketUtils = require('./utils/socket-utils');
+const db = require('./models');
 
 const app = express();
+const server = http.createServer(app);
+socketUtils.init(server);
+
 const PORT = process.env.PORT || 3002;
 const HOST = '0.0.0.0';
 
@@ -15,6 +21,7 @@ const HOST = '0.0.0.0';
 app.use(cors({ origin: "*" }));
 app.use(bodyParser.json());
 app.use(morgan('dev'));
+
 // ========== Routes ==========
 const authRoutes = require('./routes/auth.routes');
 const userRoutes = require('./routes/user.routes');
@@ -23,7 +30,6 @@ const taskRoutes = require('./routes/task.routes');
 const couponRoutes = require('./routes/coupon.routes');
 const leaveRoutes = require('./routes/leave.routes');
 const notificationRoutes = require('./routes/notification.routes');
-const path = require('path');
 
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
@@ -36,6 +42,7 @@ app.use('/api/notifications', notificationRoutes);
 // Serve static files from uploads folder
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 app.use('/api/uploads', express.static(path.join(__dirname, 'uploads')));
+
 // ========== Get Local IP ==========
 function getLocalIP() {
   const interfaces = os.networkInterfaces();
@@ -110,14 +117,10 @@ db.sequelize.authenticate()
       timezone: "Asia/Kolkata"
     });
 
-    const localIP = getLocalIP();
-    app.listen(PORT, HOST, () => {
-      console.log(`🚀 Server running at:`);
-      console.log(`→ Local:   http://localhost:${PORT}`);
-      console.log(`→ Network: http://${localIP}:${PORT}`);
+    server.listen(PORT, HOST, () => {
+      console.log(`Server is running on http://${getLocalIP()}:${PORT}`);
     });
   })
-  .catch((err) => {
-    console.error('❌ Failed to connect to database:', err.message);
+  .catch(err => {
+    console.error('Unable to connect to the database:', err);
   });
-
