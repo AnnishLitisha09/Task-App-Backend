@@ -17,7 +17,7 @@ exports.testNotification = async (req, res) => {
             userId,
             title: title || "Test Alert",
             msg: msg || "This is a real-time notification test!",
-            type: 'test'
+            type: 'general'
         });
 
         res.json({ success: true, message: `Notification sent to user ${userId}` });
