@@ -1,4 +1,4 @@
-const { Venue, RoleAssignment, Role, User, Student, Faculty, Staff, RoleUser, Task, TaskType, TaskAssign } = require('../models');
+const { Venue, RoleAssignment, Role, User, Student, Faculty, Staff, RoleUser, Task, TaskType, TaskAssign, Resource, ResourceUsageLog, Department } = require('../models');
 const { Op, literal } = require('sequelize');
 const xlsx = require('xlsx');
 
