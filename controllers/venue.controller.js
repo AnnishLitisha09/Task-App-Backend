@@ -984,6 +984,7 @@ exports.getVenueBasicDetails = async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 exports.exportDetailedVenueReport = async (req, res) => {
     try {
+        const { Resource } = require('../models');
         const userId = req.userId;
         const userRole = req.userRole?.toLowerCase();
         const { from, to, venue_id } = req.query;
@@ -1177,6 +1178,7 @@ exports.exportDetailedVenueReport = async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 exports.exportVenueUtilisation = async (req, res) => {
     try {
+        const { Resource } = require('../models');
         const userId = req.userId;
         const userRole = req.userRole?.toLowerCase();
 
