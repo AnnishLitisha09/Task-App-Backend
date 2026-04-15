@@ -1,4 +1,4 @@
-const { Venue, RoleAssignment, Role, User, Student, Faculty, Staff, RoleUser, Task, TaskType, TaskAssign } = require('../models');
+const { Venue, RoleAssignment, Role, User, Student, Faculty, Staff, RoleUser, Task, TaskType, TaskAssign, Resource, ResourceUsageLog, Department } = require('../models');
 const { Op, literal } = require('sequelize');
 const xlsx = require('xlsx');
 
@@ -984,6 +984,7 @@ exports.getVenueBasicDetails = async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 exports.exportDetailedVenueReport = async (req, res) => {
     try {
+        const { Resource } = require('../models');
         const userId = req.userId;
         const userRole = req.userRole?.toLowerCase();
         const { from, to, venue_id } = req.query;
@@ -1177,6 +1178,7 @@ exports.exportDetailedVenueReport = async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 exports.exportVenueUtilisation = async (req, res) => {
     try {
+        const { Resource } = require('../models');
         const userId = req.userId;
         const userRole = req.userRole?.toLowerCase();
 
