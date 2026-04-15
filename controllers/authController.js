@@ -71,7 +71,10 @@ exports.login = async (req, res) => {
 
         // --- NEW: Single-Device Login Check ---
         if (account.is_logged_in && account.User.role !== "ADMIN" && account.User.role !== "admin") {
-            // Single-device block disabled
+            return res.status(409).json({ 
+                message: "Session already active on another device. Please logout from your previous device or contact administrator to revoke your session.",
+                error_code: "ALREADY_LOGGED_IN"
+            });
         }
 
         // Set is_logged_in flag
@@ -200,7 +203,10 @@ exports.googleLogin = async (req, res) => {
 
         // --- NEW: Single-Device Login Check ---
         if (account.is_logged_in && account.User.role !== "ADMIN" && account.User.role !== "admin") {
-            // Single-device block disabled
+            return res.status(409).json({ 
+                message: "Session already active on another device. Please logout from your previous device or contact administrator to revoke your session.",
+                error_code: "ALREADY_LOGGED_IN"
+            });
         }
 
         // Set is_logged_in flag
