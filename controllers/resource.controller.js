@@ -13,7 +13,7 @@ exports.getAllDepartments = async (req, res) => {
                         Sequelize.literal(`(
                             SELECT COUNT(*)
                             FROM faculties AS f
-                            WHERE f.department_id = departments.department_id
+                            WHERE f.department_id = \`Department\`.\`department_id\`
                             AND f.deleted_at IS NULL
                         )`),
                         'faculty_count'
@@ -1602,12 +1602,12 @@ exports.exportResourceUtilisation = async (req, res) => {
             }
 
             return {
-                "Date": new Date(log.start_time).toLocaleDateString(),
+                "Date": log.start_time ? new Date(log.start_time).toISOString().split('T')[0] : 'N/A',
                 "Resource Name": log.Resource?.name || 'N/A',
                 "User": userName,
                 "Venue": log.Venue?.name || 'N/A',
-                "Start Time": new Date(log.start_time).toLocaleTimeString(),
-                "End Time": log.end_time ? new Date(log.end_time).toLocaleTimeString() : 'Active',
+                "Start Time": log.start_time ? new Date(log.start_time).toLocaleTimeString() : 'N/A',
+                "End Time": log.end_time ? new Date(log.end_time).toLocaleTimeString() : 'In Use',
                 "Duration (Min)": durationMin > 0 ? durationMin.toFixed(2) : 0,
                 "Verified": log.is_verified ? 'Yes' : 'No',
                 "Category": log.Resource?.description || 'N/A'
