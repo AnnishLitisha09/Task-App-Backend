@@ -342,8 +342,9 @@ const validateTaskType = (taskTypeData, priority = 'low') => {
             if (!start_date || !end_date) {
                 throw new Error('Recurring Task requires both start_date and end_date for expansion');
             }
-            if (!start_time || !end_time) {
-                throw new Error('Recurring Task requires start_time and end_time');
+            // Allow missing start/end time if it's meant to be auto-calculated via duration
+            if (!start_time && !time_quota_hours) {
+                throw new Error('Recurring Task requires start_time or duration');
             }
             break;
         case 'Meeting':
