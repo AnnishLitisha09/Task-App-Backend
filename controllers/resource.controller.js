@@ -7,6 +7,19 @@ const path = require('path');
 exports.getAllDepartments = async (req, res) => {
     try {
         const departments = await Department.findAll({
+            attributes: {
+                include: [
+                    [
+                        Sequelize.literal(`(
+                            SELECT COUNT(*)
+                            FROM faculties AS f
+                            WHERE f.department_id = Department.department_id
+                            AND f.deleted_at IS NULL
+                        )`),
+                        'faculty_count'
+                    ]
+                ]
+            },
             include: [{
                 model: RoleAssignment,
                 include: [
@@ -31,6 +44,7 @@ exports.getAllDepartments = async (req, res) => {
                 department_id: dept.department_id,
                 name: dept.name,
                 created_at: dept.created_at,
+                faculty_count: parseInt(dept.dataValues.faculty_count) || 0,
                 hod: assignment && assignment.User && assignment.User.RoleUser ? {
                     user_id: assignment.User.user_id,
                     name: assignment.User.RoleUser.name,
@@ -41,6 +55,7 @@ exports.getAllDepartments = async (req, res) => {
 
         res.json(formatted);
     } catch (error) {
+        console.error('getAllDepartments error:', error);
         res.status(500).json({ message: error.message });
     }
 };
