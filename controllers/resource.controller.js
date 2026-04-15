@@ -1548,7 +1548,7 @@ exports.exportResourceUtilisation = async (req, res) => {
         const { from, to } = req.query;
         const now = new Date();
         const endDate = to ? new Date(to) : now;
-        const startDate = from ? new Date(from) : new Date(new Date().setDate(now.getDate() - 30));
+        const startDate = from ? new Date(from) : new Date(now.getTime() - (180 * 24 * 60 * 60 * 1000)); // Default 180 days
 
         let resourceWhere = { deleted_at: null };
         if (userRole !== 'admin') {
@@ -1632,6 +1632,10 @@ exports.exportResourceUtilisation = async (req, res) => {
                 "Current Quantity": resource.quantity
             };
         });
+
+        if (detailedData.length === 0) {
+            detailedData.push({ "Message": "No usage logs found for this period." });
+        }
 
         const wb = xlsx.utils.book_new();
         const wsDetailed = xlsx.utils.json_to_sheet(detailedData);
