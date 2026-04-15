@@ -1045,14 +1045,33 @@ exports.exportDetailedVenueReport = async (req, res) => {
                         ]
                     }
                 },
-                { model: Venue, attributes: ['name'] },
+                { model: Venue, attributes: ['name', 'venue_type', 'location'] },
                 { model: Resource, attributes: ['name'] },
-                { model: User, as: 'Creator', include: [{ model: Student, attributes: ['name']}, {model: Faculty, attributes:['name']}, {model: Staff, attributes: ['name']}, {model: RoleUser, attributes: ['name']}] },
-                { model: TaskAssign, attributes: ['status', 'accepted_at', 'user_id'] }
+                { 
+                    model: User, as: 'Creator', 
+                    include: [
+                        { model: Student, attributes: ['name']}, 
+                        { model: Faculty, attributes:['name']}, 
+                        { model: Staff, attributes: ['name']}, 
+                        { model: RoleUser, attributes: ['name']}
+                    ] 
+                },
+                { 
+                    model: TaskAssign, 
+                    include: [{
+                        model: User,
+                        include: [
+                            { model: Student, attributes: ['name'] },
+                            { model: Faculty, attributes: ['name'] },
+                            { model: Staff, attributes: ['name'] },
+                            { model: RoleUser, attributes: ['name'] }
+                        ]
+                    }]
+                }
             ]
         });
 
-        // 4. Resolve Incharges to check approval times
+        // 4. Resolve Incharges
         const roleAssignments = await RoleAssignment.findAll({
             where: { venue_id: { [Op.in]: assignedVenueIds } },
             attributes: ['venue_id', 'user_id']
@@ -1069,36 +1088,64 @@ exports.exportDetailedVenueReport = async (req, res) => {
             const profile = creator?.Student || creator?.Faculty || creator?.Staff || creator?.RoleUser;
             const bookedBy = profile ? profile.name : (creator ? `User #${creator.user_id}` : 'System');
             
-            // Find incharge approval time
+            // Find incharge action time/status
             const incharges = venueInchargeMap[t.venue_id || tt?.venue_id] || [];
-            const inchargeAssign = t.TaskAssigns?.find(a => incharges.includes(a.user_id) && a.status === 'accepted');
-            const approvalTime = inchargeAssign?.accepted_at ? new Date(inchargeAssign.accepted_at).toLocaleString() : 'Pending/Auto';
+            const inchargeAssign = t.TaskAssigns?.find(a => incharges.includes(a.user_id));
+            const approvalTime = inchargeAssign?.accepted_at ? new Date(inchargeAssign.accepted_at).toLocaleString() : (inchargeAssign?.status || 'N/A');
+
+            // Collect all assignee names
+            const assignees = t.TaskAssigns?.map(a => {
+                const u = a.User;
+                const p = u?.Student || u?.Faculty || u?.Staff || u?.RoleUser;
+                return p ? p.name : `User #${a.user_id}`;
+            }).join(', ') || 'None';
+
+            // Calculate duration
+            let durationMin = 0;
+            if (tt?.start_time && tt?.end_time) {
+                const [sH, sM] = tt.start_time.split(':').map(Number);
+                const [eH, eM] = tt.end_time.split(':').map(Number);
+                durationMin = (eH * 60 + eM) - (sH * 60 + sM);
+            }
 
             return {
-                "Date": tt?.start_date,
+                "Date": tt?.start_date || 'N/A',
                 "Venue": t.Venue?.name || "N/A",
+                "Venue Type": t.Venue?.venue_type || "N/A",
+                "Location": t.Venue?.location || "N/A",
+                "Task Title": t.title,
+                "Category": t.category,
+                "Priority": t.priority,
+                "Origin": t.origin_type || 'directive',
+                "Status": t.status,
                 "Booked By": bookedBy,
-                "Task": t.title,
-                "Time": tt ? `${tt.start_time} - ${tt.end_time}` : 'N/A',
+                "Start Time": tt?.start_time || 'N/A',
+                "End Time": tt?.end_time || 'N/A',
+                "Duration (Min)": durationMin > 0 ? durationMin : 0,
+                "Score": parseFloat(t.score || 0).toFixed(2),
+                "Penalty/Hr": parseFloat(t.penalty_per_hour || 0).toFixed(2),
+                "Mandatory": t.is_mandatory ? 'Yes' : 'No',
                 "Resource Used": t.Resource?.name || 'None',
-                "Assignee Count": t.TaskAssigns?.length || 0,
-                "Incharge Approval Time": approvalTime
+                "Total Assignees": t.TaskAssigns?.length || 0,
+                "Assignee Names": assignees,
+                "Incharge Status": inchargeAssign?.status || 'Pending',
+                "Action Taken At": approvalTime
             };
         });
 
         // 5. Generate Excel
         const wb = xlsx.utils.book_new();
         const ws = xlsx.utils.json_to_sheet(reportData);
-        xlsx.utils.book_append_sheet(wb, ws, "Venue Usage Details");
+        xlsx.utils.book_append_sheet(wb, ws, "Master Utilization Report");
 
         const buffer = xlsx.write(wb, { type: 'buffer', bookType: 'xlsx' });
 
         res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-        res.setHeader('Content-Disposition', `attachment; filename=venue_usage_detailed_${fromStr}_to_${toStr}.xlsx`);
+        res.setHeader('Content-Disposition', `attachment; filename=master_detailed_report_${fromStr}_to_${toStr}.xlsx`);
         res.send(buffer);
 
     } catch (error) {
-        console.error('DETAILED EXPORT ERROR:', error);
+        console.error('MASTER EXPORT ERROR:', error);
         res.status(500).json({ message: error.message });
     }
 };
