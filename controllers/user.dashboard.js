@@ -388,7 +388,8 @@ exports.getHodDashboard = async (req, res) => {
             where: {
                 approver_id: userId,
                 is_approved: false,
-                is_deleted: false
+                is_deleted: false,
+                status: { [Op.ne]: 'Inactive' }
             },
             attributes: ['task_id', 'title', 'category', 'priority', 'created_at', 'creator_id'],
             include: [
@@ -410,7 +411,10 @@ exports.getHodDashboard = async (req, res) => {
             include: [
                 { 
                     model: Task, 
-                    where: { is_deleted: false },
+                    where: { 
+                        is_deleted: false,
+                        status: { [Op.ne]: 'Inactive' }
+                    },
                     include: [{ model: TaskType, required: false }]
                 }
             ],
@@ -424,7 +428,8 @@ exports.getHodDashboard = async (req, res) => {
                 model: Task,
                 where: {
                     is_deleted: false,
-                    creator_id: userId
+                    creator_id: userId,
+                    status: { [Op.ne]: 'Inactive' }
                 },
                 include: [{ model: TaskType }]
             }, {
@@ -443,7 +448,11 @@ exports.getHodDashboard = async (req, res) => {
             },
             include: [{
                 model: Task,
-                where: { is_deleted: false, is_document: true },
+                where: { 
+                    is_deleted: false, 
+                    is_document: true,
+                    status: { [Op.ne]: 'Inactive' }
+                },
                 include: [{ model: TaskType, required: true }]
             }],
             order: [[Task, TaskType, 'start_date', 'ASC']]
@@ -573,7 +582,11 @@ exports.getHodDashboard = async (req, res) => {
             where: { status: { [Op.in]: ['escalated', 'rejected'] } },
             include: [{
                 model: Task,
-                where: { is_deleted: false, creator_id: userId },
+                where: { 
+                    is_deleted: false, 
+                    creator_id: userId,
+                    status: { [Op.ne]: 'Inactive' }
+                },
                 attributes: ['task_id', 'title', 'parent_task_id'],
                 include: [{ model: TaskType, attributes: ['start_date', 'start_time'] }]
             }, {
@@ -662,7 +675,8 @@ exports.getHodDashboard = async (req, res) => {
         const todaysTasks = await Task.findAll({
             where: {
                 is_deleted: false,
-                origin_type: { [Op.ne]: 'self-log' }
+                origin_type: { [Op.ne]: 'self-log' },
+                status: { [Op.ne]: 'Inactive' }
             },
             include: [{
                 model: TaskType,
@@ -733,7 +747,8 @@ exports.getHodDashboard = async (req, res) => {
             where: {
                 is_deleted: false,
                 creator_id: { [Op.in]: deptUserIds },
-                origin_type: { [Op.ne]: 'self-log' }
+                origin_type: { [Op.ne]: 'self-log' },
+                status: { [Op.ne]: 'Inactive' }
             },
             include: [{
                 model: TaskType,
@@ -889,7 +904,8 @@ exports.getDepartmentalTasks = async (req, res) => {
         const tasks = await Task.findAll({
             where: {
                 is_deleted: false,
-                creator_id: { [Op.in]: deptUserIds }
+                creator_id: { [Op.in]: deptUserIds },
+                status: { [Op.ne]: 'Inactive' }
             },
             include: [
                 { 
@@ -1088,7 +1104,11 @@ exports.getPrincipalDashboard = async (req, res) => {
         const allEscalations = await TaskAssign.findAll({
             where: { status: 'escalated' },
             include: [
-                { model: Task, include: [{ model: TaskType }] },
+                { 
+                    model: Task, 
+                    where: { status: { [Op.ne]: 'Inactive' } },
+                    include: [{ model: TaskType }] 
+                },
                 { model: User, attributes: ['user_id', 'role'] }
             ]
         });
@@ -1098,7 +1118,8 @@ exports.getPrincipalDashboard = async (req, res) => {
             where: {
                 approver_id: userId,
                 is_approved: false,
-                is_deleted: false
+                is_deleted: false,
+                status: { [Op.ne]: 'Inactive' }
             },
             attributes: ['task_id', 'title', 'category', 'priority', 'created_at', 'creator_id'],
             include: [
@@ -1302,7 +1323,8 @@ exports.getStudentDashboard = async (req, res) => {
                 model: Task,
                 where: { 
                     is_deleted: false,
-                    origin_type: { [Op.ne]: 'self-log' }
+                    origin_type: { [Op.ne]: 'self-log' },
+                    status: { [Op.ne]: 'Inactive' }
                 },
                 include: [{
                     model: TaskType,
@@ -1406,7 +1428,8 @@ exports.getStudentDashboard = async (req, res) => {
                 model: Task,
                 where: { 
                     is_deleted: false,
-                    origin_type: { [Op.ne]: 'self-log' }
+                    origin_type: { [Op.ne]: 'self-log' },
+                    status: { [Op.ne]: 'Inactive' }
                 },
                 include: [{
                     model: TaskType,
@@ -1573,7 +1596,8 @@ exports.getStaffDashboard = async (req, res) => {
                 model: Task,
                 where: { 
                     is_deleted: false,
-                    origin_type: { [Op.ne]: 'self-log' }
+                    origin_type: { [Op.ne]: 'self-log' },
+                    status: { [Op.ne]: 'Inactive' }
                 },
                 include: [{
                     model: TaskType,

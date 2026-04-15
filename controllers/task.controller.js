@@ -470,6 +470,32 @@ const normalizeTaskPayload = async (body) => {
         payload.task_type_data.task_name = 'Fixed Time Task';
     }
 
+    if (payload.task_type_data) {
+        if (payload.task_type_data.startTime && !payload.task_type_data.start_time) payload.task_type_data.start_time = payload.task_type_data.startTime;
+        if (payload.task_type_data.endTime && !payload.task_type_data.end_time) payload.task_type_data.end_time = payload.task_type_data.endTime;
+        if (payload.task_type_data.startDate && !payload.task_type_data.start_date) payload.task_type_data.start_date = payload.task_type_data.startDate;
+        if (payload.task_type_data.endDate && !payload.task_type_data.end_date) payload.task_type_data.end_date = payload.task_type_data.endDate;
+        if (payload.task_type_data.venueId && !payload.task_type_data.venue_id) payload.task_type_data.venue_id = payload.task_type_data.venueId;
+        if (payload.task_type_data.timeQuotaHours && !payload.task_type_data.time_quota_hours) payload.task_type_data.time_quota_hours = payload.task_type_data.timeQuotaHours;
+        if (payload.task_type_data.maxDurationHours && !payload.task_type_data.max_duration_hours) payload.task_type_data.max_duration_hours = payload.task_type_data.maxDurationHours;
+        
+        // Ensure values are null if they are empty strings
+        if (payload.task_type_data.start_time === '') payload.task_type_data.start_time = null;
+        if (payload.task_type_data.end_time === '') payload.task_type_data.end_time = null;
+    }
+
+    if (payload.sub_tasks && Array.isArray(payload.sub_tasks)) {
+        payload.sub_tasks = payload.sub_tasks.map(sub => {
+            if (sub.startTime && !sub.start_time) sub.start_time = sub.startTime;
+            if (sub.endTime && !sub.end_time) sub.end_time = sub.endTime;
+            if (sub.startDate && !sub.start_date) sub.start_date = sub.startDate;
+            if (sub.endDate && !sub.end_date) sub.end_date = sub.endDate;
+            if (sub.venueId && !sub.venue_id) sub.venue_id = sub.venueId;
+            if (sub.maxDurationHours && !sub.max_duration_hours) sub.max_duration_hours = sub.maxDurationHours;
+            return sub;
+        });
+    }
+
     // Consolidate approver_id and approverId
     if (payload.approverId && !payload.approver_id) payload.approver_id = payload.approverId;
     if (payload.approver_id) payload.approver_id = parseInt(payload.approver_id) || null;
@@ -4076,7 +4102,7 @@ exports.getPendingUpcomingTasks = async (req, res) => {
             },
             include: [{
                 model: Task,
-                where: { is_deleted: false },
+                where: { is_deleted: false, status: { [Op.ne]: 'Inactive' } },
                 include: [{ model: TaskType }, { model: Venue }]
             }]
         });
@@ -4715,7 +4741,7 @@ exports.getUnapprovedTasks = async (req, res) => {
             where: { user_id: userId, status: 'pending' },
             include: [{
                 model: Task,
-                where: { is_deleted: false },
+                where: { is_deleted: false, status: { [Op.ne]: 'Inactive' } },
                 include: [
                     { model: TaskType },
                     { model: Venue, attributes: ['name', 'location'] }
