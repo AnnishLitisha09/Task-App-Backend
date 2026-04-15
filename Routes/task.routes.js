@@ -86,6 +86,7 @@ router.post('/:id/notify-pending', verifyToken, taskController.notifyPendingAssi
 // Task Acceptance/Rejection
 router.post('/:id/accept', verifyToken, taskAcceptance.acceptTask);
 router.post('/:id/reject', verifyToken, taskAcceptance.rejectTask);
+router.put('/:id/reject',  verifyToken, taskAcceptance.rejectTask); // ADDED: Match frontend PUT expectation
 router.post('/:id/transfer', verifyToken, taskAcceptance.transferTask);
 router.post('/:id/cancel-approval', verifyToken, taskAcceptance.cancelApproval);
 router.post('/:id/resolve-swap', verifyToken, taskAcceptance.resolveConflictWithSwap);

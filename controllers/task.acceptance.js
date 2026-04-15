@@ -298,7 +298,7 @@ exports.rejectTask = async (req, res) => {
         const userId = req.userId;
 
         // Find assignment
-        const assignment = await TaskAssign.findOne({
+        let assignment = await TaskAssign.findOne({
             where: { task_id: taskId, user_id: userId },
             include: [
                 { model: Task, include: [{ model: TaskType }] },
@@ -306,8 +306,65 @@ exports.rejectTask = async (req, res) => {
             ]
         });
 
+        const { User: UserModel, Task: TaskModel, TaskApprovalRequest } = require('../models');
+
+        // Special Case: If no personal assignment found, check if user is Admin or Creator
         if (!assignment) {
-            return res.status(404).json({ message: 'Task assignment not found' });
+            const taskRecord = await Task.findByPk(taskId, {
+                include: [{ model: TaskType }]
+            });
+            
+            if (!taskRecord) {
+                return res.status(404).json({ message: 'Task not found' });
+            }
+
+            const userRecord = await UserModel.findByPk(userId);
+            const isAdmin = userRecord && userRecord.role && userRecord.role.toLowerCase() === 'admin';
+            const isCreator = taskRecord.creator_id === userId;
+            const isApprover = String(taskRecord.approver_id) === String(userId);
+
+            if (isAdmin || isCreator || isApprover) {
+                // If it's an admin/creator/approver rejecting, they might be rejecting the task approval
+                // or rejecting the most recent assignment.
+                
+                // 1. If task is not yet approved, reject approval
+                if (!taskRecord.is_approved) {
+                    await taskRecord.update({
+                        is_approved: false,
+                        status: 'Inactive',
+                        stage: 'approval_rejected'
+                    });
+
+                    // Mark related approval requests as rejected
+                    await TaskApprovalRequest.update(
+                        { status: 'rejected', reason: reason || 'Rejected by Admin/Creator' },
+                        { where: { task_id: taskId, status: 'pending' } }
+                    );
+
+                    await TaskLog.create({
+                        task_id: taskId,
+                        user_id: userId,
+                        action: 'reject_approval',
+                        details: `Task approval rejected by ${isAdmin ? 'Admin' : 'Creator'}. Reason: ${reason || 'No reason provided'}`
+                    });
+
+                    return res.json({ message: 'Task approval rejected successfully', task_id: taskId });
+                }
+
+                // 2. If already approved, find the most recent assignment to reject
+                assignment = await TaskAssign.findOne({
+                    where: { task_id: taskId },
+                    include: [
+                        { model: Task, include: [{ model: TaskType }] },
+                        { model: User }
+                    ],
+                    order: [['created_at', 'DESC']]
+                });
+            }
+        }
+
+        if (!assignment) {
+            return res.status(404).json({ message: 'Task assignment not found or you are not authorized to reject this task' });
         }
 
         // Check if already processed
