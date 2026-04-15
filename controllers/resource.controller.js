@@ -13,7 +13,7 @@ exports.getAllDepartments = async (req, res) => {
                         Sequelize.literal(`(
                             SELECT COUNT(*)
                             FROM faculties AS f
-                            WHERE f.department_id = Department.department_id
+                            WHERE f.department_id = departments.department_id
                             AND f.deleted_at IS NULL
                         )`),
                         'faculty_count'
@@ -1545,6 +1545,11 @@ exports.exportResourceUtilisation = async (req, res) => {
         const { ResourceUsageLog, User, Student, Faculty, Staff, RoleUser } = require('../models');
 
         // 1. Identify relevant resources
+        const { from, to } = req.query;
+        const now = new Date();
+        const endDate = to ? new Date(to) : now;
+        const startDate = from ? new Date(from) : new Date(new Date().setDate(now.getDate() - 30));
+
         let resourceWhere = { deleted_at: null };
         if (userRole !== 'admin') {
             const assignments = await RoleAssignment.findAll({
@@ -1561,9 +1566,15 @@ exports.exportResourceUtilisation = async (req, res) => {
         });
         const resourceIds = resources.map(r => r.resource_id);
 
-        // 2. Fetch Usage Logs
+        // 2. Fetch Usage Logs with date filter
         const usageLogs = await ResourceUsageLog.findAll({
-            where: { resource_id: { [Op.in]: resourceIds } },
+            where: { 
+                resource_id: { [Op.in]: resourceIds },
+                [Op.or]: [
+                    { start_time: { [Op.between]: [startDate, endDate] } },
+                    { end_time: { [Op.between]: [startDate, endDate] } }
+                ]
+            },
             include: [
                 { model: Resource, attributes: ['name', 'description'] },
                 { model: Venue, attributes: ['name'] },
