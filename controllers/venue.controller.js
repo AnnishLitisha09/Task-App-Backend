@@ -992,7 +992,7 @@ exports.exportDetailedVenueReport = async (req, res) => {
         // 1. Date Range Setup (Default last 30 days)
         const now = new Date();
         const endDate = to ? new Date(to) : now;
-        const startDate = from ? new Date(from) : new Date(new Date().setDate(now.getDate() - 30));
+        const startDate = from ? new Date(from) : new Date(now.getTime() - (180 * 24 * 60 * 60 * 1000)); 
 
         const fromStr = toDateStr(startDate);
         const toStr = toDateStr(endDate);
@@ -1133,6 +1133,10 @@ exports.exportDetailedVenueReport = async (req, res) => {
                 "Action Taken At": approvalTime
             };
         });
+
+        if (reportData.length === 0) {
+            reportData.push({ "Message": "No venue tasks found for this period." });
+        }
 
         // 5. Generate Aggregate Summary Data
         const summaryData = assignedVenueIds.map(vid => {
