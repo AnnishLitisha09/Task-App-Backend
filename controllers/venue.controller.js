@@ -1109,7 +1109,7 @@ exports.exportDetailedVenueReport = async (req, res) => {
             }
 
             return {
-                "Date": tt?.start_date || 'N/A',
+                "Date": tt?.start_date ? new Date(tt.start_date).toISOString().split('T')[0] : 'N/A',
                 "Venue": t.Venue?.name || "N/A",
                 "Venue Type": t.Venue?.venue_type || "N/A",
                 "Location": t.Venue?.location || "N/A",
@@ -1133,15 +1133,36 @@ exports.exportDetailedVenueReport = async (req, res) => {
             };
         });
 
-        // 5. Generate Excel
-        const wb = xlsx.utils.book_new();
-        const ws = xlsx.utils.json_to_sheet(reportData);
-        xlsx.utils.book_append_sheet(wb, ws, "Master Utilization Report");
+        // 5. Generate Aggregate Summary Data
+        const summaryData = assignedVenueIds.map(vid => {
+            const vTasks = tasks.filter(t => t.venue_id === vid || t.TaskTypes?.some(tt => tt.venue_id === vid));
+            if (vTasks.length === 0) return null;
 
+            const vName = vTasks[0].Venue?.name || "Venue "+vid;
+            const totalTasks = vTasks.length;
+            const totalMinForVenue = reportData.filter(r => r.Venue === vName).reduce((acc, curr) => acc + (parseFloat(curr["Duration (Min)"]) || 0), 0);
+            
+            return {
+                "Venue ID": vid,
+                "Venue Name": vName,
+                "Total Usage Events": totalTasks,
+                "Cumulative Duration (Min)": totalMinForVenue.toFixed(2),
+                "Avg Duration/Event": totalTasks > 0 ? (totalMinForVenue / totalTasks).toFixed(2) : 0
+            };
+        }).filter(Boolean);
+
+        // 6. Generate Excel
+        const wb = xlsx.utils.book_new();
+        const wsDetailed = xlsx.utils.json_to_sheet(reportData);
+        const wsSummary = xlsx.utils.json_to_sheet(summaryData);
+        
+        xlsx.utils.book_append_sheet(wb, wsDetailed, "Usage History");
+        xlsx.utils.book_append_sheet(wb, wsSummary, "Venue Summary");
+        
         const buffer = xlsx.write(wb, { type: 'buffer', bookType: 'xlsx' });
 
         res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-        res.setHeader('Content-Disposition', `attachment; filename=master_detailed_report_${fromStr}_to_${toStr}.xlsx`);
+        res.setHeader('Content-Disposition', `attachment; filename=venue_utilization_${fromStr}_to_${toStr}.xlsx`);
         res.send(buffer);
 
     } catch (error) {
