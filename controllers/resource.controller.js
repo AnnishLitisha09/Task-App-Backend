@@ -1542,61 +1542,97 @@ exports.exportResourceUtilisation = async (req, res) => {
     try {
         const userId = req.userId;
         const userRole = req.userRole?.toLowerCase();
-
-        const { ResourceUsageLog } = require('../models');
+        const { ResourceUsageLog, User, Student, Faculty, Staff, RoleUser } = require('../models');
 
         // 1. Identify relevant resources
-        let where = { deleted_at: null };
+        let resourceWhere = { deleted_at: null };
         if (userRole !== 'admin') {
             const assignments = await RoleAssignment.findAll({
                 where: { user_id: userId, venue_id: { [Op.ne]: null } },
                 attributes: ['venue_id']
             });
             const managedVenueIds = assignments.map(a => a.venue_id);
-            where.venue_id = { [Op.in]: managedVenueIds };
+            resourceWhere.venue_id = { [Op.in]: managedVenueIds };
         }
 
         const resources = await Resource.findAll({
-            where,
+            where: resourceWhere,
             include: [{ model: Venue, attributes: ['name'] }]
         });
+        const resourceIds = resources.map(r => r.resource_id);
 
-        const reportData = [];
-
-        for (const resource of resources) {
-            // Count total usage occurrences and duration
-            const usageLogs = await ResourceUsageLog.findAll({
-                where: { resource_id: resource.resource_id }
-            });
-
-            let totalMinutes = 0;
-            usageLogs.forEach(log => {
-                if (log.start_time && log.end_time) {
-                    const duration = (new Date(log.end_time) - new Date(log.start_time)) / (1000 * 60);
-                    if (duration > 0) totalMinutes += duration;
+        // 2. Fetch Usage Logs
+        const usageLogs = await ResourceUsageLog.findAll({
+            where: { resource_id: { [Op.in]: resourceIds } },
+            include: [
+                { model: Resource, attributes: ['name', 'description'] },
+                { model: Venue, attributes: ['name'] },
+                { 
+                    model: User, 
+                    include: [
+                        { model: Student, attributes: ['name'] },
+                        { model: Faculty, attributes: ['name'] },
+                        { model: Staff, attributes: ['name'] },
+                        { model: RoleUser, attributes: ['name'] }
+                    ] 
                 }
-            });
+            ],
+            order: [['start_time', 'DESC']]
+        });
 
-            reportData.push({
-                "Resource ID": resource.resource_id,
+        const detailedData = usageLogs.map(log => {
+            const u = log.User;
+            const profile = u?.Student || u?.Faculty || u?.Staff || u?.RoleUser;
+            const userName = profile ? profile.name : (u ? `User #${u.user_id}` : 'Unknown');
+
+            let durationMin = 0;
+            if (log.start_time && log.end_time) {
+                durationMin = (new Date(log.end_time) - new Date(log.start_time)) / (1000 * 60);
+            }
+
+            return {
+                "Date": new Date(log.start_time).toLocaleDateString(),
+                "Resource Name": log.Resource?.name || 'N/A',
+                "User": userName,
+                "Venue": log.Venue?.name || 'N/A',
+                "Start Time": new Date(log.start_time).toLocaleTimeString(),
+                "End Time": log.end_time ? new Date(log.end_time).toLocaleTimeString() : 'Active',
+                "Duration (Min)": durationMin > 0 ? durationMin.toFixed(2) : 0,
+                "Verified": log.is_verified ? 'Yes' : 'No',
+                "Category": log.Resource?.description || 'N/A'
+            };
+        });
+
+        const summaryData = resources.map(resource => {
+            const logs = usageLogs.filter(l => l.resource_id === resource.resource_id);
+            const totalMin = logs.reduce((acc, l) => {
+                if (l.start_time && l.end_time) {
+                    return acc + (new Date(l.end_time) - new Date(l.start_time)) / (1000 * 60);
+                }
+                return acc;
+            }, 0);
+
+            return {
                 "Resource Name": resource.name,
                 "Venue": resource.Venue ? resource.Venue.name : "Master Inventory",
-                "Quantity": resource.quantity,
-                "Status": resource.status,
-                "Total Usage (Times)": usageLogs.length,
-                "Total Usage (Minutes)": totalMinutes.toFixed(2),
-                "Category": resource.description || "N/A"
-            });
-        }
+                "Total Usage (Times)": logs.length,
+                "Total Duration (Min)": totalMin.toFixed(2),
+                "Current Status": resource.status,
+                "Current Quantity": resource.quantity
+            };
+        });
 
         const wb = xlsx.utils.book_new();
-        const ws = xlsx.utils.json_to_sheet(reportData);
-        xlsx.utils.book_append_sheet(wb, ws, "Resource Utilisation");
+        const wsDetailed = xlsx.utils.json_to_sheet(detailedData);
+        const wsSummary = xlsx.utils.json_to_sheet(summaryData);
+        
+        xlsx.utils.book_append_sheet(wb, wsDetailed, "Usage History");
+        xlsx.utils.book_append_sheet(wb, wsSummary, "Resource Summary");
 
         const buffer = xlsx.write(wb, { type: 'buffer', bookType: 'xlsx' });
 
         res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-        res.setHeader('Content-Disposition', 'attachment; filename=resource_utilisation_report.xlsx');
+        res.setHeader('Content-Disposition', 'attachment; filename=master_resource_report.xlsx');
         res.send(buffer);
 
     } catch (error) {
