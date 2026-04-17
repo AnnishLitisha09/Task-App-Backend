@@ -6178,8 +6178,10 @@ exports.getTitleWiseTaskStats = async (req, res) => {
         });
 
         // 3. Map it together
+        const titleMap = new Set(titles.map(t => t.task_title));
+        
         const result = titles.map(tt => {
-            const stat = stats.find(s => s.title === tt.task_title);
+            const stat = stats.find(s => s.task_title === tt.task_title);
             return {
                 id: tt.id,
                 task_title: tt.task_title,
@@ -6187,6 +6189,19 @@ exports.getTitleWiseTaskStats = async (req, res) => {
                 activeCount: stat ? parseInt(stat.activeCount || 0) : 0,
                 totalCount: stat ? parseInt(stat.totalCount || 0) : 0
             };
+        });
+
+        // 4. Add manual titles that weren't in the predefined list
+        stats.forEach(s => {
+            if (!titleMap.has(s.task_title)) {
+                result.push({
+                    id: null,
+                    task_title: s.task_title,
+                    target_role: s.target_role || 'all',
+                    activeCount: parseInt(s.activeCount || 0),
+                    totalCount: parseInt(s.totalCount || 0)
+                });
+            }
         });
 
         res.json(result);
