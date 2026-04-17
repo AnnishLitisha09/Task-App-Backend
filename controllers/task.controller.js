@@ -2230,7 +2230,7 @@ exports.createUnifiedTask = async (req, res) => {
                 time_quota_hours: task_type_data.time_quota_hours || null,
                 max_duration_hours: max_duration_hours || null,
                 venue_id: task_type_data.venue_id || null,
-                recurrence: 'none',
+                recurrence: recurrence,
                 max_acceptances: task_type_data.max_acceptances || null
             }, { transaction: t });
 
@@ -2429,7 +2429,7 @@ exports.createUnifiedTask = async (req, res) => {
                         end_time: childFinalEndTime || sub.end_time || task_type_data.end_time || null,
                         max_duration_hours: sub.max_duration_hours || sub.max_hours || sub.allocated_hours || null,
                         venue_id: sub.venue_id || venue_id || null,
-                        recurrence: 'none'
+                        recurrence: recurrence // Match parent recurrence
                     }, { transaction: t });
 
                     // Assign sub-task to specific people
@@ -2614,7 +2614,7 @@ exports.createUnifiedTask = async (req, res) => {
                             start_time: task_type_data.start_time,
                             end_time: task_type_data.end_time,
                             venue_id: vid,
-                            recurrence: 'none'
+                            recurrence: recurrence // Match parent recurrence
                         }, { transaction: t });
 
                         targetTaskId = venueTask.task_id;
@@ -2936,7 +2936,7 @@ exports.finalizeTaskAssignments = async (approvalRequest, transaction = null) =>
                             start_time: taskType.start_time,
                             end_time: taskType.end_time,
                             venue_id: vid,
-                            recurrence: 'none'
+                            recurrence: recurrence // Match parent recurrence
                         }, { transaction: t });
                     }
 
@@ -5440,46 +5440,89 @@ exports.getDailyTaskReport = async (req, res) => {
         const directiveTasks = [];
         const selfLogTasks = [];
         const formattedMap = new Map();
+        const signatureToTaskId = new Map(); // Sig -> KeptTaskId (for recurring grouping)
+        const taskIdToKeptId = new Map();    // Every TaskID -> Representative TaskID
+
+        const isAll = req.query.date === 'All' || !req.query.date;
 
         tasks.forEach(task => {
             const type = task.TaskTypes?.[0];
             if (!type) return;
 
-            // If a specific date is requested, filter by it. 
-            // If NO date is requested, fetch ALL tasks associated with the user.
-            const matchesDate = !req.query.date || isOccurrence(date, type.start_date, type.end_date, type.recurrence);
+            // If "All", skip date matching. Otherwise, check if target date matches occurrence.
+            const matchesDate = isAll || !req.query.date || isOccurrence(date, type.start_date, type.end_date, type.recurrence);
 
             if (matchesDate) {
                 const formatted = formatTask(task);
-                formatted.parent_task_id = task.parent_task_id; // Store temporarily for grouping
+                let keptId = formatted.task_id;
+
+                // Grouping logic for consolidated view (especially when viewing "All")
+                if (isAll) {
+                    // Simplified signature for more aggressive grouping
+                    const cleanTitle = (task.title || '').trim().toLowerCase();
+                    const sig = `${cleanTitle}|${task.creator_id}|${type.start_time || ''}`;
+                    
+                    if (signatureToTaskId.has(sig)) {
+                        keptId = signatureToTaskId.get(sig);
+                        const representative = formattedMap.get(keptId);
+                        
+                        // Update the representative's date range
+                        if (type.start_date && (!representative.time.start_date || new Date(type.start_date) < new Date(representative.time.start_date))) {
+                            representative.time.start_date = type.start_date;
+                        }
+                        if (type.end_date && (!representative.time.end_date || new Date(type.end_date) > new Date(representative.time.end_date))) {
+                            representative.time.end_date = type.end_date;
+                        }
+                        
+                        // Increment occurrence count if you ever want to show "X occurrences"
+                        representative.occurrence_count = (representative.occurrence_count || 1) + 1;
+                        
+                        taskIdToKeptId.set(task.task_id, keptId);
+                        return; 
+                    } else {
+                        signatureToTaskId.set(sig, keptId);
+                    }
+                }
+
+                taskIdToKeptId.set(task.task_id, keptId);
+                formatted.parent_task_id = task.parent_task_id; // Store for hierarchy building
                 formattedMap.set(formatted.task_id, formatted);
             }
         });
 
         // Hierarchy Builder
         formattedMap.forEach(formatted => {
-            // Check if this task is a child AND its parent is in the same report
-            if (formatted.parent_task_id && formattedMap.has(formatted.parent_task_id)) {
-                const parent = formattedMap.get(formatted.parent_task_id);
-                
-                if (formatted.title && (formatted.title.startsWith('Permission:') || formatted.title.startsWith('Approval Request:'))) {
-                    parent.approvals = parent.approvals || [];
-                    parent.approvals.push(formatted);
-                } else {
-                    parent.sub_tasks = parent.sub_tasks || [];
-                    parent.sub_tasks.push(formatted);
-                }
-                
-                delete formatted.parent_task_id;
-            } else {
-                // Top Level Task
-                delete formatted.parent_task_id;
+            // Determine the effective parent ID (mapping skipped parent occurrences to their representative)
+            let effectiveParentId = formatted.parent_task_id;
+            if (effectiveParentId && taskIdToKeptId.has(effectiveParentId)) {
+                effectiveParentId = taskIdToKeptId.get(effectiveParentId);
+            }
 
-                if (formatted.origin_type === 'self-log') {
-                    selfLogTasks.push(formatted);
-                } else {
-                    directiveTasks.push(formatted);
+            // Check if this task is a child AND its (mapped) parent is in the same report
+            if (effectiveParentId && formattedMap.has(effectiveParentId)) {
+                const parent = formattedMap.get(effectiveParentId);
+                
+                // Avoid self-nesting if grouping logic mapped child to itself or its own parent
+                if (parent.task_id !== formatted.task_id) {
+                    if (formatted.title && (formatted.title.startsWith('Permission:') || formatted.title.startsWith('Approval Request:'))) {
+                        parent.approvals = parent.approvals || [];
+                        parent.approvals.push(formatted);
+                    } else {
+                        parent.sub_tasks = parent.sub_tasks || [];
+                        parent.sub_tasks.push(formatted);
+                    }
+                    delete formatted.parent_task_id;
+                    return; // Successfully nested
                 }
+            }
+            
+            // Top Level Task (or grouping representative)
+            delete formatted.parent_task_id;
+
+            if (formatted.origin_type === 'self-log') {
+                selfLogTasks.push(formatted);
+            } else {
+                directiveTasks.push(formatted);
             }
         });
 

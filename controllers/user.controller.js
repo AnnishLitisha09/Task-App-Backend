@@ -854,31 +854,20 @@ exports.getFacultyDailyStats = async (req, res) => {
             where: { faculty_id: faculty.id }
         });
 
-        // 3. Setup Date logic (Local time)
+        // 3. Date Logic (Strict IST)
+        const { toISTDateStr } = require('../utils/task-utils');
+        
         const now = new Date();
         const istOffset = 330 * 60 * 1000;
         const localNow = new Date(now.getTime() + (now.getTimezoneOffset() * 60000) + istOffset);
 
-        const today = new Date(localNow);
-        today.setHours(0, 0, 0, 0);
-        const tomorrow = new Date(today);
-        tomorrow.setDate(tomorrow.getDate() + 1);
-        const dayAfterTomorrow = new Date(tomorrow);
-        dayAfterTomorrow.setDate(dayAfterTomorrow.getDate() + 1);
+        const todayStr = toISTDateStr(now);
+        const tomorrowDate = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+        const tomorrowStr = toISTDateStr(tomorrowDate);
 
-        // Helper to format date
-        const toLocalISO = (d) => {
-            const year = d.getFullYear();
-            const month = String(d.getMonth() + 1).padStart(2, '0');
-            const day = String(d.getDate()).padStart(2, '0');
-            return `${year}-${month}-${day}`;
-        };
-
-        const todayStr = toLocalISO(today);
-
-        // Visibility Rule: Show tomorrow's tasks after 7:00 PM (19:00)
+        // Visibility Rule: Show tomorrow's tasks after 7:00 PM (19:00) IST
         const isEvening = localNow.getHours() >= 19;
-        const effectiveTodayStr = isEvening ? toLocalISO(tomorrow) : todayStr;
+        const effectiveTodayStr = isEvening ? tomorrowStr : todayStr;
 
         // Acknowledge check for TODAY
         const hasAcknowledgedToday = await TaskAcknowledgment.findOne({
@@ -926,8 +915,8 @@ exports.getFacultyDailyStats = async (req, res) => {
             if (!taskType) return;
 
             const isLongTask = taskType.task_name === 'Date-Only / Long Task' || taskType.task_name === 'Long Task';
-            const taskStartStr = toLocalISO(new Date(taskType.start_date));
-            const taskEndStr = toLocalISO(new Date(taskType.end_date || taskType.start_date));
+            const taskStartStr = toISTDateStr(taskType.start_date);
+            const taskEndStr = toISTDateStr(taskType.end_date || taskType.start_date);
 
             const taskData = {
                 assignment_id: a.id,
@@ -1019,11 +1008,11 @@ exports.getFacultyTasksByApprovalStatus = async (req, res) => {
             return res.status(404).json({ message: 'Faculty profile not found' });
         }
 
-        // 2. Get today's date range
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
-        const tomorrow = new Date(today);
-        tomorrow.setDate(tomorrow.getDate() + 1);
+        // 2. Get today's date range (IST)
+        const { toISTDateStr } = require('../utils/task-utils');
+        const todayStr = toISTDateStr(new Date());
+        const today = new Date(`${todayStr}T00:00:00+05:30`);
+        const tomorrow = new Date(today.getTime() + 24 * 60 * 60 * 1000);
 
         // 3. Find tasks by approval status for today
         const TaskAssign = require('../models').TaskAssign;
