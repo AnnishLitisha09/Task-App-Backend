@@ -327,6 +327,8 @@ exports.getUserContext = async (req, res) => {
             return res.status(404).json({ message: "User not found" });
         }
 
+        const dashboards = [];
+
         // 1. Unified Management/Higher Role Dashboard (Faculty & HOD)
         const hodAssignment = (user.RoleAssignments || []).find(ra => ra.Role?.user_role === 'HOD' && ra.Department);
         

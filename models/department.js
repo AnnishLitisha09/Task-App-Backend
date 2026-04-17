@@ -7,6 +7,7 @@ module.exports = (sequelize, DataTypes) => {
       // Department has many Users (students/faculty)
       Department.hasMany(models.Faculty, { foreignKey: 'department_id' });
       Department.hasMany(models.Student, { foreignKey: 'department_id' });
+      Department.hasMany(models.Staff, { foreignKey: 'department_id' });
       Department.hasMany(models.RoleAssignment, { foreignKey: 'department_id' });
     }
   }

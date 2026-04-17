@@ -7,6 +7,7 @@ module.exports = (sequelize, DataTypes) => {
             Staff.belongsTo(models.User, { foreignKey: 'user_id' });
             Staff.belongsTo(models.AuthAccount, { foreignKey: 'user_id' });
             Staff.belongsTo(models.User, { as: 'Manager', foreignKey: 'manager_id' });
+            Staff.belongsTo(models.Department, { foreignKey: 'department_id' });
         }
     }
 
@@ -27,6 +28,10 @@ module.exports = (sequelize, DataTypes) => {
         name: {
             type: DataTypes.STRING(100),
             allowNull: false
+        },
+        department_id: {
+            type: DataTypes.BIGINT.UNSIGNED,
+            allowNull: true
         },
         email: {
             type: DataTypes.STRING(100),
