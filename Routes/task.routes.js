@@ -157,6 +157,8 @@ router.get('/:id/escalation-report', verifyToken, taskController.getTaskEscalati
 router.put('/:id/pause', verifyToken, taskController.pauseTask);
 router.put('/:id/resume', verifyToken, taskController.resumeTask);
 
+router.get('/analytics/title-wise', verifyToken, taskController.getTitleWiseTaskStats); // NEW: Title-wise tracking analytics
+
 router.get('/:id', verifyToken, taskController.getTaskDetail);
 router.get('/:id/analysis', verifyToken, taskController.getTaskAnalysis); // NEW: Task Lifecycle Logs
 router.get('/:id/status', verifyToken, taskController.getTaskStatusSummary); // NEW: Task Status Summary

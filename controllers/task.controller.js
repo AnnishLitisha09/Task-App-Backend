@@ -6139,4 +6139,52 @@ exports.verifyTaskProof = async (req, res) => {
     }
 };
 
+// NEW: Analytics for title-wise tracking
+exports.getTitleWiseTaskStats = async (req, res) => {
+    try {
+        const { date } = req.query;
+        if (!date) return res.status(400).json({ message: 'Date parameter is required (YYYY-MM-DD)' });
+
+        // 1. Fetch all Task Titles
+        const titles = await TaskTitle.findAll({
+            attributes: ['id', 'task_title', 'target_role']
+        });
+
+        // 2. Fetch Tasks grouped by title for the specific date
+        const stats = await Task.findAll({
+            attributes: [
+                'title',
+                [Task.sequelize.fn('COUNT', Task.sequelize.col('Task.task_id')), 'totalCount'],
+                [Task.sequelize.fn('SUM', Task.sequelize.literal("CASE WHEN status != 'completed' AND status != 'Inactive' THEN 1 ELSE 0 END")), 'activeCount']
+            ],
+            include: [{
+                model: TaskType,
+                where: {
+                    start_date: date
+                },
+                attributes: []
+            }],
+            where: { is_deleted: false },
+            group: ['Task.title']
+        });
+
+        // 3. Map it together
+        const result = titles.map(tt => {
+            const stat = stats.find(s => s.title === tt.task_title);
+            return {
+                id: tt.id,
+                task_title: tt.task_title,
+                target_role: tt.target_role,
+                activeCount: stat ? parseInt(stat.getDataValue('activeCount')) : 0,
+                totalCount: stat ? parseInt(stat.getDataValue('totalCount')) : 0
+            };
+        });
+
+        res.json(result);
+    } catch (error) {
+        console.error('getTitleWiseTaskStats Error:', error);
+        res.status(500).json({ message: error.message });
+    }
+};
+
 module.exports = exports;
