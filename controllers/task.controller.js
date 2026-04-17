@@ -6085,7 +6085,7 @@ exports.getTitleWiseTaskStats = async (req, res) => {
         const stats = await Task.findAll({
             attributes: [
                 'title',
-                [Task.sequelize.fn('COUNT', Task.sequelize.col('Task.task_id')), 'totalCount'],
+                [Task.sequelize.fn('COUNT', Task.sequelize.col('task_id')), 'totalCount'],
                 [Task.sequelize.fn('SUM', Task.sequelize.literal("CASE WHEN status != 'completed' AND status != 'Inactive' THEN 1 ELSE 0 END")), 'activeCount']
             ],
             include: [{
@@ -6096,7 +6096,8 @@ exports.getTitleWiseTaskStats = async (req, res) => {
                 attributes: []
             }],
             where: { is_deleted: false },
-            group: ['Task.title']
+            group: ['title'],
+            raw: true
         });
 
         // 3. Map it together
@@ -6106,8 +6107,8 @@ exports.getTitleWiseTaskStats = async (req, res) => {
                 id: tt.id,
                 task_title: tt.task_title,
                 target_role: tt.target_role,
-                activeCount: stat ? parseInt(stat.getDataValue('activeCount')) : 0,
-                totalCount: stat ? parseInt(stat.getDataValue('totalCount')) : 0
+                activeCount: stat ? parseInt(stat.activeCount || 0) : 0,
+                totalCount: stat ? parseInt(stat.totalCount || 0) : 0
             };
         });
 
