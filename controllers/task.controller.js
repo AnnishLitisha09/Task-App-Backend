@@ -6153,19 +6153,27 @@ exports.getTitleWiseTaskStats = async (req, res) => {
         // 2. Fetch Tasks grouped by title for the specific date
         const stats = await Task.findAll({
             attributes: [
-                'title',
+                [Task.sequelize.literal("COALESCE(`TaskTitle`.`task_title`, `Task`.`title`)"), 'task_title'],
+                [Task.sequelize.literal("COALESCE(`TaskTitle`.`target_role`, 'all')"), 'target_role'],
                 [Task.sequelize.fn('COUNT', Task.sequelize.col('Task.task_id')), 'totalCount'],
                 [Task.sequelize.fn('SUM', Task.sequelize.literal("CASE WHEN Task.status != 'completed' AND Task.status != 'Inactive' THEN 1 ELSE 0 END")), 'activeCount']
             ],
-            include: [{
-                model: TaskType,
-                where: {
-                    start_date: date
+            include: [
+                {
+                    model: TaskType,
+                    where: {
+                        start_date: date
+                    },
+                    attributes: []
                 },
-                attributes: []
-            }],
+                {
+                    model: TaskTitle,
+                    attributes: [],
+                    required: false
+                }
+            ],
             where: { is_deleted: false },
-            group: ['Task.title'],
+            group: [Task.sequelize.literal("COALESCE(`TaskTitle`.`task_title`, `Task`.`title`)"), 'TaskTitle.target_role'],
             raw: true
         });
 
