@@ -16,14 +16,16 @@ const verifyToken = (req, res, next) => {
 
     jwt.verify(tokenValue, JWT_SECRET, async (err, decoded) => {
         if (err) {
-            return res.status(401).json({ message: 'Unauthorized!' });
+            console.warn(`[AUTH] JWT Verification Failed: ${err.message}`);
+            return res.status(401).json({ message: 'Unauthorized: Invalid or expired token.' });
         }
 
         try {
             // --- NEW: Strict Single-Device Session Check ---
             const account = await AuthAccount.findByPk(decoded.user_id);
             if (!account || !account.is_logged_in) {
-                return res.status(401).json({ message: 'Unauthorized! Please login again.' });
+                console.warn(`[AUTH] Session Flag Check Failed for User #${decoded.user_id}. Account exists: ${!!account}, is_logged_in: ${account?.is_logged_in}`);
+                return res.status(401).json({ message: 'Unauthorized! Please login again (Section conflict or signed out).' });
             }
 
             req.userId = decoded.user_id;
