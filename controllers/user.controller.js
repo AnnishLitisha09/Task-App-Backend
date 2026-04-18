@@ -1073,6 +1073,7 @@ exports.getFacultyTasksByApprovalStatus = async (req, res) => {
 
 // Helper: Get full profile details by user ID and role
 const getFullProfile = async (id, role) => {
+    let userDetails = null;
     const { syncUserScore } = require('../utils/task-utils');
     await syncUserScore(id, role);
     

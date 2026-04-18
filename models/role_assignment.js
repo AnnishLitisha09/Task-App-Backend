@@ -7,7 +7,7 @@ module.exports = (sequelize, DataTypes) => {
       RoleAssignment.belongsTo(models.User, { foreignKey: 'user_id' });
       RoleAssignment.belongsTo(models.Role, { foreignKey: 'role_id' });
       RoleAssignment.belongsTo(models.Department, { foreignKey: 'department_id' });
-      RoleAssignment.belongsTo(models.Venue, { foreignKey: 'venue_id' });
+      RoleAssignment.belongsTo(models.Venue, { foreignKey: 'venue_id', as: 'Venue' });
     }
   }
 
