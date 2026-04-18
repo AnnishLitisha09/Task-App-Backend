@@ -132,7 +132,7 @@ exports.login = async (req, res) => {
         // NEW: Get venues where the user is an incharge
         const inchargeVenues = await RoleAssignment.findAll({
             where: { user_id: account.User.user_id },
-            include: [{ model: Venue, attributes: ['venue_id', 'name', 'location'] }],
+            include: [{ model: Venue, as: 'Venue', attributes: ['venue_id', 'name', 'location'] }],
             attributes: ['venue_id']
         });
 
@@ -167,9 +167,13 @@ exports.googleLogin = async (req, res) => {
         if (!token) return res.status(400).json({ message: "Token is required" });
 
         // Verify Google ID token
+        const audience = process.env.GOOGLE_CLIENT_ID;
+        console.log(`[AUTH] Verifying Google token for audience: ${audience}`);
+        console.log(`[AUTH] Token starts with: ${token.substring(0, 10)}...`);
+
         const ticket = await client.verifyIdToken({
             idToken: token,
-            audience: process.env.GOOGLE_CLIENT_ID
+            audience: audience
         });
 
         const { email } = ticket.getPayload();
@@ -262,7 +266,7 @@ exports.googleLogin = async (req, res) => {
         // NEW: Get venues where the user is an incharge
         const inchargeVenues = await RoleAssignment.findAll({
             where: { user_id: account.User.user_id },
-            include: [{ model: Venue, attributes: ['venue_id', 'name', 'location'] }],
+            include: [{ model: Venue, as: 'Venue', attributes: ['venue_id', 'name', 'location'] }],
             attributes: ['venue_id']
         });
 
@@ -286,7 +290,10 @@ exports.googleLogin = async (req, res) => {
         });
     } catch (err) {
         console.error("GOOGLE LOGIN ERROR 👉", err);
-        res.status(401).json({ message: "Invalid Google token" });
+        res.status(401).json({ 
+            message: "Google Sign-In failed: " + (err.message || "Invalid Google token"),
+            error: err.stack
+        });
     }
 };
 exports.getUserContext = async (req, res) => {
