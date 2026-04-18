@@ -241,6 +241,7 @@ exports.checkMorningAcknowledgment = async () => {
             // Escalate/Update all tasks for this user
             const userTasks = activeAssignments.filter(a => a.user_id === userId);
             for (const assign of userTasks) {
+                const { createNotification } = require('../utils/task-utils');
                 if (isStudent) {
                     // Logic for students: Mark as rejected/absent if no ack by 10:45 AM (2 working hours)
                     await TaskAssign.update(
@@ -281,6 +282,14 @@ exports.checkMorningAcknowledgment = async () => {
                         user_id: userId,
                         action: 'escalation',
                         details: `Task escalated to User ${supervisorId}: Missing daily acknowledgement by 10:45 AM (2 working hours).`
+                    });
+
+                    // 4. Send Notification to Supervisor
+                    await createNotification({
+                        userId: supervisorId,
+                        title: 'Morning Ack Escalation',
+                        msg: `URGENT: User (ID: ${userId}) failed to acknowledge morning awareness for task "${assign.Task.title}". Task has been escalated.`,
+                        type: 'task_escalation'
                     });
                 }
                 escalationCount++;

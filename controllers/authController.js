@@ -132,7 +132,7 @@ exports.login = async (req, res) => {
         // NEW: Get venues where the user is an incharge
         const inchargeVenues = await RoleAssignment.findAll({
             where: { user_id: account.User.user_id },
-            include: [{ model: Venue, attributes: ['venue_id', 'name', 'location'] }],
+            include: [{ model: Venue, as: 'Venue', attributes: ['venue_id', 'name', 'location'] }],
             attributes: ['venue_id']
         });
 
@@ -262,7 +262,7 @@ exports.googleLogin = async (req, res) => {
         // NEW: Get venues where the user is an incharge
         const inchargeVenues = await RoleAssignment.findAll({
             where: { user_id: account.User.user_id },
-            include: [{ model: Venue, attributes: ['venue_id', 'name', 'location'] }],
+            include: [{ model: Venue, as: 'Venue', attributes: ['venue_id', 'name', 'location'] }],
             attributes: ['venue_id']
         });
 

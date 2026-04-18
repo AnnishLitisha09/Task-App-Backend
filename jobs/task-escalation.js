@@ -3,6 +3,8 @@ const { User, Task, TaskAssign, TaskType, TaskEscalation, Notification, TaskLog 
 const { Op } = require('sequelize');
 const { getWorkingMinutes } = require('../utils/task-utils');
 const { getSupervisor } = require('../utils/hierarchy');
+const { createNotification } = require('../utils/task-utils');
+const { ESCALATION_WINDOW_END } = require('../config/constants');
 
 let isProcessingEscalations = false;
 
@@ -237,7 +239,6 @@ const processAllEscalations = async () => {
         }
 
         // Trigger 3: Priority Override Timeout
-        const { ESCALATION_WINDOW_END } = require('../config/constants');
         const [escH, escM] = ESCALATION_WINDOW_END.split(':').map(Number);
         
         if (localNow.getHours() > escH || (localNow.getHours() === escH && localNow.getMinutes() >= escM)) {
@@ -251,8 +252,8 @@ const processAllEscalations = async () => {
 
             for (const esc of pendingOverrides) {
                 await esc.update({ status: 'escalated', msg: esc.msg + ' [AUTO-ESCALATED after morning deadline]' });
-                await Notification.create({
-                    user_id: 1, // Admin
+                await createNotification({
+                    userId: 1, // Admin
                     title: 'Priority Override Escalation',
                     msg: `URGENT: Override request for Task ${esc.task_id} timeout. Decision required.`,
                     type: 'task_escalation'
@@ -298,8 +299,8 @@ const escalateAssignment = async (assign, reason, cache = null, forcedSupervisor
         });
 
         // 4. Notify Supervisor
-        await Notification.create({
-            user_id: supervisorId,
+        await createNotification({
+            userId: supervisorId,
             title: 'Task Escalation Alert',
             msg: `URGENT: Task "${assign.Task.title}" assigned to User ${assign.user_id} has been escalated. Reason: ${reason}`,
             type: 'task_escalation'
@@ -308,8 +309,8 @@ const escalateAssignment = async (assign, reason, cache = null, forcedSupervisor
         // 5. Notify Creator (if different from Supervisor)
         const taskCreatorId = assign.Task?.creator_id;
         if (taskCreatorId && taskCreatorId !== supervisorId) {
-            await Notification.create({
-                user_id: taskCreatorId,
+            await createNotification({
+                userId: taskCreatorId,
                 title: 'Task Escalation Notification',
                 msg: `Notice: Task "${assign.Task.title}" assigned to User ${assign.user_id} has been escalated. Reason: ${reason}`,
                 type: 'task_escalation'
