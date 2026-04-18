@@ -761,17 +761,24 @@ exports.getMyVenuesList = async (req, res) => {
                     is_deleted: false,
                     origin_type: { [Op.ne]: 'self-log' }
                 },
-                include: [{
-                    model: TaskType,
-                    required: true,
-                    where: {
-                        venue_id: v.venue_id,
-                        [Op.or]: [
-                            literal(`DATE(start_date) = '${dateStr}'`),
-                            { [Op.and]: [literal(`DATE(start_date) <= '${dateStr}'`), literal(`DATE(end_date) >= '${dateStr}'`)] }
-                        ]
+                include: [
+                    {
+                        model: TaskType,
+                        required: true,
+                        where: {
+                            venue_id: v.venue_id,
+                            [Op.or]: [
+                                literal(`DATE(start_date) = '${dateStr}'`),
+                                { [Op.and]: [literal(`DATE(start_date) <= '${dateStr}'`), literal(`DATE(end_date) >= '${dateStr}'`)] }
+                            ]
+                        }
+                    },
+                    {
+                        model: TaskAssign,
+                        required: true,
+                        where: { status: { [Op.in]: ['accepted', 'in_progress', 'completed'] } }
                     }
-                }]
+                ]
             });
 
             return {
