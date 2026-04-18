@@ -159,7 +159,7 @@ exports.getAllUsersWithDetails = async (req, res) => {
                     include: [
                         { model: Role, attributes: ['user_role'] },
                         { model: Department, attributes: ['name'] },
-                        { model: Venue, attributes: ['name', 'location'] }
+                        { model: Venue, as: 'Venue', attributes: ['name', 'location'] }
                     ]
                 }
             ]

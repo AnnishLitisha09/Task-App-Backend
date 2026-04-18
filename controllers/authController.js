@@ -316,7 +316,7 @@ exports.getUserContext = async (req, res) => {
                     required: false,
                     include: [
                         { model: Role, attributes: ['user_role'] },
-                        { model: Venue, attributes: ['venue_id', 'name', 'location'] },
+                        { model: Venue, as: 'Venue', attributes: ['venue_id', 'name', 'location'] },
                         { model: Department, attributes: ['name'] }
                     ]
                 }

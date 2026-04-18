@@ -2360,7 +2360,7 @@ exports.updateUserRoles = async (req, res) => {
                 { model: Faculty },
                 { model: Staff },
                 { model: RoleUser },
-                { model: RoleAssignment, include: [{ model: Role }, { model: require('../models').Department }, { model: require('../models').Venue }] }
+                { model: RoleAssignment, include: [{ model: Role }, { model: require('../models').Department }, { model: require('../models').Venue, as: 'Venue' }] }
             ]
         });
 
