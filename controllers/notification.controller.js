@@ -1,5 +1,26 @@
 const { Notification } = require('../models');
 
+// Helper: Convert UTC Date to IST ISO string (e.g. "2026-04-18T15:00:43+05:30")
+const toISTString = (utcDate) => {
+    if (!utcDate) return null;
+    const d = new Date(utcDate);
+    // IST = UTC + 5:30
+    const istOffset = 5 * 60 + 30; // minutes
+    const istMs = d.getTime() + istOffset * 60 * 1000;
+    const istDate = new Date(istMs);
+    // Build ISO string with +05:30 suffix
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${istDate.getUTCFullYear()}-${pad(istDate.getUTCMonth() + 1)}-${pad(istDate.getUTCDate())}T${pad(istDate.getUTCHours())}:${pad(istDate.getUTCMinutes())}:${pad(istDate.getUTCSeconds())}+05:30`;
+};
+
+const formatNotification = (n) => {
+    const obj = n.toJSON();
+    obj.created_at = toISTString(obj.created_at);
+    obj.updated_at = toISTString(obj.updated_at);
+    obj.createdAt = obj.created_at;
+    obj.updatedAt = obj.updated_at;
+    return obj;
+};
 
 // Fetch user notifications
 exports.getNotifications = async (req, res) => {
@@ -23,9 +44,7 @@ exports.getNotifications = async (req, res) => {
             order: [['created_at', 'DESC']]
         });
 
-        // Optional: Strip the prefix [V:ID] before sending to frontend if preferred, 
-        // but here we send as-is and let the frontend handle the display.
-        res.json({ total: notifications.length, notifications });
+        res.json({ total: notifications.length, notifications: notifications.map(formatNotification) });
     } catch (error) {
         res.status(500).json({ message: error.message });
     }

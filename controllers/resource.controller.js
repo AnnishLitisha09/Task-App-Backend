@@ -542,8 +542,11 @@ exports.addVenue = async (req, res) => {
             }
 
             if (!role) {
-                await t.rollback();
-                return res.status(404).json({ message: `Role '${role_name}' and generic 'INCHARGE' role not found` });
+                // Automatically create the missing role
+                role = await Role.create({
+                    user_role: role_name.toUpperCase().includes('INCHARGE') ? role_name.toUpperCase() : 'VENUE_INCHARGE',
+                    scope_id: 2 // Institution scope
+                }, { transaction: t });
             }
 
             await RoleAssignment.create({
@@ -615,8 +618,11 @@ exports.updateVenue = async (req, res) => {
             }
 
             if (!role) {
-                await t.rollback();
-                return res.status(404).json({ message: `Role '${role_name}' and generic 'INCHARGE' role not found` });
+                // Automatically create the missing role
+                role = await Role.create({
+                    user_role: role_name.toUpperCase().includes('INCHARGE') ? role_name.toUpperCase() : 'VENUE_INCHARGE',
+                    scope_id: 2 // Institution scope
+                }, { transaction: t });
             }
 
             // Remove any existing assignments for this venue
