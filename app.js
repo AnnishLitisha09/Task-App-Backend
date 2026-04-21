@@ -23,13 +23,13 @@ app.use(bodyParser.json());
 app.use(morgan('dev'));
 
 // ========== Routes ==========
-const authRoutes = require('./routes/auth.routes');
-const userRoutes = require('./routes/user.routes');
-const resourceRoutes = require('./routes/resource.routes');
-const taskRoutes = require('./routes/task.routes');
-const couponRoutes = require('./routes/coupon.routes');
-const leaveRoutes = require('./routes/leave.routes');
-const notificationRoutes = require('./routes/notification.routes');
+const authRoutes = require('./Routes/auth.routes');
+const userRoutes = require('./Routes/user.routes');
+const resourceRoutes = require('./Routes/resource.routes');
+const taskRoutes = require('./Routes/task.routes');
+const couponRoutes = require('./Routes/coupon.routes');
+const leaveRoutes = require('./Routes/leave.routes');
+const notificationRoutes = require('./Routes/notification.routes');
 
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
