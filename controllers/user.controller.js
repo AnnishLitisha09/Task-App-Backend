@@ -9,7 +9,7 @@ exports.testNotification = async (req, res) => {
     try {
         const { title, msg, targetUserId } = req.body;
         const userId = targetUserId || req.userId; // Allow sending to a specific ID for testing
-        
+
         if (!userId) return res.status(400).json({ message: 'User ID is required' });
 
         const { createNotification } = require('../utils/task-utils');
@@ -127,8 +127,8 @@ exports.createStudent = async (req, res) => {
         if (t) await t.rollback();
         console.error('CreateStudent Error:', error);
         if (error.name === 'SequelizeUniqueConstraintError' || error.name === 'SequelizeValidationError') {
-            return res.status(400).json({ 
-                message: 'Validation failed', 
+            return res.status(400).json({
+                message: 'Validation failed',
                 errors: error.errors.map(e => ({ field: e.path, message: e.message }))
             });
         }
@@ -149,7 +149,7 @@ exports.createFaculty = async (req, res) => {
 
         const existingStudent = await Student.findOne({ where: { [Op.or]: [{ reg_no }, { email }] } });
         if (existingStudent) return res.status(400).json({ message: 'Registration number already assigned to an active student.' });
-        
+
         const user = await createBaseUser('faculty', t);
 
         await Faculty.create({
@@ -191,8 +191,8 @@ exports.createFaculty = async (req, res) => {
         if (t) await t.rollback();
         console.error('CreateFaculty Error:', error);
         if (error.name === 'SequelizeUniqueConstraintError' || error.name === 'SequelizeValidationError') {
-            return res.status(400).json({ 
-                message: 'Validation failed', 
+            return res.status(400).json({
+                message: 'Validation failed',
                 errors: error.errors.map(e => ({ field: e.path, message: e.message }))
             });
         }
@@ -248,8 +248,8 @@ exports.createStaff = async (req, res) => {
         if (t) await t.rollback();
         console.error('CreateStaff Error:', error);
         if (error.name === 'SequelizeUniqueConstraintError' || error.name === 'SequelizeValidationError') {
-            return res.status(400).json({ 
-                message: 'Validation failed', 
+            return res.status(400).json({
+                message: 'Validation failed',
                 errors: error.errors.map(e => ({ field: e.path, message: e.message }))
             });
         }
@@ -345,15 +345,15 @@ exports.createRoleUser = async (req, res) => {
         if (t) await t.rollback();
         console.error('CreateRoleUser Error:', error);
         if (error.name === 'SequelizeUniqueConstraintError' || error.name === 'SequelizeValidationError') {
-            return res.status(400).json({ 
-                message: 'Validation failed', 
+            return res.status(400).json({
+                message: 'Validation failed',
                 errors: error.errors.map(e => ({ field: e.path, message: e.message }))
             });
         }
-        res.status(500).json({ 
-            message: error.name === 'SequelizeUniqueConstraintError' 
-                ? 'User with this email already exists' 
-                : error.message 
+        res.status(500).json({
+            message: error.name === 'SequelizeUniqueConstraintError'
+                ? 'User with this email already exists'
+                : error.message
         });
     }
 };
@@ -361,7 +361,7 @@ exports.createRoleUser = async (req, res) => {
 // Enhanced Bulk Create from Excel
 exports.bulkCreateUsers = async (req, res) => {
     if (!req.file) return res.status(400).json({ message: 'No file uploaded' });
-    
+
     // Use READ COMMITTED isolation level to avoid heavy gap locks in MySQL bulk operations
     const t = await User.sequelize.transaction({
         isolationLevel: Sequelize.Transaction.ISOLATION_LEVELS.READ_COMMITTED
@@ -395,7 +395,7 @@ exports.bulkCreateUsers = async (req, res) => {
 
             try {
                 const lowerType = user_type.toLowerCase();
-                
+
                 // 1. Existence check with transaction (paranoid: true is default)
                 const existingAuth = await AuthAccount.findOne({ where: { email }, transaction: t });
                 if (existingAuth) {
@@ -405,14 +405,14 @@ exports.bulkCreateUsers = async (req, res) => {
 
                 let existing = null;
                 if (lowerType === 'student') {
-                    existing = await Student.findOne({ 
+                    existing = await Student.findOne({
                         where: { [Op.or]: [{ reg_no: reg_no || '' }, { email }] },
-                        transaction: t 
+                        transaction: t
                     });
                 } else if (lowerType === 'faculty') {
-                    existing = await Faculty.findOne({ 
+                    existing = await Faculty.findOne({
                         where: { [Op.or]: [{ reg_no: reg_no || '' }, { email }] },
-                        transaction: t 
+                        transaction: t
                     });
                 } else if (lowerType === 'staff' || lowerType === 'role-user') {
                     const Model = lowerType === 'staff' ? Staff : RoleUser;
@@ -463,11 +463,11 @@ exports.bulkCreateUsers = async (req, res) => {
 
                     const initialNetScore = parseFloat(score || 0);
                     const initialPenalty = parseFloat(penalty || 0);
-                    
+
                     await Student.create({
                         user_id: user.user_id, reg_no, name, email, department_id: deptId,
                         year: year || 1, c_gpa: c_gpa || 0.0, score: initialNetScore,
-                        penalty: initialPenalty, 
+                        penalty: initialPenalty,
                         total_score: initialNetScore + initialPenalty, // Gross Score
                         faculty_id: fId
                     }, { transaction: t });
@@ -856,7 +856,7 @@ exports.getFacultyDailyStats = async (req, res) => {
 
         // 3. Date Logic (Strict IST)
         const { toISTDateStr } = require('../utils/task-utils');
-        
+
         const now = new Date();
         const istOffset = 330 * 60 * 1000;
         const localNow = new Date(now.getTime() + (now.getTimezoneOffset() * 60000) + istOffset);
@@ -879,7 +879,7 @@ exports.getFacultyDailyStats = async (req, res) => {
         const needsAcknowledgement = !hasAcknowledgedToday && totalMinutes >= (6 * 60 + 30) && totalMinutes <= (8 * 60 + 45);
 
         // 4. Fetch Tasks
-        const taskWhere = { 
+        const taskWhere = {
             is_deleted: false,
             origin_type: { [Op.ne]: 'self-log' }
         };
@@ -1076,7 +1076,7 @@ const getFullProfile = async (id, role) => {
     let userDetails = null;
     const { syncUserScore } = require('../utils/task-utils');
     await syncUserScore(id, role);
-    
+
     // 1. Discover all possible profiles for this user
     const [facultyProfile, studentProfile, staffProfile, roleUserProfile] = await Promise.all([
         Faculty.findOne({ where: { user_id: id }, include: [Department, { model: AuthAccount, attributes: ['email'] }] }),
@@ -1109,12 +1109,12 @@ const getFullProfile = async (id, role) => {
             include: [{ model: Department, attributes: ['name'] }]
         });
         if (userDetails.mentees === undefined) {
-             // If userDetails was derived from something else (unlikely but safe), ensure fields are merged
-             userDetails.mentees = mentees;
-             userDetails.mentee_count = mentees.length;
+            // If userDetails was derived from something else (unlikely but safe), ensure fields are merged
+            userDetails.mentees = mentees;
+            userDetails.mentee_count = mentees.length;
         } else {
-             userDetails.mentees = mentees;
-             userDetails.mentee_count = mentees.length;
+            userDetails.mentees = mentees;
+            userDetails.mentee_count = mentees.length;
         }
     }
 
@@ -1171,7 +1171,7 @@ const getFullProfile = async (id, role) => {
                     const userVenueIds = rAssignments
                         .map(a => a.venue_id || (a.get ? a.get('venue_id') : null))
                         .filter(v => v !== null && v !== undefined);
-                    
+
                     const uniqueVenueIds = [...new Set(userVenueIds)];
                     const totalVenues = uniqueVenueIds.length;
 
@@ -1555,7 +1555,7 @@ exports.getAllHODs = async (req, res) => {
             const userId = ra.user_id;
             const u = ra.User;
             if (!u) return;
-            
+
             const profile = u.Faculty || u.RoleUser || u.Staff;
             if (!profile) return;
 
@@ -1649,7 +1649,7 @@ exports.getInchargeCandidates = async (req, res) => {
         const [faculty, staffs, roleUsers] = await Promise.all([
             Faculty.findAll({ attributes: ['user_id', 'name', 'email', 'reg_no'], order: [['name', 'ASC']] }),
             Staff.findAll({ attributes: ['user_id', 'name', 'email', 'designation'], order: [['name', 'ASC']] }),
-            RoleUser.findAll({ 
+            RoleUser.findAll({
                 attributes: ['user_id', 'name', 'email'],
                 include: [{
                     model: User,
@@ -1712,7 +1712,7 @@ exports.getHODCandidates = async (req, res) => {
     try {
         const [faculty, roleUsers] = await Promise.all([
             Faculty.findAll({ attributes: ['user_id', 'name', 'email', 'reg_no'], order: [['name', 'ASC']] }),
-            RoleUser.findAll({ 
+            RoleUser.findAll({
                 attributes: ['user_id', 'name', 'email'],
                 include: [{
                     model: User,
@@ -2083,10 +2083,10 @@ exports.assignAuthority = async (req, res) => {
         // Find the role with its scope
         const { Scope } = require('../models');
         const role = await Role.findOne({
-            where: { 
+            where: {
                 [Op.or]: [
                     { user_role: role_name },
-                    { 
+                    {
                         user_role: { [Op.like]: `%${role_name}%` },
                         user_role: { [Op.like]: '%INCHARGE%' }
                     }
@@ -2203,7 +2203,7 @@ exports.getAllAuthorities = async (req, res) => {
             const scope = a.Role?.Scope?.scope?.toLowerCase() || 'other';
             const u = a.User;
             const profile = u?.Faculty || u?.RoleUser || u?.Staff;
-            
+
             const entry = {
                 assignment_id: a.id,
                 user_id: a.user_id,
@@ -2232,7 +2232,10 @@ exports.updateUserRoles = async (req, res) => {
     const t = await User.sequelize.transaction();
     try {
         const { id } = req.params;
-        const { primary_role, remove_profile, add_assignments, remove_assignments } = req.body;
+        const {
+            primary_role, remove_profile, add_assignments, remove_assignments,
+            name, reg_no, department_id, year, cgpa, credit_score, faculty_id, faculty_type, designation
+        } = req.body;
 
         const user = await User.findByPk(id, {
             include: [
@@ -2249,24 +2252,60 @@ exports.updateUserRoles = async (req, res) => {
             return res.status(404).json({ message: 'User not found' });
         }
 
+        // 0. Update basic profile fields across all existing profiles
+        if (name || reg_no || department_id !== undefined) {
+            if (user.Student) {
+                await Student.update({
+                    name: name || user.Student.name,
+                    reg_no: reg_no !== undefined ? reg_no : user.Student.reg_no,
+                    department_id: department_id !== undefined ? (department_id || null) : user.Student.department_id,
+                    year: year !== undefined ? year : user.Student.year,
+                    c_gpa: cgpa !== undefined ? cgpa : user.Student.c_gpa,
+                    score: credit_score !== undefined ? credit_score : user.Student.score,
+                    faculty_id: faculty_id !== undefined ? (faculty_id || null) : user.Student.faculty_id
+                }, { where: { user_id: id }, transaction: t });
+            }
+            if (user.Faculty) {
+                await Faculty.update({
+                    name: name || user.Faculty.name,
+                    reg_no: reg_no !== undefined ? reg_no : user.Faculty.reg_no,
+                    department_id: department_id !== undefined ? (department_id || null) : user.Faculty.department_id,
+                    type: faculty_type !== undefined ? faculty_type : user.Faculty.type
+                }, { where: { user_id: id }, transaction: t });
+            }
+            if (user.Staff) {
+                await Staff.update({
+                    name: name || user.Staff.name,
+                    reg_no: reg_no !== undefined ? reg_no : user.Staff.reg_no,
+                    designation: designation !== undefined ? designation : user.Staff.designation
+                }, { where: { user_id: id }, transaction: t });
+            }
+            if (user.RoleUser) {
+                await RoleUser.update({
+                    name: name || user.RoleUser.name
+                }, { where: { user_id: id }, transaction: t });
+            }
+        }
+
         // 1. Remove Profile if requested
         if (remove_profile) {
+
             const timestamp = Date.now();
             if (remove_profile === 'student' && user.Student) {
-                await Student.update({ 
+                await Student.update({
                     email: `${user.Student.email}_del_${timestamp}`,
-                    reg_no: `${user.Student.reg_no}_del_${timestamp}` 
+                    reg_no: `${user.Student.reg_no}_del_${timestamp}`
                 }, { where: { user_id: id }, transaction: t });
                 await Student.destroy({ where: { user_id: id }, transaction: t });
             } else if (remove_profile === 'faculty' && user.Faculty) {
-                await Faculty.update({ 
+                await Faculty.update({
                     email: `${user.Faculty.email}_del_${timestamp}`,
-                    reg_no: `${user.Faculty.reg_no}_del_${timestamp}` 
+                    reg_no: `${user.Faculty.reg_no}_del_${timestamp}`
                 }, { where: { user_id: id }, transaction: t });
                 await Faculty.destroy({ where: { user_id: id }, transaction: t });
             } else if (remove_profile === 'staff' && user.Staff) {
-                await Staff.update({ 
-                    email: `${user.Staff.email}_del_${timestamp}` 
+                await Staff.update({
+                    email: `${user.Staff.email}_del_${timestamp}`
                 }, { where: { user_id: id }, transaction: t });
                 await Staff.destroy({ where: { user_id: id }, transaction: t });
             }
@@ -2330,24 +2369,24 @@ exports.updateUserRoles = async (req, res) => {
             else if (assignmentCount > 0) user.role = 'role-user';
             await user.save({ transaction: t });
         } else if (user.role === 'student' && !hasStd) {
-             if (hasFac) user.role = 'faculty';
-             else if (hasStf) user.role = 'staff';
-             else if (assignmentCount > 0) user.role = 'role-user';
-             await user.save({ transaction: t });
+            if (hasFac) user.role = 'faculty';
+            else if (hasStf) user.role = 'staff';
+            else if (assignmentCount > 0) user.role = 'role-user';
+            await user.save({ transaction: t });
         } else if (user.role === 'staff' && !hasStf) {
-             if (hasFac) user.role = 'faculty';
-             else if (hasStd) user.role = 'student';
-             else if (assignmentCount > 0) user.role = 'role-user';
-             await user.save({ transaction: t });
+            if (hasFac) user.role = 'faculty';
+            else if (hasStd) user.role = 'student';
+            else if (assignmentCount > 0) user.role = 'role-user';
+            await user.save({ transaction: t });
         }
 
         // Final Ensure RoleUser profile if role is 'role-user'
         if (user.role === 'role-user' && !hasRU) {
             const profile = hasFac || hasStd || hasStf;
-            await RoleUser.create({ 
-                user_id: id, 
-                name: profile?.name || 'New Role User', 
-                email: profile?.email || `user_${id}@system.com` 
+            await RoleUser.create({
+                user_id: id,
+                name: profile?.name || 'New Role User',
+                email: profile?.email || `user_${id}@system.com`
             }, { transaction: t });
         }
 
@@ -2409,12 +2448,12 @@ exports.getAvailableRoles = async (req, res) => {
         for (const r of roles) {
             const scope = r.Scope?.scope || 'other';
             if (!grouped[scope]) grouped[scope] = [];
-            
+
             let roleName = r.user_role;
             if (roleName.includes('INCHARGE')) {
                 roleName = 'INCHARGE';
             }
-            
+
             grouped[scope].push({ role_id: r.role_id, role_name: roleName });
         }
 
